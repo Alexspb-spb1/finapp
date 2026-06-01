@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "finapp",
+      "runtimeExecutable": "C:\\nodejs\\node-v22.13.1-win-x64\\node.exe",
+      "runtimeArgs": ["C:\\nodejs\\node-v22.13.1-win-x64\\node_modules\\npm\\bin\\npm-cli.js", "run", "dev"],
+      "port": 5173
+    }
+  ]
+}
