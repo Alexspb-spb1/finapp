@@ -9,22 +9,21 @@ import {
   CreditCard,
   FolderKanban,
   Settings,
-  ChevronRight,
   LogOut,
 } from 'lucide-react'
 import { authStore } from '../../store/authStore'
 import { useAuth } from '../../hooks/useAuth'
 
 const nav = [
-  { to: '/', icon: LayoutDashboard, label: 'Дашборд' },
-  { to: '/transactions', icon: ArrowLeftRight, label: 'Операции' },
-  { to: '/reports/cashflow', icon: TrendingUp, label: 'ДДС' },
-  { to: '/reports/pnl', icon: PieChart, label: 'P&L' },
-  { to: '/calendar', icon: Calendar, label: 'Платёж. календарь' },
-  { to: '/accounts', icon: CreditCard, label: 'Счета' },
-  { to: '/counterparties', icon: Users, label: 'Контрагенты' },
-  { to: '/projects', icon: FolderKanban, label: 'Проекты' },
-  { to: '/settings', icon: Settings, label: 'Настройки' },
+  { to: '/',                  icon: LayoutDashboard, label: 'Дашборд'           },
+  { to: '/transactions',      icon: ArrowLeftRight,  label: 'Операции'          },
+  { to: '/reports/cashflow',  icon: TrendingUp,      label: 'ДДС'               },
+  { to: '/reports/pnl',       icon: PieChart,        label: 'P&L'               },
+  { to: '/calendar',          icon: Calendar,        label: 'Платёж. календарь' },
+  { to: '/accounts',          icon: CreditCard,      label: 'Счета'             },
+  { to: '/counterparties',    icon: Users,           label: 'Контрагенты'       },
+  { to: '/projects',          icon: FolderKanban,    label: 'Проекты'           },
+  { to: '/settings',          icon: Settings,        label: 'Настройки'         },
 ]
 
 export default function Sidebar() {
@@ -37,39 +36,45 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="w-60 bg-white border-r border-slate-200 flex flex-col h-screen sticky top-0 shrink-0">
+    <aside className="w-60 flex flex-col h-screen sticky top-0 shrink-0" style={{ background: '#0f1c3f' }}>
+
       {/* Logo */}
-      <div className="px-5 py-5 border-b border-slate-100">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center">
+      <div className="px-5 py-5 border-b border-white/10">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 bg-indigo-500 flex items-center justify-center shrink-0">
             <TrendingUp size={16} className="text-white" />
           </div>
-          <span className="font-bold text-slate-800 text-lg tracking-tight">ФинУчёт</span>
+          <span className="font-bold text-white text-lg tracking-tight">ФинУчёт</span>
         </div>
-        <p className="text-xs text-slate-400 mt-1 ml-10">управленческий учёт</p>
+        <p className="text-[11px] text-white/35 mt-1.5 ml-10 uppercase tracking-widest">управленческий учёт</p>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 overflow-y-auto">
-        <ul className="space-y-0.5">
+      <nav className="flex-1 px-2 py-3 overflow-y-auto">
+        <ul className="space-y-px">
           {nav.map(({ to, icon: Icon, label }) => (
             <li key={to}>
               <NavLink
                 to={to}
                 end={to === '/'}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all group ${
+                  `relative flex items-center gap-3 px-3 py-2.5 text-sm font-medium transition-colors group ${
                     isActive
-                      ? 'bg-indigo-50 text-indigo-700'
-                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                      ? 'bg-white/10 text-white'
+                      : 'text-white/55 hover:bg-white/5 hover:text-white/85'
                   }`
                 }
               >
                 {({ isActive }) => (
                   <>
-                    <Icon size={18} className={isActive ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-600'} />
-                    <span className="flex-1">{label}</span>
-                    {isActive && <ChevronRight size={14} className="text-indigo-400" />}
+                    {isActive && (
+                      <span className="absolute left-0 top-0 bottom-0 w-[3px] bg-indigo-400" />
+                    )}
+                    <Icon
+                      size={16}
+                      className={isActive ? 'text-indigo-400' : 'text-white/35 group-hover:text-white/60 transition-colors'}
+                    />
+                    <span className="flex-1 truncate">{label}</span>
                   </>
                 )}
               </NavLink>
@@ -79,19 +84,19 @@ export default function Sidebar() {
       </nav>
 
       {/* User / Company */}
-      <div className="px-4 py-4 border-t border-slate-100">
+      <div className="px-4 py-4 border-t border-white/10" style={{ background: 'rgba(0,0,0,0.2)' }}>
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold shrink-0">
+          <div className="w-8 h-8 rounded-full bg-indigo-500/25 flex items-center justify-center text-indigo-300 text-xs font-bold shrink-0">
             {user?.name.slice(0, 2).toUpperCase() ?? 'ФУ'}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-slate-700 truncate">{user?.name ?? '—'}</p>
-            <p className="text-xs text-slate-400 truncate">{company?.name ?? ''}</p>
+            <p className="text-sm font-medium text-white/90 truncate">{user?.name ?? '—'}</p>
+            <p className="text-xs text-white/35 truncate">{company?.name ?? ''}</p>
           </div>
           <button
             onClick={handleLogout}
             title="Выйти"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+            className="p-1.5 text-white/25 hover:text-red-400 transition-colors shrink-0"
           >
             <LogOut size={15} />
           </button>
