@@ -1,5 +1,6 @@
 import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
+import CategoryIcon from '../utils/categoryIcons'
 
 const MONTH_LABELS: Record<string, string> = {
   '01': 'Янв', '02': 'Фев', '03': 'Мар', '04': 'Апр',
@@ -62,7 +63,7 @@ export default function PnL() {
                   <tr key={cat.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
                     <td className="px-5 py-3 text-sm text-slate-600">
                       <span className="flex items-center gap-2">
-                        <span>{cat.icon}</span>
+                        <CategoryIcon name={cat.icon} size={14} color={cat.color} />
                         {cat.name}
                       </span>
                     </td>
@@ -96,7 +97,7 @@ export default function PnL() {
                   <tr key={cat.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
                     <td className="px-5 py-3 text-sm text-slate-600">
                       <span className="flex items-center gap-2">
-                        <span>{cat.icon}</span>
+                        <CategoryIcon name={cat.icon} size={14} color={cat.color} />
                         {cat.name}
                       </span>
                     </td>

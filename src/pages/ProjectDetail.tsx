@@ -1,5 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, FolderOpen, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import CategoryIcon from '../utils/categoryIcons'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, LineChart, Line,
@@ -79,9 +80,9 @@ export default function ProjectDetail() {
           <ArrowLeft size={18} />
         </button>
         <div className="flex items-center gap-4 flex-1">
-          <div className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
+          <div className="w-12 h-12 icon-circle flex items-center justify-center shrink-0"
             style={{ background: project.color + '20' }}>
-            <FolderOpen size={24} style={{ color: project.color }} />
+            <FolderOpen size={22} strokeWidth={1.5} style={{ color: project.color }} />
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -236,7 +237,12 @@ export default function ProjectDetail() {
                         {t.date.split('-').reverse().join('.')}
                       </td>
                       <td className="px-5 py-3 text-sm text-slate-700">
-                        {cat ? `${cat.icon} ${cat.name}` : '—'}
+                        {cat ? (
+                          <span className="flex items-center gap-2">
+                            <CategoryIcon name={cat.icon} size={14} color={cat.color} />
+                            {cat.name}
+                          </span>
+                        ) : '—'}
                       </td>
                       <td className="px-5 py-3 text-sm text-slate-500 max-w-xs truncate">
                         {t.comment || '—'}

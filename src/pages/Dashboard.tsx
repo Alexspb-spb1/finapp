@@ -6,6 +6,7 @@ import { TrendingUp, TrendingDown, Wallet, ArrowLeftRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDateShort, monthKey } from '../utils/format'
+import CategoryIcon from '../utils/categoryIcons'
 
 function MetricCard({
   label, value, sub, icon: Icon, color, trend,
@@ -20,7 +21,7 @@ function MetricCard({
           <p className="text-2xl font-bold text-slate-800 mt-1">{value}</p>
           {sub && <p className="text-xs text-slate-400 mt-0.5">{sub}</p>}
         </div>
-        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${color}`}>
+        <div className={`w-10 h-10 icon-circle flex items-center justify-center ${color}`}>
           <Icon size={20} className="text-white" />
         </div>
       </div>
@@ -238,10 +239,10 @@ export default function Dashboard() {
               return (
                 <li key={t.id} className="flex items-center gap-3">
                   <div
-                    className="w-9 h-9 rounded-xl flex items-center justify-center text-base shrink-0"
+                    className="w-9 h-9 icon-circle flex items-center justify-center shrink-0"
                     style={{ background: (cat?.color ?? '#94a3b8') + '22' }}
                   >
-                    {cat?.icon ?? '💸'}
+                    <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={15} color={cat?.color ?? '#94a3b8'} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-slate-700 truncate">{cat?.name ?? '—'}</p>
@@ -262,7 +263,7 @@ export default function Dashboard() {
           <ul className="space-y-3">
             {accounts.map(a => (
               <li key={a.id} className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: a.color + '22' }}>
+                <div className="w-9 h-9 icon-circle flex items-center justify-center shrink-0" style={{ background: a.color + '22' }}>
                   <div className="w-3 h-3 rounded-full" style={{ background: a.color }} />
                 </div>
                 <div className="flex-1">

@@ -115,8 +115,8 @@ export default function Projects() {
 
                   {/* Icon + status */}
                   <div className="flex items-start gap-3 mb-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: p.color + '20' }}>
-                      <FolderOpen size={20} style={{ color: p.color }} />
+                    <div className="w-10 h-10 icon-circle flex items-center justify-center shrink-0" style={{ background: p.color + '20' }}>
+                      <FolderOpen size={18} strokeWidth={1.5} style={{ color: p.color }} />
                     </div>
                     <div className="flex-1 min-w-0 mt-0.5">
                       <p className="text-sm font-semibold text-slate-800 truncate">{p.name}</p>

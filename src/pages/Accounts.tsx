@@ -249,8 +249,8 @@ export default function Accounts() {
                 </div>
 
                 <div className="flex items-start justify-between mb-4">
-                  <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ background: a.color + '22' }}>
-                    <Icon size={22} style={{ color: a.color }} />
+                  <div className="w-11 h-11 icon-circle flex items-center justify-center" style={{ background: a.color + '22' }}>
+                    <Icon size={20} strokeWidth={1.5} style={{ color: a.color }} />
                   </div>
                   <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-1 rounded-full">{a.currency}</span>
                 </div>

@@ -6,6 +6,7 @@ import type { Transaction, TransactionType } from '../types'
 import TransactionModal from '../components/transactions/TransactionModal'
 import TransactionEditModal from '../components/transactions/TransactionEditModal'
 import TransactionRulesModal from '../components/transactions/TransactionRulesModal'
+import CategoryIcon from '../utils/categoryIcons'
 
 // ─── Column definitions ───────────────────────────────────────────────────────
 
@@ -296,7 +297,9 @@ export default function Transactions() {
                       {/* Category */}
                       <td className="px-4 py-3.5 overflow-hidden">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-base shrink-0">{cat?.icon ?? '💸'}</span>
+                          <div className="w-6 h-6 icon-circle flex items-center justify-center shrink-0" style={{ background: (cat?.color ?? '#94a3b8') + '20' }}>
+                            <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={13} color={cat?.color ?? '#94a3b8'} />
+                          </div>
                           <span className="text-sm text-slate-700 truncate">{cat?.name ?? '—'}</span>
                         </div>
                       </td>

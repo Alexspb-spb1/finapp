@@ -27,6 +27,12 @@ body {
   display: flex;
 }
 
+/* Tighter, premium stroke for all Lucide icons */
+svg.lucide { stroke-width: 1.5px; }
+
+/* Icon containers stay circular regardless of global sharp-corner override */
+.icon-circle { border-radius: 9999px !important; }
+
 ::-webkit-scrollbar {
   width: 6px;
 }

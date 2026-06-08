@@ -2,17 +2,17 @@ import type { Account, Category, Counterparty, Transaction, Project, Transaction
 
 // Default categories every new company gets (no transactions, no accounts)
 const DEFAULT_CATEGORIES: Category[] = [
-  { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income', icon: '💰', color: '#22c55e' },
-  { id: 'cat_inc2', name: 'Прочие доходы', type: 'income', icon: '📈', color: '#10b981' },
-  { id: 'cat_inc3', name: 'Займы полученные', type: 'income', icon: '🏦', color: '#6ee7b7' },
-  { id: 'cat_exp1', name: 'Зарплата', type: 'expense', icon: '👥', color: '#ef4444' },
-  { id: 'cat_exp2', name: 'Аренда', type: 'expense', icon: '🏢', color: '#f97316' },
-  { id: 'cat_exp3', name: 'Реклама и маркетинг', type: 'expense', icon: '📣', color: '#a855f7' },
-  { id: 'cat_exp4', name: 'Закупка товаров', type: 'expense', icon: '📦', color: '#3b82f6' },
-  { id: 'cat_exp5', name: 'Налоги', type: 'expense', icon: '🏛️', color: '#64748b' },
-  { id: 'cat_exp6', name: 'Связь и интернет', type: 'expense', icon: '📡', color: '#06b6d4' },
-  { id: 'cat_exp7', name: 'Командировки', type: 'expense', icon: '✈️', color: '#8b5cf6' },
-  { id: 'cat_tr1', name: 'Внутренний перевод', type: 'transfer', icon: '🔄', color: '#94a3b8' },
+  { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',      color: '#22c55e' },
+  { id: 'cat_inc2', name: 'Прочие доходы',        type: 'income',   icon: 'BarChart2',       color: '#10b981' },
+  { id: 'cat_inc3', name: 'Займы полученные',      type: 'income',   icon: 'Banknote',        color: '#6ee7b7' },
+  { id: 'cat_exp1', name: 'Зарплата',              type: 'expense',  icon: 'Users',           color: '#ef4444' },
+  { id: 'cat_exp2', name: 'Аренда',                type: 'expense',  icon: 'Building2',       color: '#f97316' },
+  { id: 'cat_exp3', name: 'Реклама и маркетинг',   type: 'expense',  icon: 'Megaphone',       color: '#a855f7' },
+  { id: 'cat_exp4', name: 'Закупка товаров',        type: 'expense',  icon: 'Package',         color: '#3b82f6' },
+  { id: 'cat_exp5', name: 'Налоги',                type: 'expense',  icon: 'Landmark',        color: '#64748b' },
+  { id: 'cat_exp6', name: 'Связь и интернет',      type: 'expense',  icon: 'Wifi',            color: '#06b6d4' },
+  { id: 'cat_exp7', name: 'Командировки',          type: 'expense',  icon: 'Plane',           color: '#8b5cf6' },
+  { id: 'cat_tr1',  name: 'Внутренний перевод',    type: 'transfer', icon: 'ArrowLeftRight',  color: '#94a3b8' },
 ]
 
 interface CompanyData {

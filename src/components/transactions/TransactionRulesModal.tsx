@@ -3,6 +3,7 @@ import { X, Plus, Trash2, Zap, ToggleLeft, ToggleRight, ChevronRight, PlayCircle
 import { useStore } from '../../store/useStore'
 import type { TransactionRule, RuleCondition, RuleAction, RuleConditionField, RuleActionField, Transaction } from '../../types'
 import { formatCurrency, formatDate } from '../../utils/format'
+import CategoryIcon from '../../utils/categoryIcons'
 
 interface Props {
   open: boolean
@@ -189,10 +190,10 @@ export default function TransactionRulesModal({ open, onClose }: Props) {
                     return (
                       <li key={tx.id} className="flex items-center gap-3 px-5 py-3">
                         <div
-                          className="w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0"
+                          className="w-8 h-8 icon-circle flex items-center justify-center shrink-0"
                           style={{ background: (cat?.color ?? '#94a3b8') + '22' }}
                         >
-                          {cat?.icon ?? '💸'}
+                          <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={14} color={cat?.color ?? '#94a3b8'} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-slate-700 truncate">{cat?.name ?? '—'}</p>

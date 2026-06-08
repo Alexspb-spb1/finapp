@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { CheckCircle2, Clock, AlertCircle } from 'lucide-react'
 import { formatCurrency } from '../utils/format'
 import { useStore } from '../store/useStore'
+import CategoryIcon from '../utils/categoryIcons'
 
 interface CalendarItem {
   id: string
@@ -97,8 +98,8 @@ export default function Calendar() {
                 </div>
 
                 {/* Category icon */}
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base shrink-0" style={{ background: (cat?.color ?? '#94a3b8') + '22' }}>
-                  {cat?.icon ?? '💸'}
+                <div className="w-9 h-9 icon-circle flex items-center justify-center shrink-0" style={{ background: (cat?.color ?? '#94a3b8') + '22' }}>
+                  <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={15} color={cat?.color ?? '#94a3b8'} />
                 </div>
 
                 <div className="flex-1 min-w-0">
