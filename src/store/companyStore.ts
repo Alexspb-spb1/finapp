@@ -216,11 +216,34 @@ export const companyStore = {
   },
 
   batchUpdateTransactions(updates: { id: string; changes: Partial<Omit<Transaction, 'id'>> }[]) {
-    let { transactions } = state
+    let { transactions, accounts } = state
     for (const { id, changes } of updates) {
-      transactions = transactions.map(t => t.id === id ? { ...t, ...changes } : t)
+      const old = transactions.find(x => x.id === id)
+      if (!old) continue
+      const updated: Transaction = { ...old, ...changes }
+      // Reverse old balance effects
+      accounts = accounts.map(a => {
+        if (old.type === 'income'  && a.id === old.accountId)   return { ...a, balance: a.balance - old.amount }
+        if (old.type === 'expense' && a.id === old.accountId)   return { ...a, balance: a.balance + old.amount }
+        if (old.type === 'transfer') {
+          if (a.id === old.accountId)   return { ...a, balance: a.balance + old.amount }
+          if (a.id === old.toAccountId) return { ...a, balance: a.balance - old.amount }
+        }
+        return a
+      })
+      // Apply new balance effects
+      accounts = accounts.map(a => {
+        if (updated.type === 'income'  && a.id === updated.accountId)   return { ...a, balance: a.balance + updated.amount }
+        if (updated.type === 'expense' && a.id === updated.accountId)   return { ...a, balance: a.balance - updated.amount }
+        if (updated.type === 'transfer') {
+          if (a.id === updated.accountId)   return { ...a, balance: a.balance - updated.amount }
+          if (a.id === updated.toAccountId) return { ...a, balance: a.balance + updated.amount }
+        }
+        return a
+      })
+      transactions = transactions.map(t => t.id === id ? updated : t)
     }
-    state = { ...state, transactions }
+    state = { ...state, transactions, accounts }
     persist()
   },
 

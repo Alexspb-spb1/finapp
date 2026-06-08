@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { CreditCard, Banknote, Wallet, Plus, X, Trash2, Upload, FileText, Loader2, Pencil } from 'lucide-react'
+import { CreditCard, Banknote, Wallet, Bitcoin, Plus, X, Trash2, Upload, FileText, Loader2, Pencil } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency } from '../utils/format'
 import { parseBankStatement, type ParsedTransaction } from '../utils/bankStatementParser'
@@ -7,10 +7,10 @@ import StatementPreview from '../components/bank/StatementPreview'
 import type { Account, Counterparty } from '../types'
 
 const typeIcon: Record<string, React.ElementType> = {
-  bank: CreditCard, cash: Banknote, card: Wallet,
+  bank: CreditCard, cash: Banknote, card: Wallet, crypto: Bitcoin,
 }
 const typeLabel: Record<string, string> = {
-  bank: 'Банковский счёт', cash: 'Касса', card: 'Карта',
+  bank: 'Банковский счёт', cash: 'Касса', card: 'Карта', crypto: 'Криптовалюта',
 }
 const COLORS = ['#6366f1','#22c55e','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899','#14b8a6']
 

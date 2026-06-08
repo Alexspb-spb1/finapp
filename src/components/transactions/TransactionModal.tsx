@@ -76,11 +76,16 @@ export default function TransactionModal({ open, onClose }: Props) {
       tags: [],
     })
     onClose()
+    setType('income')
     setAmount('')
-    setComment('')
+    setAccountId('')
+    setToAccountId('')
+    setCategoryId('')
     setCounterpartyId('')
     setProjectId('')
-    setCategoryId('')
+    setComment('')
+    setDate(new Date().toISOString().slice(0, 10))
+    setAppliedRule(null)
   }
 
   const tabs: { t: TransactionType; label: string }[] = [

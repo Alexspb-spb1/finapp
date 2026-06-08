@@ -131,7 +131,7 @@ export default function Dashboard() {
         <MetricCard
           label="Общий баланс"
           value={formatCurrency(totalBalance)}
-          sub={`${accounts.length} счёта`}
+          sub={`${accounts.length} ${accounts.length === 1 ? 'счёт' : accounts.length < 5 ? 'счёта' : 'счётов'}`}
           icon={Wallet}
           color="bg-indigo-500"
         />

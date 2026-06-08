@@ -20,6 +20,7 @@ export default function Settings() {
   const [companyName, setCompanyName] = useState(company?.name ?? '')
   const [legalType, setLegalType] = useState<'ooo' | 'ip'>(company?.legalType ?? 'ooo')
   const [inn, setInn] = useState(company?.inn ?? '')
+  const [currency, setCurrency] = useState(company?.currency ?? 'RUB')
   const [saved, setSaved] = useState(false)
 
   const [inviteOpen, setInviteOpen] = useState(false)
@@ -34,7 +35,7 @@ export default function Settings() {
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
     if (!company) return
-    authStore.updateCompany(company.id, { name: companyName, legalType, inn })
+    authStore.updateCompany(company.id, { name: companyName, legalType, inn, currency })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -105,10 +106,14 @@ export default function Settings() {
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1.5">Валюта по умолчанию</label>
-            <select className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300">
-              <option>RUB — Российский рубль</option>
-              <option>USD — Доллар США</option>
-              <option>EUR — Евро</option>
+            <select
+              value={currency}
+              onChange={e => setCurrency(e.target.value)}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
+            >
+              <option value="RUB">RUB — Российский рубль</option>
+              <option value="USD">USD — Доллар США</option>
+              <option value="EUR">EUR — Евро</option>
             </select>
           </div>
         </div>
