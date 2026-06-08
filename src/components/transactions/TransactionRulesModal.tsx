@@ -131,7 +131,7 @@ export default function TransactionRulesModal({ open, onClose }: Props) {
   if (applyPreview) {
     const { rule, matches, changes, applied } = applyPreview
     const changeLabels = Object.entries(changes)
-      .map(([field, val]) => `${ACTION_FIELD_LABELS[field as RuleActionField]}: ${labelFor(field as RuleActionField, val ?? '')}`)
+      .map(([field, val]) => `${ACTION_FIELD_LABELS[field as RuleActionField]}: ${labelFor(field as RuleActionField, String(val ?? ''))}`)
       .join(', ')
 
     return (
