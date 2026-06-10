@@ -39,7 +39,7 @@ export default function Settings() {
 
   const users = company ? authStore.getCompanyUsers(company.id) : []
 
-  function handleProfileSave(e: React.FormEvent) {
+  async function handleProfileSave(e: React.FormEvent) {
     e.preventDefault()
     setProfileError('')
     if (!user) return
@@ -47,7 +47,7 @@ export default function Settings() {
     if (profileName  !== user.name)  payload.name  = profileName
     if (profileEmail !== user.email) payload.email = profileEmail
     if (profilePassword)             payload.password = profilePassword
-    const res = authStore.updateUser(user.id, payload)
+    const res = await authStore.updateUser(user.id, payload)
     if (!res.ok) { setProfileError('Этот email уже занят другим пользователем'); return }
     setProfilePassword('')
     setProfileSaved(true)
@@ -62,11 +62,11 @@ export default function Settings() {
     setTimeout(() => setSaved(false), 2000)
   }
 
-  function handleInvite(e: React.FormEvent) {
+  async function handleInvite(e: React.FormEvent) {
     e.preventDefault()
     setInviteError('')
     if (!company) return
-    const result = authStore.inviteUser({
+    const result = await authStore.inviteUser({
       name: inviteName,
       email: inviteEmail,
       password: invitePassword,

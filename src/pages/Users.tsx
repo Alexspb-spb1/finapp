@@ -64,13 +64,13 @@ export default function Users() {
   }
 
   // ── Submit form ─────────────────────────────────────────────────
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setFormError('')
 
     if (modal?.mode === 'add') {
       if (!company) return
-      const res = authStore.inviteUser({
+      const res = await authStore.inviteUser({
         name:      form.name,
         email:     form.email,
         password:  form.password,
@@ -85,7 +85,7 @@ export default function Users() {
       if (form.role  !== modal.target.role)  payload.role  = form.role
       if (form.password)                     payload.password = form.password
 
-      const res = authStore.updateUser(modal.target.id, payload)
+      const res = await authStore.updateUser(modal.target.id, payload)
       if (!res.ok) { setFormError('Этот email уже занят другим пользователем'); return }
     }
 
