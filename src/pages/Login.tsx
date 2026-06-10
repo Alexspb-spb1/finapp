@@ -16,8 +16,7 @@ export default function Login() {
     setError('')
     setLoading(true)
 
-    await new Promise(r => setTimeout(r, 400))
-    const result = authStore.login(email, password)
+    const result = await authStore.login(email, password)
     setLoading(false)
 
     if (result.ok) {

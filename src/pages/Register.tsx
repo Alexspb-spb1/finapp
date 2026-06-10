@@ -47,9 +47,8 @@ export default function Register() {
     e.preventDefault()
     setError('')
     setLoading(true)
-    await new Promise(r => setTimeout(r, 500))
 
-    const result = authStore.register({ name, email, password, companyName, legalType, inn: inn || undefined })
+    const result = await authStore.register({ name, email, password, companyName, legalType, inn: inn || undefined })
     setLoading(false)
 
     if (result.ok) {
@@ -57,6 +56,8 @@ export default function Register() {
     } else if (result.error === 'email_taken') {
       setStep('account')
       setError('Пользователь с таким email уже существует')
+    } else {
+      setError('Ошибка регистрации. Попробуйте ещё раз.')
     }
   }
 

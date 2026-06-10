@@ -1,197 +1,24 @@
-import type { User, Company, AuthSession } from '../types/auth'
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+} from 'firebase/auth'
+import {
+  doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
+  collection, query, where,
+} from 'firebase/firestore'
+import { auth, db } from '../lib/firebase'
+import type { User, Company } from '../types/auth'
 
-const USERS_KEY = 'finapp_users'
-const COMPANIES_KEY = 'finapp_companies'
-const SESSION_KEY = 'finapp_session'
-
-function hashPassword(password: string): string {
-  // Simple deterministic hash (not cryptographic — for demo only)
-  let hash = 0
-  for (let i = 0; i < password.length; i++) {
-    const char = password.charCodeAt(i)
-    hash = (hash << 5) - hash + char
-    hash = hash & hash
-  }
-  return hash.toString(36)
-}
-
-function loadUsers(): User[] {
-  try { return JSON.parse(localStorage.getItem(USERS_KEY) ?? '[]') } catch { return [] }
-}
-function saveUsers(users: User[]) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(users))
-}
-function loadCompanies(): Company[] {
-  try { return JSON.parse(localStorage.getItem(COMPANIES_KEY) ?? '[]') } catch { return [] }
-}
-function saveCompanies(companies: Company[]) {
-  localStorage.setItem(COMPANIES_KEY, JSON.stringify(companies))
-}
-function loadSession(): AuthSession | null {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY)
-    if (!raw) return null
-    const session: AuthSession = JSON.parse(raw)
-    if (new Date(session.expiresAt) < new Date()) {
-      localStorage.removeItem(SESSION_KEY)
-      return null
-    }
-    return session
-  } catch { return null }
-}
-function saveSession(session: AuthSession | null) {
-  if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session))
-  else localStorage.removeItem(SESSION_KEY)
-}
+// ── In-memory state ──────────────────────────────────────────────────────────
+let currentUser:    User    | null = null
+let currentCompany: Company | null = null
+let companyUsers:   User[]         = []
 
 export type AuthError = 'email_taken' | 'invalid_credentials' | 'user_not_found'
 
-export const authStore = {
-  register(params: { name: string; email: string; password: string; companyName: string; legalType: 'ooo' | 'ip'; inn?: string }): { ok: true } | { ok: false; error: AuthError } {
-    const users = loadUsers()
-    if (users.find(u => u.email.toLowerCase() === params.email.toLowerCase())) {
-      return { ok: false, error: 'email_taken' }
-    }
-
-    const companyId = 'co_' + Date.now()
-    const userId = 'u_' + Date.now()
-    const now = new Date().toISOString()
-
-    const company: Company = {
-      id: companyId,
-      name: params.companyName,
-      legalType: params.legalType,
-      inn: params.inn,
-      currency: 'RUB',
-      createdAt: now,
-      ownerId: userId,
-    }
-
-    const user: User = {
-      id: userId,
-      name: params.name,
-      email: params.email.toLowerCase(),
-      passwordHash: hashPassword(params.password),
-      role: 'admin',
-      companyId,
-      createdAt: now,
-    }
-
-    const companies = loadCompanies()
-    saveCompanies([...companies, company])
-    saveUsers([...users, user])
-
-    const session: AuthSession = {
-      userId: user.id,
-      companyId: company.id,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    }
-    saveSession(session)
-
-    notify()
-    return { ok: true }
-  },
-
-  login(email: string, password: string): { ok: true } | { ok: false; error: AuthError } {
-    const users = loadUsers()
-    const user = users.find(u => u.email === email.toLowerCase())
-    if (!user) return { ok: false, error: 'invalid_credentials' }
-    if (user.passwordHash !== hashPassword(password)) return { ok: false, error: 'invalid_credentials' }
-
-    const session: AuthSession = {
-      userId: user.id,
-      companyId: user.companyId,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    }
-    saveSession(session)
-    notify()
-    return { ok: true }
-  },
-
-  logout() {
-    saveSession(null)
-    notify()
-  },
-
-  getSession(): AuthSession | null {
-    return loadSession()
-  },
-
-  getCurrentUser(): User | null {
-    const session = loadSession()
-    if (!session) return null
-    return loadUsers().find(u => u.id === session.userId) ?? null
-  },
-
-  getCurrentCompany(): Company | null {
-    const session = loadSession()
-    if (!session) return null
-    return loadCompanies().find(c => c.id === session.companyId) ?? null
-  },
-
-  getCompanyUsers(companyId: string): User[] {
-    return loadUsers().filter(u => u.companyId === companyId)
-  },
-
-  inviteUser(params: { name: string; email: string; password: string; role: User['role']; companyId: string }): { ok: true } | { ok: false; error: AuthError } {
-    const users = loadUsers()
-    if (users.find(u => u.email.toLowerCase() === params.email.toLowerCase())) {
-      return { ok: false, error: 'email_taken' }
-    }
-    const user: User = {
-      id: 'u_' + Date.now(),
-      name: params.name,
-      email: params.email.toLowerCase(),
-      passwordHash: hashPassword(params.password),
-      role: params.role,
-      companyId: params.companyId,
-      createdAt: new Date().toISOString(),
-    }
-    saveUsers([...users, user])
-    notify()
-    return { ok: true }
-  },
-
-  removeUser(userId: string) {
-    const users = loadUsers().filter(u => u.id !== userId)
-    saveUsers(users)
-    notify()
-  },
-
-  updateCompany(companyId: string, data: Partial<Pick<Company, 'name' | 'legalType' | 'inn' | 'currency'>>) {
-    const companies = loadCompanies().map(c => c.id === companyId ? { ...c, ...data } : c)
-    saveCompanies(companies)
-    notify()
-  },
-
-  updateUser(
-    userId: string,
-    data: { name?: string; email?: string; role?: User['role']; password?: string },
-  ): { ok: true } | { ok: false; error: AuthError } {
-    const users = loadUsers()
-    // check email uniqueness if changing email
-    if (data.email) {
-      const conflict = users.find(
-        u => u.email === data.email!.toLowerCase() && u.id !== userId,
-      )
-      if (conflict) return { ok: false, error: 'email_taken' }
-    }
-    const updated = users.map(u => {
-      if (u.id !== userId) return u
-      return {
-        ...u,
-        ...(data.name  ? { name: data.name }                          : {}),
-        ...(data.email ? { email: data.email.toLowerCase() }          : {}),
-        ...(data.role  ? { role: data.role }                          : {}),
-        ...(data.password ? { passwordHash: hashPassword(data.password) } : {}),
-      }
-    })
-    saveUsers(updated)
-    notify()
-    return { ok: true }
-  },
-}
-
+// ── Pub/sub ──────────────────────────────────────────────────────────────────
 type Listener = () => void
 const listeners = new Set<Listener>()
 function notify() { listeners.forEach(fn => fn()) }
@@ -199,4 +26,203 @@ function notify() { listeners.forEach(fn => fn()) }
 export function subscribeAuth(fn: Listener) {
   listeners.add(fn)
   return () => listeners.delete(fn)
+}
+
+// ── Firebase Auth listener (fires on every tab/device) ────────────────────────
+onAuthStateChanged(auth, async firebaseUser => {
+  if (!firebaseUser) {
+    currentUser = null; currentCompany = null; companyUsers = []
+    notify(); return
+  }
+
+  try {
+    const userSnap = await getDoc(doc(db, 'users', firebaseUser.uid))
+    if (!userSnap.exists()) {
+      currentUser = null; currentCompany = null; companyUsers = []
+      notify(); return
+    }
+    currentUser = userSnap.data() as User
+
+    const [companySnap, usersSnap] = await Promise.all([
+      getDoc(doc(db, 'companies', currentUser.companyId)),
+      getDocs(query(collection(db, 'users'), where('companyId', '==', currentUser.companyId))),
+    ])
+    currentCompany = companySnap.exists() ? (companySnap.data() as Company) : null
+    companyUsers   = usersSnap.docs.map(d => d.data() as User)
+  } catch {
+    currentUser = null; currentCompany = null; companyUsers = []
+  }
+  notify()
+})
+
+// ── Default company data (new registrations) ──────────────────────────────────
+const DEFAULT_CATEGORIES = [
+  { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',     color: '#22c55e' },
+  { id: 'cat_inc2', name: 'Прочие доходы',        type: 'income',   icon: 'BarChart2',      color: '#10b981' },
+  { id: 'cat_inc3', name: 'Займы полученные',      type: 'income',   icon: 'Banknote',       color: '#6ee7b7' },
+  { id: 'cat_exp1', name: 'Зарплата',              type: 'expense',  icon: 'Users',          color: '#ef4444' },
+  { id: 'cat_exp2', name: 'Аренда',                type: 'expense',  icon: 'Building2',      color: '#f97316' },
+  { id: 'cat_exp3', name: 'Реклама и маркетинг',   type: 'expense',  icon: 'Megaphone',      color: '#a855f7' },
+  { id: 'cat_exp4', name: 'Закупка товаров',        type: 'expense',  icon: 'Package',        color: '#3b82f6' },
+  { id: 'cat_exp5', name: 'Налоги',                type: 'expense',  icon: 'Landmark',       color: '#64748b' },
+  { id: 'cat_exp6', name: 'Связь и интернет',      type: 'expense',  icon: 'Wifi',           color: '#06b6d4' },
+  { id: 'cat_exp7', name: 'Командировки',          type: 'expense',  icon: 'Plane',          color: '#8b5cf6' },
+  { id: 'cat_tr1',  name: 'Внутренний перевод',    type: 'transfer', icon: 'ArrowLeftRight', color: '#94a3b8' },
+]
+
+// ── Store ─────────────────────────────────────────────────────────────────────
+export const authStore = {
+
+  // ── Register new company owner ────────────────────────────────────────────
+  async register(params: {
+    name: string; email: string; password: string
+    companyName: string; legalType: 'ooo' | 'ip'; inn?: string
+  }): Promise<{ ok: true } | { ok: false; error: AuthError }> {
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, params.email, params.password)
+      const uid = cred.user.uid
+      const now = new Date().toISOString()
+      const companyId = 'co_' + Date.now()
+
+      const company: Company = {
+        id: companyId, name: params.companyName, legalType: params.legalType,
+        inn: params.inn, currency: 'RUB', createdAt: now, ownerId: uid,
+      }
+      const user: User = {
+        id: uid, name: params.name, email: params.email.toLowerCase(),
+        role: 'admin', companyId, createdAt: now,
+      }
+      const defaultData = {
+        accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
+        transactions: [], projects: [], rules: [],
+      }
+
+      await Promise.all([
+        setDoc(doc(db, 'users',        uid),        user),
+        setDoc(doc(db, 'companies',    companyId),  company),
+        setDoc(doc(db, 'company_data', companyId),  defaultData),
+      ])
+      return { ok: true }
+    } catch (e: any) {
+      if (e?.code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
+      return { ok: false, error: 'invalid_credentials' }
+    }
+  },
+
+  // ── Login ─────────────────────────────────────────────────────────────────
+  async login(email: string, password: string): Promise<{ ok: true } | { ok: false; error: AuthError }> {
+    try {
+      await signInWithEmailAndPassword(auth, email, password)
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'invalid_credentials' }
+    }
+  },
+
+  // ── Logout ────────────────────────────────────────────────────────────────
+  async logout() {
+    await signOut(auth)
+  },
+
+  // ── Getters ───────────────────────────────────────────────────────────────
+  getCurrentUser()    { return currentUser },
+  getCurrentCompany() { return currentCompany },
+  getCompanyUsers(_companyId: string) { return companyUsers },
+  getSession()        { return auth.currentUser ? { userId: auth.currentUser.uid, companyId: currentUser?.companyId ?? '', expiresAt: '' } : null },
+
+  // ── Invite user (REST API — keeps current admin session) ──────────────────
+  async inviteUser(params: {
+    name: string; email: string; password: string
+    role: User['role']; companyId: string
+  }): Promise<{ ok: true } | { ok: false; error: AuthError }> {
+    try {
+      const apiKey = import.meta.env.VITE_FIREBASE_API_KEY
+      const resp = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: params.email, password: params.password, returnSecureToken: false }),
+        },
+      )
+      const data = await resp.json()
+      if (!resp.ok) {
+        if (data?.error?.message?.includes('EMAIL_EXISTS')) return { ok: false, error: 'email_taken' }
+        return { ok: false, error: 'invalid_credentials' }
+      }
+
+      const uid: string = data.localId
+      const user: User = {
+        id: uid, name: params.name, email: params.email.toLowerCase(),
+        role: params.role, companyId: params.companyId, createdAt: new Date().toISOString(),
+      }
+      await setDoc(doc(db, 'users', uid), user)
+
+      // Refresh company users list
+      const snap = await getDocs(query(collection(db, 'users'), where('companyId', '==', params.companyId)))
+      companyUsers = snap.docs.map(d => d.data() as User)
+      notify()
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'invalid_credentials' }
+    }
+  },
+
+  // ── Remove user (Firestore only — no Admin SDK needed) ────────────────────
+  async removeUser(userId: string) {
+    await deleteDoc(doc(db, 'users', userId))
+    companyUsers = companyUsers.filter(u => u.id !== userId)
+    notify()
+  },
+
+  // ── Update user profile ───────────────────────────────────────────────────
+  async updateUser(
+    userId: string,
+    data: { name?: string; email?: string; role?: User['role']; password?: string },
+  ): Promise<{ ok: true } | { ok: false; error: AuthError }> {
+    try {
+      // Check email uniqueness
+      if (data.email) {
+        const conflict = companyUsers.find(u => u.email === data.email!.toLowerCase() && u.id !== userId)
+        if (conflict) return { ok: false, error: 'email_taken' }
+      }
+
+      const updates: Partial<User> = {}
+      if (data.name)  updates.name  = data.name
+      if (data.email) updates.email = data.email.toLowerCase()
+      if (data.role)  updates.role  = data.role
+
+      if (Object.keys(updates).length) {
+        await updateDoc(doc(db, 'users', userId), updates)
+      }
+
+      // If changing own password — use Firebase Auth REST API
+      if (data.password && auth.currentUser?.uid === userId) {
+        const idToken = await auth.currentUser.getIdToken()
+        await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:update?key=${import.meta.env.VITE_FIREBASE_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken, password: data.password, returnSecureToken: false }),
+          },
+        )
+      }
+
+      // Refresh local cache
+      companyUsers = companyUsers.map(u => u.id === userId ? { ...u, ...updates } : u)
+      if (currentUser?.id === userId) currentUser = { ...currentUser, ...updates }
+      notify()
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'invalid_credentials' }
+    }
+  },
+
+  // ── Update company ────────────────────────────────────────────────────────
+  async updateCompany(companyId: string, data: Partial<Pick<Company, 'name' | 'legalType' | 'inn' | 'currency'>>) {
+    await updateDoc(doc(db, 'companies', companyId), data)
+    if (currentCompany) currentCompany = { ...currentCompany, ...data }
+    notify()
+  },
 }

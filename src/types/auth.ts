@@ -1,8 +1,7 @@
 export interface User {
-  id: string
+  id: string          // Firebase Auth UID
   name: string
   email: string
-  passwordHash: string
   role: 'admin' | 'accountant' | 'viewer'
   companyId: string
   createdAt: string

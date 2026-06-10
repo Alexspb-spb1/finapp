@@ -30,7 +30,7 @@ export default function Layout() {
   useEffect(() => { setSidebarOpen(false) }, [pathname])
 
   useEffect(() => {
-    if (company?.id) companyStore.init(company.id)
+    if (company?.id) { companyStore.init(company.id) }
   }, [company?.id])
 
   return (
