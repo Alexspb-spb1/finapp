@@ -59,7 +59,7 @@ export default function CashFlow() {
   return (
     <div className="space-y-6">
       {/* Summary cards */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {['Поступления', 'Списания', 'Чистый поток'].map((key) => {
           const total = sorted.reduce((s, [, d]) => {
             if (key === 'Поступления') return s + d.income

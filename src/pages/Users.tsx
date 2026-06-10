@@ -210,7 +210,7 @@ export default function Users() {
       {/* Role legend */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
         <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Уровни доступа</h3>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {ROLES.map(r => {
             const Ic = RoleIcon[r]
             return (
@@ -293,7 +293,7 @@ export default function Users() {
               {/* Role */}
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">Роль</label>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-3 sm:grid-cols-3 gap-2">
                   {ROLES.map(r => {
                     const Ic = RoleIcon[r]
                     return (

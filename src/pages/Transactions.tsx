@@ -185,8 +185,96 @@ export default function Transactions() {
         </button>
       </div>
 
+      {/* ── Mobile card list (hidden on md+) ─────────────────────────── */}
+      <div className="md:hidden bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        {selected.size > 0 && (
+          <div className="flex items-center justify-between px-4 py-2.5 bg-indigo-50 border-b border-indigo-100">
+            <span className="text-sm font-medium text-indigo-700">Выбрано: <b>{selected.size}</b></span>
+            <div className="flex gap-2">
+              <button onClick={() => setSelected(new Set())}
+                className="text-xs text-indigo-500 px-3 py-1.5 rounded-lg hover:bg-indigo-100">
+                Снять
+              </button>
+              <button onClick={() => setBulkConfirm(true)}
+                className="text-xs text-white bg-red-500 px-3 py-1.5 rounded-lg font-medium">
+                Удалить {selected.size}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {filtered.length === 0 ? (
+          <p className="py-12 text-center text-slate-400 text-sm">Нет операций</p>
+        ) : (
+          <ul className="divide-y divide-slate-50">
+            {filtered.map(t => {
+              const cat  = categories.find(c => c.id === t.categoryId)
+              const acc  = accounts.find(a => a.id === t.accountId)
+              const cp   = counterparties.find(c => c.id === t.counterpartyId)
+              const isSel = selected.has(t.id)
+              return (
+                <li
+                  key={t.id}
+                  onClick={() => setEditTx(t)}
+                  className={`flex items-center gap-3 px-4 py-3.5 cursor-pointer active:bg-slate-50 ${isSel ? 'bg-indigo-50/60' : ''}`}
+                >
+                  {/* Checkbox */}
+                  <input
+                    type="checkbox"
+                    checked={isSel}
+                    onChange={e => { e.stopPropagation(); toggleOne(t.id) }}
+                    onClick={e => e.stopPropagation()}
+                    className="w-4 h-4 accent-indigo-600 cursor-pointer shrink-0"
+                  />
+
+                  {/* Category icon */}
+                  <div className="w-9 h-9 icon-circle flex items-center justify-center shrink-0"
+                    style={{ background: (cat?.color ?? '#94a3b8') + '20' }}>
+                    <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={15} color={cat?.color ?? '#94a3b8'} />
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-sm font-medium text-slate-700 truncate">{cat?.name ?? '—'}</span>
+                      <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                        t.type === 'income'   ? 'bg-emerald-50 text-emerald-700'
+                        : t.type === 'expense' ? 'bg-red-50 text-red-700'
+                        : 'bg-indigo-50 text-indigo-700'
+                      }`}>
+                        {t.type === 'income' ? 'Доход' : t.type === 'expense' ? 'Расход' : 'Перевод'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 truncate">
+                      {formatDate(t.date)}
+                      {acc && <span> · {acc.name}</span>}
+                      {cp  && <span> · {cp.name}</span>}
+                      {t.comment && <span> · {t.comment}</span>}
+                    </p>
+                  </div>
+
+                  {/* Amount */}
+                  <span className={`text-sm font-bold whitespace-nowrap shrink-0 ${
+                    t.type === 'income'   ? 'text-emerald-600'
+                    : t.type === 'expense' ? 'text-red-500'
+                    : 'text-indigo-500'
+                  }`}>
+                    {t.type === 'income' ? '+' : t.type === 'expense' ? '−' : '⇄'}{formatCurrency(t.amount)}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
+        <div className="px-4 py-2.5 border-t border-slate-100 bg-slate-50/50">
+          <p className="text-xs text-slate-400">Показано {filtered.length} из {transactions.length}</p>
+        </div>
+      </div>
+
+      {/* ── Desktop table (hidden below md) ───────────────────────────── */}
       {/* Table card */}
-      <div className={`bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden ${fullscreen ? 'flex-1 min-h-0' : ''}`}>
+      <div className={`hidden md:flex bg-white rounded-xl border border-slate-200 shadow-sm flex-col overflow-hidden ${fullscreen ? '!flex flex-1 min-h-0' : ''}`}>
 
         {/* Bulk action bar */}
         {selected.size > 0 && (

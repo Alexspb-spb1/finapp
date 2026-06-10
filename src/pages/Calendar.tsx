@@ -46,7 +46,7 @@ export default function Calendar() {
   return (
     <div className="space-y-4">
       {/* Summary */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
           <p className="text-xs text-slate-500">Ожидаемые поступления</p>
           <p className="text-xl font-bold text-emerald-600 mt-1">{formatCurrency(plannedIncome)}</p>
@@ -90,29 +90,37 @@ export default function Calendar() {
             const date = new Date(item.date)
             const isToday = item.date === new Date().toISOString().slice(0, 10)
             return (
-              <li key={item.id} className={`flex items-center gap-4 px-5 py-4 hover:bg-slate-50 transition-colors ${isToday ? 'bg-indigo-50/30' : ''}`}>
+              <li key={item.id} className={`flex items-center gap-3 sm:gap-4 px-4 sm:px-5 py-3.5 sm:py-4 hover:bg-slate-50 transition-colors ${isToday ? 'bg-indigo-50/30' : ''}`}>
                 {/* Date block */}
-                <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center shrink-0 ${isToday ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                <div className={`hidden sm:flex w-12 h-12 rounded-xl flex-col items-center justify-center shrink-0 ${isToday ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'}`}>
                   <span className="text-lg font-bold leading-none">{date.getDate()}</span>
                   <span className="text-xs">{date.toLocaleString('ru', { month: 'short' })}</span>
                 </div>
 
+                {/* Date — mobile compact */}
+                <div className={`sm:hidden w-10 h-10 rounded-xl flex flex-col items-center justify-center shrink-0 text-[10px] font-bold ${isToday ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                  <span className="text-base font-bold leading-none">{date.getDate()}</span>
+                  <span className="text-[9px] leading-none mt-0.5">{date.toLocaleString('ru', { month: 'short' })}</span>
+                </div>
+
                 {/* Category icon */}
-                <div className="w-9 h-9 icon-circle flex items-center justify-center shrink-0" style={{ background: (cat?.color ?? '#94a3b8') + '22' }}>
-                  <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={15} color={cat?.color ?? '#94a3b8'} />
+                <div className="w-8 h-8 sm:w-9 sm:h-9 icon-circle flex items-center justify-center shrink-0" style={{ background: (cat?.color ?? '#94a3b8') + '22' }}>
+                  <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={14} color={cat?.color ?? '#94a3b8'} />
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-700">{item.description}</p>
+                  <p className="text-sm font-medium text-slate-700 truncate">{item.description}</p>
                   <p className="text-xs text-slate-400">{cat?.name}</p>
                 </div>
 
-                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${sc.color}`}>
+                <span className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${sc.color}`}>
                   <StatusIcon size={12} />
                   {sc.label}
                 </span>
+                {/* Status icon only on mobile */}
+                <StatusIcon size={14} className={`sm:hidden shrink-0 ${sc.color.split(' ')[0].replace('bg-','text-')}`} />
 
-                <span className={`text-sm font-bold whitespace-nowrap ${item.type === 'income' ? 'text-emerald-600' : 'text-red-500'}`}>
+                <span className={`text-sm font-bold whitespace-nowrap shrink-0 ${item.type === 'income' ? 'text-emerald-600' : 'text-red-500'}`}>
                   {item.type === 'income' ? '+' : '−'}{formatCurrency(item.amount)}
                 </span>
               </li>
