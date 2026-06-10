@@ -127,8 +127,9 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Metric cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Metric cards — sticky on mobile */}
+      <div className="sticky top-0 z-10 -mx-3 px-3 sm:mx-0 sm:px-0 sm:static sm:z-auto bg-slate-50 pb-2 sm:pb-0 pt-0.5 sm:pt-0">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <MetricCard
           label="Общий баланс"
           value={formatCurrency(totalBalance)}
@@ -157,6 +158,7 @@ export default function Dashboard() {
           color="bg-amber-500"
           trend={trend(cur.income - cur.expense, prev.income - prev.expense)}
         />
+      </div>
       </div>
 
       {/* Charts row */}
