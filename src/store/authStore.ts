@@ -3,6 +3,7 @@ import {
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  sendPasswordResetEmail,
 } from 'firebase/auth'
 import {
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
@@ -122,6 +123,16 @@ export const authStore = {
   // ── Logout ────────────────────────────────────────────────────────────────
   async logout() {
     await signOut(auth)
+  },
+
+  // ── Reset password ────────────────────────────────────────────────────────
+  async resetPassword(email: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      await sendPasswordResetEmail(auth, email)
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'user_not_found' }
+    }
   },
 
   // ── Getters ───────────────────────────────────────────────────────────────
