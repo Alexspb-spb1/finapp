@@ -10,20 +10,22 @@ import {
   FolderKanban,
   Settings,
   LogOut,
+  UserCog,
 } from 'lucide-react'
 import { authStore } from '../../store/authStore'
 import { useAuth } from '../../hooks/useAuth'
 
 const nav = [
-  { to: '/',                  icon: LayoutDashboard, label: 'Дашборд'           },
-  { to: '/transactions',      icon: ArrowLeftRight,  label: 'Операции'          },
-  { to: '/reports/cashflow',  icon: TrendingUp,      label: 'ДДС'               },
-  { to: '/reports/pnl',       icon: PieChart,        label: 'P&L'               },
-  { to: '/calendar',          icon: Calendar,        label: 'Платёж. календарь' },
-  { to: '/accounts',          icon: CreditCard,      label: 'Счета'             },
-  { to: '/counterparties',    icon: Users,           label: 'Контрагенты'       },
-  { to: '/projects',          icon: FolderKanban,    label: 'Проекты'           },
-  { to: '/settings',          icon: Settings,        label: 'Настройки'         },
+  { to: '/',                  icon: LayoutDashboard, label: 'Дашборд',          adminOnly: false },
+  { to: '/transactions',      icon: ArrowLeftRight,  label: 'Операции',         adminOnly: false },
+  { to: '/reports/cashflow',  icon: TrendingUp,      label: 'ДДС',              adminOnly: false },
+  { to: '/reports/pnl',       icon: PieChart,        label: 'P&L',              adminOnly: false },
+  { to: '/calendar',          icon: Calendar,        label: 'Платёж. календарь',adminOnly: false },
+  { to: '/accounts',          icon: CreditCard,      label: 'Счета',            adminOnly: false },
+  { to: '/counterparties',    icon: Users,           label: 'Контрагенты',      adminOnly: false },
+  { to: '/projects',          icon: FolderKanban,    label: 'Проекты',          adminOnly: false },
+  { to: '/users',             icon: UserCog,         label: 'Пользователи',     adminOnly: true  },
+  { to: '/settings',          icon: Settings,        label: 'Настройки',        adminOnly: false },
 ]
 
 export default function Sidebar() {
@@ -52,7 +54,7 @@ export default function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 px-2 py-3 overflow-y-auto">
         <ul className="space-y-px">
-          {nav.map(({ to, icon: Icon, label }) => (
+          {nav.filter(item => !item.adminOnly || user?.role === 'admin').map(({ to, icon: Icon, label }) => (
             <li key={to}>
               <NavLink
                 to={to}

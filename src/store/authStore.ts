@@ -163,6 +163,33 @@ export const authStore = {
     saveCompanies(companies)
     notify()
   },
+
+  updateUser(
+    userId: string,
+    data: { name?: string; email?: string; role?: User['role']; password?: string },
+  ): { ok: true } | { ok: false; error: AuthError } {
+    const users = loadUsers()
+    // check email uniqueness if changing email
+    if (data.email) {
+      const conflict = users.find(
+        u => u.email === data.email!.toLowerCase() && u.id !== userId,
+      )
+      if (conflict) return { ok: false, error: 'email_taken' }
+    }
+    const updated = users.map(u => {
+      if (u.id !== userId) return u
+      return {
+        ...u,
+        ...(data.name  ? { name: data.name }                          : {}),
+        ...(data.email ? { email: data.email.toLowerCase() }          : {}),
+        ...(data.role  ? { role: data.role }                          : {}),
+        ...(data.password ? { passwordHash: hashPassword(data.password) } : {}),
+      }
+    })
+    saveUsers(updated)
+    notify()
+    return { ok: true }
+  },
 }
 
 type Listener = () => void

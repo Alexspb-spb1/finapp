@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { UserPlus, Trash2, X, AlertCircle } from 'lucide-react'
+import { UserPlus, Trash2, X, AlertCircle, KeyRound, User as UserIcon } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { authStore } from '../store/authStore'
 import type { User } from '../types/auth'
@@ -23,6 +23,13 @@ export default function Settings() {
   const [currency, setCurrency] = useState(company?.currency ?? 'RUB')
   const [saved, setSaved] = useState(false)
 
+  // Profile editing
+  const [profileName,     setProfileName]     = useState(user?.name  ?? '')
+  const [profileEmail,    setProfileEmail]    = useState(user?.email ?? '')
+  const [profilePassword, setProfilePassword] = useState('')
+  const [profileSaved,    setProfileSaved]    = useState(false)
+  const [profileError,    setProfileError]    = useState('')
+
   const [inviteOpen, setInviteOpen] = useState(false)
   const [inviteName, setInviteName] = useState('')
   const [inviteEmail, setInviteEmail] = useState('')
@@ -31,6 +38,21 @@ export default function Settings() {
   const [inviteError, setInviteError] = useState('')
 
   const users = company ? authStore.getCompanyUsers(company.id) : []
+
+  function handleProfileSave(e: React.FormEvent) {
+    e.preventDefault()
+    setProfileError('')
+    if (!user) return
+    const payload: Parameters<typeof authStore.updateUser>[1] = {}
+    if (profileName  !== user.name)  payload.name  = profileName
+    if (profileEmail !== user.email) payload.email = profileEmail
+    if (profilePassword)             payload.password = profilePassword
+    const res = authStore.updateUser(user.id, payload)
+    if (!res.ok) { setProfileError('Этот email уже занят другим пользователем'); return }
+    setProfilePassword('')
+    setProfileSaved(true)
+    setTimeout(() => setProfileSaved(false), 2000)
+  }
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
@@ -61,6 +83,60 @@ export default function Settings() {
 
   return (
     <div className="space-y-4 max-w-2xl">
+      {/* Profile */}
+      <form onSubmit={handleProfileSave} className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+        <div className="flex items-center gap-2 mb-4">
+          <UserIcon size={15} className="text-slate-400" />
+          <h3 className="text-sm font-semibold text-slate-700">Мой профиль</h3>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">Имя</label>
+            <input
+              value={profileName}
+              onChange={e => setProfileName(e.target.value)}
+              required
+              className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">Email</label>
+            <input
+              type="email"
+              value={profileEmail}
+              onChange={e => setProfileEmail(e.target.value)}
+              required
+              className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">
+              <span className="flex items-center gap-1.5"><KeyRound size={12} /> Новый пароль</span>
+            </label>
+            <input
+              type="password"
+              value={profilePassword}
+              onChange={e => setProfilePassword(e.target.value)}
+              placeholder="Оставьте пустым, чтобы не менять"
+              minLength={profilePassword ? 6 : undefined}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
+            />
+          </div>
+        </div>
+        {profileError && (
+          <div className="flex items-center gap-2 mt-3 bg-red-50 border border-red-200 text-red-600 rounded-xl px-4 py-3 text-sm">
+            <AlertCircle size={15} /> {profileError}
+          </div>
+        )}
+        <div className="flex items-center gap-3 mt-5">
+          <button type="submit"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors">
+            Сохранить профиль
+          </button>
+          {profileSaved && <span className="text-sm text-emerald-600 font-medium">✓ Сохранено</span>}
+        </div>
+      </form>
+
       {/* Company settings */}
       <form onSubmit={handleSave} className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
         <h3 className="text-sm font-semibold text-slate-700 mb-4">Организация</h3>
