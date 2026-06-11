@@ -156,21 +156,10 @@ onAuthStateChanged(auth, async firebaseUser => {
   notify()
 })
 
-// After Firebase has determined initial auth state:
-// if user is truly NOT logged in, emit a notification so the loading spinner stops.
-void auth.authStateReady().then(() => {
-  if (!currentUser) {
-    // Either first null was the real state, or onAuthStateChanged hasn't fired yet.
-    // Wait one tick to let any in-flight onAuthStateChanged(user) settle.
-    setTimeout(() => {
-      if (!currentUser) {
-        // Still no user after tick — truly not logged in.
-        currentUser = null; currentCompany = null; companyUsers = []
-        notify()
-      }
-    }, 100)
-  }
-})
+// For the truly-not-logged-in case: useAuth.ts has a 3-second fallback timer
+// that calls setLoading(false). That timer is enough to handle the redirect.
+// We intentionally do NOT call notify() here to avoid premature redirects
+// while Firestore reads are still in flight after authStateReady resolves.
 
 // ── Default company data (new registrations) ──────────────────────────────────
 const DEFAULT_CATEGORIES = [
