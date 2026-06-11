@@ -1,5 +1,6 @@
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore'
 import { db } from '../lib/firebase'
+import { subscribeAuth, authStore } from './authStore'
 import type { Account, Category, Counterparty, Transaction, Project, TransactionRule } from '../types'
 
 const DEFAULT_CATEGORIES: Category[] = [
@@ -307,3 +308,19 @@ export const companyStore = {
     return () => { listeners.delete(fn) }
   },
 }
+
+// ── Авто-инициализация при смене пользователя ─────────────────────────────────
+// Подписываемся на авторизацию напрямую — не зависим от того, вызовет ли Layout init()
+subscribeAuth(() => {
+  const company = authStore.getCurrentCompany()
+  if (company?.id) {
+    // Пользователь вошёл — инициализируем данные компании
+    void companyStore.init(company.id)
+  } else if (!authStore.getCurrentUser()) {
+    // Пользователь вышел — сбрасываем данные
+    currentCompanyId = null
+    state = { ...EMPTY }
+    if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null }
+    notify()
+  }
+})
