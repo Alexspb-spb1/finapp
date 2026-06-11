@@ -47,6 +47,8 @@ const lsKey = (id: string) => `company_data_${id}`
 // ── Persist: localStorage (мгновенно) + Firestore (кросс-устройства) ──────────
 function persist() {
   if (currentCompanyId) {
+    // Ставим метку времени при каждом сохранении — нужна для merge-логики
+    (state as any)._savedAt = Date.now()
     // 1. localStorage — всегда работает, мгновенно
     try { localStorage.setItem(lsKey(currentCompanyId), JSON.stringify(state)) } catch {}
     // 2. Firestore — синхронизация между устройствами
@@ -55,6 +57,11 @@ function persist() {
     })
   }
   notify()
+}
+
+// Возвращает timestamp последнего сохранения из объекта данных
+function savedAt(data: CompanyData): number {
+  return (data as any)._savedAt ?? 0
 }
 
 export const companyStore = {
@@ -79,22 +86,24 @@ export const companyStore = {
     }
 
     // 2. Затем данные из Firestore — актуальная версия с других устройств
+    // Берём Firestore только если его timestamp >= localStorage (он новее или равен)
+    // Это защищает от случая когда Firestore пуст/устарел и затирает свежие локальные данные
     try {
       const snap = await getDoc(doc(db, 'company_data', companyId))
       if (snap.exists()) {
         const fresh = snap.data() as CompanyData
         if (!fresh.rules)      fresh.rules      = []
         if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
-        state = fresh
-        try { localStorage.setItem(lsKey(companyId), JSON.stringify(state)) } catch {}
-        notify()
+        if (savedAt(fresh) >= savedAt(state)) {
+          state = fresh
+          notify()
+        }
       } else if (!lsRaw) {
         state = { ...EMPTY }
         notify()
       }
     } catch (err) {
       console.error('[companyStore] Firestore load error:', err)
-      // Если Firestore недоступен — показываем localStorage данные
     }
 
     // 3. Real-time listener — синхронизация между устройствами и вкладками
@@ -105,9 +114,11 @@ export const companyStore = {
           const fresh = docSnap.data() as CompanyData
           if (!fresh.rules)      fresh.rules      = []
           if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
-          state = fresh
-          try { localStorage.setItem(lsKey(companyId), JSON.stringify(state)) } catch {}
-          notify()
+          // Принимаем только если Firestore новее текущего состояния
+          if (savedAt(fresh) >= savedAt(state)) {
+            state = fresh
+            notify()
+          }
         }
       },
       err => { console.error('[companyStore] Firestore snapshot error:', err) },
