@@ -36,22 +36,42 @@ type Listener = () => void
 const listeners = new Set<Listener>()
 function notify() { listeners.forEach(fn => fn()) }
 
+// ── localStorage ключи ───────────────────────────────────────────────────────
+const lsKey        = (id: string) => `company_data_${id}`
+const LS_LAST_ID   = 'finapp_last_company_id'
+
 // ── In-memory state ──────────────────────────────────────────────────────────
 let currentCompanyId: string | null = null
 let state: CompanyData = { ...EMPTY }
 let unsubSnapshot: (() => void) | null = null
 
-// ── localStorage key ──────────────────────────────────────────────────────────
-const lsKey = (id: string) => `company_data_${id}`
+// ── Предзагрузка из localStorage при старте модуля ────────────────────────────
+// Данные доступны СРАЗУ, до того как Firebase вернёт авторизацию.
+// Это исключает "мигание" пустого состояния при загрузке страницы.
+;(function preload() {
+  try {
+    const lastId = localStorage.getItem(LS_LAST_ID)
+    if (!lastId) return
+    const raw = localStorage.getItem(lsKey(lastId))
+    if (!raw) return
+    const saved = JSON.parse(raw) as CompanyData
+    if (!saved.rules)      saved.rules      = []
+    if (!saved.categories) saved.categories = DEFAULT_CATEGORIES
+    state            = saved
+    currentCompanyId = lastId   // ← чтобы persist() работал сразу
+  } catch {}
+})()
 
-// ── Persist: localStorage (мгновенно) + Firestore (кросс-устройства) ──────────
+// ── Persist: localStorage (всегда) + Firestore (кросс-устройства) ────────────
 function persist() {
   if (currentCompanyId) {
-    // Ставим метку времени при каждом сохранении — нужна для merge-логики
     (state as any)._savedAt = Date.now()
-    // 1. localStorage — всегда работает, мгновенно
-    try { localStorage.setItem(lsKey(currentCompanyId), JSON.stringify(state)) } catch {}
-    // 2. Firestore — синхронизация между устройствами
+    // 1. localStorage — мгновенно, никогда не падает
+    try {
+      localStorage.setItem(LS_LAST_ID, currentCompanyId)
+      localStorage.setItem(lsKey(currentCompanyId), JSON.stringify(state))
+    } catch {}
+    // 2. Firestore — фоновая синхронизация между устройствами
     setDoc(doc(db, 'company_data', currentCompanyId), state).catch(err => {
       console.error('[companyStore] Firestore write error:', err)
     })
@@ -59,10 +79,7 @@ function persist() {
   notify()
 }
 
-// Возвращает timestamp последнего сохранения из объекта данных
-function savedAt(data: CompanyData): number {
-  return (data as any)._savedAt ?? 0
-}
+function savedAt(d: CompanyData): number { return (d as any)._savedAt ?? 0 }
 
 export const companyStore = {
   // ── Init: load data + subscribe to real-time changes ──────────────────────
@@ -321,17 +338,12 @@ export const companyStore = {
 }
 
 // ── Авто-инициализация при смене пользователя ─────────────────────────────────
-// Подписываемся на авторизацию напрямую — не зависим от того, вызовет ли Layout init()
 subscribeAuth(() => {
   const company = authStore.getCurrentCompany()
   if (company?.id) {
-    // Пользователь вошёл — инициализируем данные компании
+    // Пользователь вошёл / сменился — инициализируем данные его компании
     void companyStore.init(company.id)
-  } else if (!authStore.getCurrentUser()) {
-    // Пользователь вышел — сбрасываем данные
-    currentCompanyId = null
-    state = { ...EMPTY }
-    if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null }
-    notify()
   }
+  // При выходе НЕ сбрасываем данные — они останутся до следующего init().
+  // Это предотвращает случайную потерю данных из-за временного null-состояния Firebase.
 })
