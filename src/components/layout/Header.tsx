@@ -1,14 +1,24 @@
-import { Bell, Plus, Search, Menu } from 'lucide-react'
+import { Bell, Plus, Search, Menu, Wallet } from 'lucide-react'
 import { useState } from 'react'
 import TransactionModal from '../transactions/TransactionModal'
+import { useStore } from '../../store/useStore'
 
 interface Props {
   title: string
   onMenuClick: () => void
 }
 
+function fmt(n: number, currency: string) {
+  return new Intl.NumberFormat('ru-RU', {
+    style: 'currency', currency, maximumFractionDigits: 0,
+  }).format(n)
+}
+
 export default function Header({ title, onMenuClick }: Props) {
   const [open, setOpen] = useState(false)
+  const store = useStore()
+
+  const totalBalance = store.accounts.reduce((sum, a) => sum + a.balance, 0)
 
   return (
     <>
@@ -32,6 +42,16 @@ export default function Header({ title, onMenuClick }: Props) {
             className="bg-transparent text-sm outline-none w-full text-slate-600 placeholder:text-slate-400"
           />
         </div>
+
+        {/* Общая сумма по всем счетам */}
+        {store.accounts.length > 0 && (
+          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 shrink-0">
+            <Wallet size={14} className="text-slate-400 shrink-0" />
+            <span className="text-sm font-semibold text-slate-700 whitespace-nowrap">
+              {fmt(totalBalance, 'RUB')}
+            </span>
+          </div>
+        )}
 
         <button className="relative p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors">
           <Bell size={18} />
