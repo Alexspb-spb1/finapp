@@ -53,8 +53,12 @@ export default function Accounts() {
     setEditingId(a.id)
     setName(a.name)
     setType(a.type)
-    setBalance('')
     setColor(a.color)
+    // Вычисляем начальный остаток = текущий баланс − сумма операций
+    const inc = transactions.filter(t => t.type === 'income'   && t.accountId === a.id).reduce((s, t) => s + t.amount, 0)
+    const exp = transactions.filter(t => t.type === 'expense'  && t.accountId === a.id).reduce((s, t) => s + t.amount, 0)
+    const initialBal = a.balance - (inc - exp)
+    setBalance(String(Math.round(initialBal * 100) / 100))
     setStatementFile(null); setStatementParsed(null); setParseError('')
     setStep('form')
     setOpen(true)
@@ -92,8 +96,12 @@ export default function Accounts() {
     e.preventDefault()
 
     if (editingId) {
-      // Edit mode — only update name, type, color (balance managed by transactions)
-      store.updateAccount(editingId, { name, type, color })
+      const newInitial = parseFloat(balance.replace(/\s/g, '').replace(',', '.')) || 0
+      // Пересчитываем баланс: начальный остаток + все операции по счёту
+      const inc = transactions.filter(t => t.type === 'income'  && t.accountId === editingId).reduce((s, t) => s + t.amount, 0)
+      const exp = transactions.filter(t => t.type === 'expense' && t.accountId === editingId).reduce((s, t) => s + t.amount, 0)
+      const newBalance = newInitial + (inc - exp)
+      store.updateAccount(editingId, { name, type, color, balance: newBalance })
       resetModal()
       return
     }
@@ -334,15 +342,20 @@ export default function Accounts() {
                 </div>
               </div>
 
-              {/* Balance — only for new accounts */}
-              {!editingId && (
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1.5">Начальный остаток, ₽</label>
-                  <input value={balance} onChange={e => setBalance(e.target.value)}
-                    placeholder="0"
-                    className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
-                </div>
-              )}
+              {/* Balance — для нового счёта и при редактировании */}
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                  Начальный остаток, ₽
+                </label>
+                <input value={balance} onChange={e => setBalance(e.target.value)}
+                  placeholder="0"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
+                {editingId && (
+                  <p className="text-xs text-slate-400 mt-1.5">
+                    Текущий баланс = начальный остаток + все операции по счёту. При изменении баланс пересчитается автоматически.
+                  </p>
+                )}
+              </div>
 
               {/* Color */}
               <div>
