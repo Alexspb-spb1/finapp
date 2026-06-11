@@ -40,10 +40,18 @@ let currentCompanyId: string | null = null
 let state: CompanyData = { ...EMPTY }
 let unsubSnapshot: (() => void) | null = null
 
-// ── Persist to Firestore (fire-and-forget, optimistic) ────────────────────────
+// ── localStorage key ──────────────────────────────────────────────────────────
+const lsKey = (id: string) => `company_data_${id}`
+
+// ── Persist: localStorage (мгновенно) + Firestore (кросс-устройства) ──────────
 function persist() {
   if (currentCompanyId) {
-    setDoc(doc(db, 'company_data', currentCompanyId), state).catch(() => {/* ignore offline */})
+    // 1. localStorage — всегда работает, мгновенно
+    try { localStorage.setItem(lsKey(currentCompanyId), JSON.stringify(state)) } catch {}
+    // 2. Firestore — синхронизация между устройствами
+    setDoc(doc(db, 'company_data', currentCompanyId), state).catch(err => {
+      console.error('[companyStore] Firestore write error:', err)
+    })
   }
   notify()
 }
@@ -51,29 +59,58 @@ function persist() {
 export const companyStore = {
   // ── Init: load data + subscribe to real-time changes ──────────────────────
   async init(companyId: string) {
-    if (currentCompanyId === companyId) return
+    if (currentCompanyId === companyId && unsubSnapshot !== null) return
     currentCompanyId = companyId
 
     // Unsubscribe previous listener
     if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null }
 
-    // Initial load from Firestore
-    const snap = await getDoc(doc(db, 'company_data', companyId))
-    state = snap.exists() ? (snap.data() as CompanyData) : { ...EMPTY }
-    if (!state.rules)          state.rules          = []
-    if (!state.categories)     state.categories     = DEFAULT_CATEGORIES
-    notify()
+    // 1. Сначала данные из localStorage — мгновенно, без ожидания сети
+    const lsRaw = localStorage.getItem(lsKey(companyId))
+    if (lsRaw) {
+      try {
+        const lsData = JSON.parse(lsRaw) as CompanyData
+        if (!lsData.rules)      lsData.rules      = []
+        if (!lsData.categories) lsData.categories = DEFAULT_CATEGORIES
+        state = lsData
+        notify()
+      } catch {}
+    }
 
-    // Real-time listener — syncs across devices and tabs
-    unsubSnapshot = onSnapshot(doc(db, 'company_data', companyId), docSnap => {
-      if (docSnap.exists()) {
-        const fresh = docSnap.data() as CompanyData
+    // 2. Затем данные из Firestore — актуальная версия с других устройств
+    try {
+      const snap = await getDoc(doc(db, 'company_data', companyId))
+      if (snap.exists()) {
+        const fresh = snap.data() as CompanyData
         if (!fresh.rules)      fresh.rules      = []
         if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
         state = fresh
+        try { localStorage.setItem(lsKey(companyId), JSON.stringify(state)) } catch {}
+        notify()
+      } else if (!lsRaw) {
+        state = { ...EMPTY }
         notify()
       }
-    })
+    } catch (err) {
+      console.error('[companyStore] Firestore load error:', err)
+      // Если Firestore недоступен — показываем localStorage данные
+    }
+
+    // 3. Real-time listener — синхронизация между устройствами и вкладками
+    unsubSnapshot = onSnapshot(
+      doc(db, 'company_data', companyId),
+      docSnap => {
+        if (docSnap.exists()) {
+          const fresh = docSnap.data() as CompanyData
+          if (!fresh.rules)      fresh.rules      = []
+          if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
+          state = fresh
+          try { localStorage.setItem(lsKey(companyId), JSON.stringify(state)) } catch {}
+          notify()
+        }
+      },
+      err => { console.error('[companyStore] Firestore snapshot error:', err) },
+    )
   },
 
   // ── Getters ───────────────────────────────────────────────────────────────

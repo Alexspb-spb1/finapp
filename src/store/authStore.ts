@@ -103,6 +103,15 @@ export const authStore = {
         setDoc(doc(db, 'companies',    companyId),  company),
         setDoc(doc(db, 'company_data', companyId),  defaultData),
       ])
+
+      // Вручную обновляем in-memory state — onAuthStateChanged мог сработать
+      // ДО того как setDoc завершился, и обнаружить что doc ещё не существует.
+      // Здесь гарантируем что состояние актуально после успешной регистрации.
+      currentUser    = user
+      currentCompany = company
+      companyUsers   = [user]
+      notify()
+
       return { ok: true }
     } catch (e: any) {
       if (e?.code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
