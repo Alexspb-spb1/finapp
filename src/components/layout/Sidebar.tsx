@@ -60,7 +60,7 @@ export default function Sidebar({ open, onClose }: Props) {
       {/* Sidebar */}
       <aside
         className={`
-          fixed md:static inset-y-0 left-0 z-50 w-60 flex flex-col h-screen shrink-0
+          fixed md:static inset-y-0 left-0 z-50 w-60 flex flex-col md:h-full h-screen shrink-0
           transition-transform duration-200 ease-in-out
           ${open ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
         `}

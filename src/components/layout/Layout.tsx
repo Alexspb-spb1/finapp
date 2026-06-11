@@ -14,6 +14,7 @@ const titles: Record<string, string> = {
   '/accounts': 'Счета',
   '/counterparties': 'Контрагенты',
   '/projects': 'Проекты',
+  '/reconciliation': 'Сверка остатков',
   '/users': 'Пользователи',
   '/settings': 'Настройки',
 }
@@ -34,10 +35,13 @@ export default function Layout() {
   }, [company?.id])
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50">
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <Header title={title} onMenuClick={() => setSidebarOpen(v => !v)} />
+    <div className="flex flex-col h-screen overflow-hidden bg-slate-50">
+      {/* Хедер — на всю ширину страницы */}
+      <Header title={title} onMenuClick={() => setSidebarOpen(v => !v)} />
+
+      {/* Сайдбар + контент */}
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <main className="flex-1 overflow-y-auto p-3 sm:p-6">
           <Outlet />
         </main>
