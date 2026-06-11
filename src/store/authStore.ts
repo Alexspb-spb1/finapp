@@ -29,31 +29,147 @@ export function subscribeAuth(fn: Listener) {
   return () => listeners.delete(fn)
 }
 
+// ── Default categories (reused for recovery) ──────────────────────────────────
+const DEFAULT_CATEGORIES_AUTH = [
+  { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',     color: '#22c55e' },
+  { id: 'cat_inc2', name: 'Прочие доходы',        type: 'income',   icon: 'BarChart2',      color: '#10b981' },
+  { id: 'cat_inc3', name: 'Займы полученные',      type: 'income',   icon: 'Banknote',       color: '#6ee7b7' },
+  { id: 'cat_exp1', name: 'Зарплата',              type: 'expense',  icon: 'Users',          color: '#ef4444' },
+  { id: 'cat_exp2', name: 'Аренда',                type: 'expense',  icon: 'Building2',      color: '#f97316' },
+  { id: 'cat_exp3', name: 'Реклама и маркетинг',   type: 'expense',  icon: 'Megaphone',      color: '#a855f7' },
+  { id: 'cat_exp4', name: 'Закупка товаров',        type: 'expense',  icon: 'Package',        color: '#3b82f6' },
+  { id: 'cat_exp5', name: 'Налоги',                type: 'expense',  icon: 'Landmark',       color: '#64748b' },
+  { id: 'cat_exp6', name: 'Связь и интернет',      type: 'expense',  icon: 'Wifi',           color: '#06b6d4' },
+  { id: 'cat_exp7', name: 'Командировки',          type: 'expense',  icon: 'Plane',          color: '#8b5cf6' },
+  { id: 'cat_tr1',  name: 'Внутренний перевод',    type: 'transfer', icon: 'ArrowLeftRight', color: '#94a3b8' },
+]
+
 // ── Firebase Auth listener (fires on every tab/device) ────────────────────────
+//
+// IMPORTANT: Firebase fires onAuthStateChanged(null) on the very FIRST call
+// during page initialization — BEFORE it has checked storage for cached credentials.
+// We ignore this first null to prevent premature logout redirects.
+// The truly-not-logged-in case is handled by auth.authStateReady().
+let _firstNullConsumed = false
+
 onAuthStateChanged(auth, async firebaseUser => {
   if (!firebaseUser) {
+    if (!_firstNullConsumed) {
+      // This may be Firebase's temporary null during init — skip it.
+      // auth.authStateReady() below will handle the truly-logged-out case.
+      _firstNullConsumed = true
+      return
+    }
+    // Real logout (user explicitly signed out, or token expired)
     currentUser = null; currentCompany = null; companyUsers = []
-    notify(); return
+    notify()
+    return
   }
+
+  // User is authenticated — mark first-null as consumed
+  _firstNullConsumed = true
 
   try {
     const userSnap = await getDoc(doc(db, 'users', firebaseUser.uid))
+
     if (!userSnap.exists()) {
-      currentUser = null; currentCompany = null; companyUsers = []
-      notify(); return
+      // users/{uid} document is missing — recovery: create it from Auth data
+      const now = new Date().toISOString()
+      const companyId = 'co_' + firebaseUser.uid   // stable UID-based ID
+      const email = firebaseUser.email ?? 'user@unknown.com'
+
+      const recoveredUser: User = {
+        id: firebaseUser.uid,
+        name: firebaseUser.displayName ?? email.split('@')[0],
+        email: email.toLowerCase(),
+        role: 'admin',
+        companyId,
+        createdAt: now,
+      }
+      const recoveredCompany: Company = {
+        id: companyId, name: 'Моя компания', legalType: 'ip',
+        currency: 'RUB', createdAt: now, ownerId: firebaseUser.uid,
+      }
+
+      // Use recovered data in memory regardless of Firestore write success
+      currentUser    = recoveredUser
+      currentCompany = recoveredCompany
+      companyUsers   = [recoveredUser]
+
+      try {
+        await Promise.all([
+          setDoc(doc(db, 'users',        firebaseUser.uid), recoveredUser),
+          setDoc(doc(db, 'companies',    companyId),        recoveredCompany),
+          setDoc(doc(db, 'company_data', companyId),        {
+            accounts: [], categories: DEFAULT_CATEGORIES_AUTH, counterparties: [],
+            transactions: [], projects: [], rules: [],
+          }),
+        ])
+        console.log('[authStore] Auto-recovered missing Firestore docs for uid:', firebaseUser.uid)
+      } catch (recoveryErr) {
+        // Firestore write failed (rules or network) — but we still allow the user
+        // to use the app with in-memory + localStorage storage via the UID fallback.
+        console.warn('[authStore] Recovery write to Firestore failed (will use localStorage fallback):', recoveryErr)
+      }
+      notify()
+      return
     }
+
     currentUser = userSnap.data() as User
 
     const [companySnap, usersSnap] = await Promise.all([
       getDoc(doc(db, 'companies', currentUser.companyId)),
       getDocs(query(collection(db, 'users'), where('companyId', '==', currentUser.companyId))),
     ])
-    currentCompany = companySnap.exists() ? (companySnap.data() as Company) : null
-    companyUsers   = usersSnap.docs.map(d => d.data() as User)
-  } catch {
+
+    if (!companySnap.exists()) {
+      // companies/{companyId} is missing — auto-create it
+      const now = new Date().toISOString()
+      const recoveredCompany: Company = {
+        id: currentUser.companyId, name: 'Моя компания', legalType: 'ip',
+        currency: 'RUB', createdAt: now, ownerId: currentUser.id,
+      }
+      // Use recovered data in memory regardless of Firestore write success
+      currentCompany = recoveredCompany
+
+      try {
+        await Promise.all([
+          setDoc(doc(db, 'companies',    currentUser.companyId), recoveredCompany),
+          setDoc(doc(db, 'company_data', currentUser.companyId), {
+            accounts: [], categories: DEFAULT_CATEGORIES_AUTH, counterparties: [],
+            transactions: [], projects: [], rules: [],
+          }),
+        ])
+        console.log('[authStore] Auto-recovered missing company doc:', currentUser.companyId)
+      } catch (recoveryErr) {
+        console.warn('[authStore] Company recovery write failed (will use localStorage fallback):', recoveryErr)
+      }
+    } else {
+      currentCompany = companySnap.data() as Company
+    }
+
+    companyUsers = usersSnap.docs.map(d => d.data() as User)
+  } catch (err) {
+    console.error('[authStore] onAuthStateChanged error:', err)
     currentUser = null; currentCompany = null; companyUsers = []
   }
   notify()
+})
+
+// After Firebase has determined initial auth state:
+// if user is truly NOT logged in, emit a notification so the loading spinner stops.
+void auth.authStateReady().then(() => {
+  if (!currentUser) {
+    // Either first null was the real state, or onAuthStateChanged hasn't fired yet.
+    // Wait one tick to let any in-flight onAuthStateChanged(user) settle.
+    setTimeout(() => {
+      if (!currentUser) {
+        // Still no user after tick — truly not logged in.
+        currentUser = null; currentCompany = null; companyUsers = []
+        notify()
+      }
+    }, 100)
+  }
 })
 
 // ── Default company data (new registrations) ──────────────────────────────────

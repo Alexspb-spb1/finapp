@@ -1,5 +1,5 @@
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore'
-import { db } from '../lib/firebase'
+import { db, auth } from '../lib/firebase'
 import { subscribeAuth, authStore } from './authStore'
 import type { Account, Category, Counterparty, Transaction, Project, TransactionRule } from '../types'
 
@@ -64,17 +64,26 @@ let unsubSnapshot: (() => void) | null = null
 
 // ── Persist: localStorage (всегда) + Firestore (кросс-устройства) ────────────
 function persist() {
-  if (currentCompanyId) {
+  // Используем company ID если есть, иначе UID Firebase Auth как запасной ключ.
+  // Это гарантирует сохранение данных даже если companies/{id} не существует в Firestore.
+  const saveId = currentCompanyId ?? auth.currentUser?.uid ?? null
+
+  if (saveId) {
     (state as any)._savedAt = Date.now()
     // 1. localStorage — мгновенно, никогда не падает
     try {
-      localStorage.setItem(LS_LAST_ID, currentCompanyId)
-      localStorage.setItem(lsKey(currentCompanyId), JSON.stringify(state))
-    } catch {}
+      localStorage.setItem(LS_LAST_ID, saveId)
+      localStorage.setItem(lsKey(saveId), JSON.stringify(state))
+    } catch (e) {
+      console.error('[companyStore] localStorage write error:', e)
+    }
     // 2. Firestore — фоновая синхронизация между устройствами
-    setDoc(doc(db, 'company_data', currentCompanyId), state).catch(err => {
+    setDoc(doc(db, 'company_data', saveId), state).catch(err => {
       console.error('[companyStore] Firestore write error:', err)
     })
+    console.debug('[companyStore] persist() saved with id:', saveId, 'accounts:', state.accounts.length)
+  } else {
+    console.warn('[companyStore] persist() skipped — no saveId (currentCompanyId and auth.currentUser are both null)')
   }
   notify()
 }
@@ -340,9 +349,13 @@ export const companyStore = {
 // ── Авто-инициализация при смене пользователя ─────────────────────────────────
 subscribeAuth(() => {
   const company = authStore.getCurrentCompany()
-  if (company?.id) {
-    // Пользователь вошёл / сменился — инициализируем данные его компании
-    void companyStore.init(company.id)
+  // Если есть company.id — используем его.
+  // Иначе используем Firebase Auth UID как запасной ключ.
+  // Это гарантирует что init() вызывается даже если companies/{id} отсутствует в Firestore.
+  const initId = company?.id ?? auth.currentUser?.uid ?? null
+
+  if (initId) {
+    void companyStore.init(initId)
   }
   // При выходе НЕ сбрасываем данные — они останутся до следующего init().
   // Это предотвращает случайную потерю данных из-за временного null-состояния Firebase.
