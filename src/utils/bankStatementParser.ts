@@ -3,6 +3,7 @@ export interface ParsedTransaction {
   amount: number
   type: 'income' | 'expense'
   description: string
+  purpose?: string          // НазначениеПлатежа (отдельно от контрагента)
   counterpart?: string
   counterpartInn?: string
   counterpartAccount?: string
@@ -16,6 +17,8 @@ export interface ParseResult {
   bankName: string
   accountNumber?: string
   period?: string
+  openingBalance?: number   // НачальныйОстаток из выписки
+  closingBalance?: number   // КонечныйОстаток из выписки
   transactions: ParsedTransaction[]
   skipped: number
   errors: string[]
@@ -71,14 +74,18 @@ function parse1C(text: string): ParseResult {
   }
   if (dateStart && dateEnd) period = `${dateStart} — ${dateEnd}`
 
-  // ── Extract account from СекцияРасчСчет ─────────────────
+  // ── Extract account and balances from СекцияРасчСчет ────
+  let openingBalance: number | undefined
+  let closingBalance: number | undefined
   let inAcctSection = false
   for (const line of lines) {
     if (line === 'СекцияРасчСчет') { inAcctSection = true; continue }
     if (line === 'КонецРасчСчет') { inAcctSection = false; continue }
     if (inAcctSection) {
       const [key, val] = splitKV(line)
-      if (key === 'РасчСчет' && val) { ourAccount = val; break }
+      if (key === 'РасчСчет' && val) ourAccount = val
+      if (key === 'НачальныйОстаток' && val) { const n = parseAmount(val); if (n !== null) openingBalance = Math.abs(n) }
+      if (key === 'КонечныйОстаток'  && val) { const n = parseAmount(val); if (n !== null) closingBalance  = Math.abs(n) }
     }
   }
 
@@ -186,6 +193,7 @@ function parse1C(text: string): ParseResult {
 
     transactions.push({
       date, amount, type, description,
+      purpose:             purpose             || undefined,
       counterpart:         counterpart         || undefined,
       counterpartInn:      counterpartInn      || undefined,
       counterpartAccount:  counterpartAccount  || undefined,
@@ -208,6 +216,8 @@ function parse1C(text: string): ParseResult {
     bankName,
     accountNumber: ourAccount,
     period,
+    openingBalance,
+    closingBalance,
     transactions,
     skipped,
     errors: transactions.length === 0 ? ['Не найдено ни одной операции'] : [],

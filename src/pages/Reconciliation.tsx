@@ -95,16 +95,18 @@ function fmtDate(iso: string) {
 export default function Reconciliation() {
   const store = useStore()
 
-  const [accountId,  setAccountId]  = useState(store.accounts[0]?.id ?? '')
-  const [dateFrom,   setDateFrom]   = useState('')
-  const [dateTo,     setDateTo]     = useState('')
-  const [rows,       setRows]       = useState<MatchRow[] | null>(null)
-  const [bankTxs,    setBankTxs]    = useState<ParsedTransaction[]>([])
-  const [filter,     setFilter]     = useState<'all' | MatchStatus>('all')
-  const [fileName,   setFileName]   = useState('')
-  const [bankName,   setBankName]   = useState('')
-  const [error,      setError]      = useState('')
-  const [showAll,    setShowAll]    = useState(false)
+  const [accountId,        setAccountId]        = useState(store.accounts[0]?.id ?? '')
+  const [dateFrom,         setDateFrom]         = useState('')
+  const [dateTo,           setDateTo]           = useState('')
+  const [rows,             setRows]             = useState<MatchRow[] | null>(null)
+  const [bankTxs,          setBankTxs]          = useState<ParsedTransaction[]>([])
+  const [filter,           setFilter]           = useState<'all' | MatchStatus>('all')
+  const [fileName,         setFileName]         = useState('')
+  const [bankName,         setBankName]         = useState('')
+  const [bankOpeningBal,   setBankOpeningBal]   = useState<number | undefined>(undefined)
+  const [bankClosingBal,   setBankClosingBal]   = useState<number | undefined>(undefined)
+  const [error,            setError]            = useState('')
+  const [showAll,          setShowAll]          = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const account = store.accounts.find(a => a.id === accountId)
@@ -124,6 +126,8 @@ export default function Reconciliation() {
       }
       setBankName(result.bankName)
       setBankTxs(result.transactions)
+      setBankOpeningBal(result.openingBalance)
+      setBankClosingBal(result.closingBalance)
       runMatch(result.transactions)
     }
 
@@ -332,35 +336,113 @@ export default function Reconciliation() {
 
           {/* Account balance summary */}
           {account && (() => {
-            const appTxs = store.transactions.filter(
+            const allAccTxs = store.transactions.filter(
               t => t.accountId === accountId && (t.type === 'income' || t.type === 'expense')
             )
-            const appFiltered = appTxs.filter(t => {
+
+            // Определяем начало периода (для расчёта начального остатка)
+            const periodStart = dateFrom
+              || (bankTxs.length > 0
+                ? bankTxs.reduce((mn, t) => t.date < mn ? t.date : mn, bankTxs[0].date)
+                : '')
+
+            // Начальный остаток по программе = текущий баланс − операции начиная с periodStart
+            const appOpeningBal = periodStart
+              ? (() => {
+                  const txsFrom = allAccTxs.filter(t => t.date >= periodStart)
+                  const incFrom = txsFrom.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0)
+                  const expFrom = txsFrom.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+                  return account.balance - incFrom + expFrom
+                })()
+              : undefined
+
+            const appFiltered = allAccTxs.filter(t => {
               if (dateFrom && t.date < dateFrom) return false
               if (dateTo   && t.date > dateTo)   return false
               return true
             })
             const appInc = appFiltered.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0)
             const appExp = appFiltered.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
-            const bankInc = bankTxs.filter(t => {
+
+            const filteredBankTxs = bankTxs.filter(t => {
               if (dateFrom && t.date < dateFrom) return false
               if (dateTo   && t.date > dateTo)   return false
-              return t.type === 'income'
-            }).reduce((s, t) => s + t.amount, 0)
-            const bankExp = bankTxs.filter(t => {
-              if (dateFrom && t.date < dateFrom) return false
-              if (dateTo   && t.date > dateTo)   return false
-              return t.type === 'expense'
-            }).reduce((s, t) => s + t.amount, 0)
+              return true
+            })
+            const bankInc = filteredBankTxs.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0)
+            const bankExp = filteredBankTxs.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
 
             const diffInc = bankInc - appInc
             const diffExp = bankExp - appExp
+
+            const showBalances = bankOpeningBal !== undefined || appOpeningBal !== undefined
 
             return (
               <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
                 <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
                   <h3 className="text-sm font-semibold text-slate-700">Сводка по периоду — {account.name}</h3>
                 </div>
+
+                {/* Начальный остаток */}
+                {showBalances && (
+                  <div className="grid grid-cols-2 divide-x divide-slate-100 border-b border-slate-100 bg-indigo-50/40">
+                    <div className="px-4 py-3 space-y-1.5">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Начальный остаток</p>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-slate-400">ФинУчёт</span>
+                        <span className="font-bold text-slate-700">
+                          {appOpeningBal !== undefined ? formatCurrency(appOpeningBal) : '—'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-slate-400">Выписка</span>
+                        <span className="font-bold text-slate-700">
+                          {bankOpeningBal !== undefined ? formatCurrency(bankOpeningBal) : '—'}
+                        </span>
+                      </div>
+                      {appOpeningBal !== undefined && bankOpeningBal !== undefined && (() => {
+                        const d = bankOpeningBal - appOpeningBal
+                        return (
+                          <div className={`flex justify-between border-t border-slate-100 pt-1.5 ${Math.abs(d) < 1 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            <span className="text-xs font-medium">Расхождение</span>
+                            <span className="font-bold text-sm">
+                              {Math.abs(d) < 1 ? '✓ 0' : (d > 0 ? '+' : '') + formatCurrency(d)}
+                            </span>
+                          </div>
+                        )
+                      })()}
+                    </div>
+                    <div className="px-4 py-3 space-y-1.5">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Конечный остаток</p>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-slate-400">ФинУчёт</span>
+                        <span className="font-bold text-slate-700">
+                          {appOpeningBal !== undefined ? formatCurrency(appOpeningBal + appInc - appExp) : '—'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-slate-400">Выписка</span>
+                        <span className="font-bold text-slate-700">
+                          {bankClosingBal !== undefined ? formatCurrency(bankClosingBal) : '—'}
+                        </span>
+                      </div>
+                      {appOpeningBal !== undefined && bankClosingBal !== undefined && (() => {
+                        const appClose = appOpeningBal + appInc - appExp
+                        const d = bankClosingBal - appClose
+                        return (
+                          <div className={`flex justify-between border-t border-slate-100 pt-1.5 ${Math.abs(d) < 1 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            <span className="text-xs font-medium">Расхождение</span>
+                            <span className="font-bold text-sm">
+                              {Math.abs(d) < 1 ? '✓ 0' : (d > 0 ? '+' : '') + formatCurrency(d)}
+                            </span>
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  </div>
+                )}
+
+                {/* Обороты */}
                 <div className="grid grid-cols-3 divide-x divide-slate-100 text-sm">
                   {[
                     { label: 'Поступления', app: appInc, bank: bankInc, diff: diffInc },
@@ -408,22 +490,33 @@ export default function Reconciliation() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/50">
-                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-4 py-2.5 w-28">Статус</th>
-                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 py-2.5 w-28">Дата (выписка)</th>
-                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 py-2.5 w-28">Дата (учёт)</th>
-                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 py-2.5">Описание</th>
+                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-4 py-2.5 w-32">Статус</th>
+                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 py-2.5 w-24">Дата выписки</th>
+                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 py-2.5 w-24">Дата учёта</th>
+                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 py-2.5 w-40">Контрагент</th>
+                    <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 py-2.5">Назначение платежа</th>
                     <th className="text-right text-xs font-semibold text-slate-400 uppercase tracking-wide px-4 py-2.5 w-36">Сумма (выписка)</th>
                     <th className="text-right text-xs font-semibold text-slate-400 uppercase tracking-wide px-4 py-2.5 w-36">Сумма (учёт)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {displayRows.map((row, i) => {
-                    const cfg = statusCfg[row.status]
-                    const bankAmt = row.bankTx?.amount
-                    const appAmt  = row.appTx?.amount
+                    const cfg      = statusCfg[row.status]
+                    const bankAmt  = row.bankTx?.amount
+                    const appAmt   = row.appTx?.amount
                     const bankType = row.bankTx?.type
                     const appType  = row.appTx?.type
-                    const desc = row.bankTx?.description || row.appTx?.comment || '—'
+
+                    // Контрагент: из выписки или из справочника учёта
+                    const bankCp   = row.bankTx?.counterpart || ''
+                    const appCp    = row.appTx?.counterpartyId
+                      ? (store.counterparties.find(c => c.id === row.appTx!.counterpartyId)?.name ?? '')
+                      : ''
+                    const showBothCp = bankCp && appCp && bankCp.toLowerCase() !== appCp.toLowerCase()
+
+                    // Назначение: из выписки (purpose) или из учёта (comment)
+                    const bankPurpose = row.bankTx?.purpose || ''
+                    const appComment  = row.appTx?.comment  || ''
 
                     return (
                       <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
@@ -440,9 +533,33 @@ export default function Reconciliation() {
                           {row.appTx ? fmtDate(row.appTx.date) : '—'}
                           {row.dateDiff ? <span className="ml-1 text-amber-500">(±{row.dateDiff}д)</span> : null}
                         </td>
-                        <td className="px-3 py-2.5 text-slate-600 max-w-xs truncate" title={desc}>
-                          {desc}
+
+                        {/* Контрагент */}
+                        <td className="px-3 py-2.5 max-w-[160px]">
+                          {bankCp ? (
+                            <p className="text-xs text-slate-700 truncate" title={bankCp}>{bankCp}</p>
+                          ) : null}
+                          {showBothCp ? (
+                            <p className="text-xs text-slate-400 truncate mt-0.5" title={appCp}>
+                              <span className="text-slate-300">учёт: </span>{appCp}
+                            </p>
+                          ) : (!bankCp && appCp) ? (
+                            <p className="text-xs text-slate-600 truncate" title={appCp}>{appCp}</p>
+                          ) : null}
+                          {!bankCp && !appCp && <span className="text-slate-300 text-xs">—</span>}
                         </td>
+
+                        {/* Назначение платежа */}
+                        <td className="px-3 py-2.5 max-w-xs">
+                          {bankPurpose ? (
+                            <p className="text-xs text-slate-600 truncate" title={bankPurpose}>{bankPurpose}</p>
+                          ) : appComment ? (
+                            <p className="text-xs text-slate-500 truncate" title={appComment}>{appComment}</p>
+                          ) : (
+                            <span className="text-slate-300 text-xs">—</span>
+                          )}
+                        </td>
+
                         <td className={`px-4 py-2.5 font-semibold text-right whitespace-nowrap ${bankType === 'income' ? 'text-emerald-600' : bankType === 'expense' ? 'text-red-500' : 'text-slate-400'}`}>
                           {bankAmt != null
                             ? (bankType === 'income' ? '+' : '−') + formatCurrency(bankAmt)
@@ -459,7 +576,7 @@ export default function Reconciliation() {
 
                   {visibleRows.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="text-center py-10 text-slate-400 text-sm">
+                      <td colSpan={7} className="text-center py-10 text-slate-400 text-sm">
                         Нет строк с выбранным статусом
                       </td>
                     </tr>
