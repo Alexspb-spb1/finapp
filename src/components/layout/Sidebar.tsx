@@ -12,6 +12,7 @@ import {
   LogOut,
   UserCog,
   X,
+  GitCompare,
 } from 'lucide-react'
 import { authStore } from '../../store/authStore'
 import { useAuth } from '../../hooks/useAuth'
@@ -25,6 +26,7 @@ const nav = [
   { to: '/accounts',          icon: CreditCard,      label: 'Счета',             adminOnly: false },
   { to: '/counterparties',    icon: Users,           label: 'Контрагенты',       adminOnly: false },
   { to: '/projects',          icon: FolderKanban,    label: 'Проекты',           adminOnly: false },
+  { to: '/reconciliation',    icon: GitCompare,      label: 'Сверка остатков',   adminOnly: false },
   { to: '/users',             icon: UserCog,         label: 'Пользователи',      adminOnly: true  },
   { to: '/settings',          icon: Settings,        label: 'Настройки',         adminOnly: false },
 ]
