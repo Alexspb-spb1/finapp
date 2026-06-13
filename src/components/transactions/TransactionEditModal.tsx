@@ -23,7 +23,12 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
   const [categoryId,     setCategoryId]     = useState(transaction.categoryId)
   const [counterpartyId, setCounterpartyId] = useState(transaction.counterpartyId ?? '')
   const [projectId,      setProjectId]      = useState(transaction.projectId ?? '')
-  const [comment,        setComment]        = useState(transaction.comment ?? '')
+  const [comment,        setComment]        = useState(() => {
+    const raw = transaction.comment ?? ''
+    // Убираем префикс «Контрагент | » если он есть (формат импорта из банка)
+    const pipe = raw.indexOf(' | ')
+    return pipe !== -1 ? raw.slice(pipe + 3) : raw
+  })
 
   const filteredCats = categories.filter(c => c.type === type)
   const selectedCp   = counterparties.find(c => c.id === counterpartyId)

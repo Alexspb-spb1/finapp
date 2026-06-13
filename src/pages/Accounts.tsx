@@ -188,7 +188,8 @@ export default function Accounts() {
         accountId: pendingAccountId,
         categoryId: t.type === 'income' ? 'cat_inc1' : 'cat_exp1',
         counterpartyId: cpName ? nameToId.get(cpName.toLowerCase()) : undefined,
-        comment: t.description,
+        // Сохраняем только назначение платежа, без имени контрагента
+        comment: t.purpose ?? (t.description.includes(' | ') ? t.description.slice(t.description.indexOf(' | ') + 3) : t.description),
         tags: [],
       })
     }
