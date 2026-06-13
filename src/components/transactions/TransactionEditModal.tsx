@@ -34,8 +34,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
   const selectedCp   = counterparties.find(c => c.id === counterpartyId)
   const selectedAcc  = accounts.find(a => a.id === accountId)
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+  function handleSave() {
     const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
     if (!num || num <= 0) {
       setAmountError('Введите сумму больше 0')
@@ -78,7 +77,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4 overflow-y-auto">
+        <div className="px-6 py-5 space-y-4 overflow-y-auto">
 
           {/* Type tabs */}
           <div className="flex gap-2">
@@ -261,7 +260,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               className="flex-1 py-2.5 rounded-lg border border-slate-200 text-sm text-slate-600 font-medium hover:bg-slate-50 transition">
               Отмена
             </button>
-            <button type="submit"
+            <button type="button" onClick={handleSave}
               className={`flex-1 py-2.5 rounded-lg text-white text-sm font-medium transition ${
                 type === 'income'   ? 'bg-emerald-500 hover:bg-emerald-600'
                 : type === 'expense' ? 'bg-red-500 hover:bg-red-600'
@@ -270,7 +269,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               Сохранить
             </button>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   )
