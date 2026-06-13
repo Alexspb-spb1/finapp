@@ -460,7 +460,7 @@ function ConditionRow({ cond, onChange, onRemove, canRemove, accounts, categorie
         )}
         {cond.field === 'accountId' && accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
         {cond.field === 'counterpartyId' && counterparties.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        {cond.field === 'categoryId' && categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+        {cond.field === 'categoryId' && categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         {cond.field === 'projectId' && projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
       </select>
 
@@ -519,7 +519,7 @@ function ActionRow({ act, onChange, onRemove, canRemove, accounts, categories, c
           onChange={e => onChange({ ...act, value: e.target.value })}
           className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
         >
-          {act.field === 'categoryId' && categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+          {act.field === 'categoryId' && categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           {act.field === 'projectId' && (
             <>
               <option value="">— Без проекта —</option>
