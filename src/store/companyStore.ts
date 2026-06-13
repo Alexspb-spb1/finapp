@@ -311,6 +311,14 @@ export const companyStore = {
     state = { ...state, categories: [...state.categories, cat] }
     persist()
   },
+  updateCategory(id: string, changes: Partial<Omit<Category, 'id'>>) {
+    state = { ...state, categories: state.categories.map(c => c.id === id ? { ...c, ...changes } : c) }
+    persist()
+  },
+  deleteCategory(id: string) {
+    state = { ...state, categories: state.categories.filter(c => c.id !== id) }
+    persist()
+  },
 
   // ── Projects ──────────────────────────────────────────────────────────────
   addProject(p: Project) {
