@@ -110,7 +110,7 @@ const COLS = [
   { key: 'counterparty', label: 'Контрагент',       defaultW: 130, minW: 80  },
   { key: 'cp_account',   label: 'Банк контрагента', defaultW: 155, minW: 100 },
   { key: 'project',      label: 'Проект',           defaultW: 110, minW: 80  },
-  { key: 'comment',      label: 'Комментарий',      defaultW: 190, minW: 80  },
+  { key: 'comment',      label: 'Назначение платежа', defaultW: 190, minW: 80  },
   { key: 'amount',       label: 'Сумма',            defaultW: 130, minW: 80  },
 ] as const
 
@@ -133,7 +133,6 @@ export default function Transactions() {
   const [editTx,       setEditTx]       = useState<Transaction | null>(null)
   const [fullscreen,   setFullscreen]   = useState(false)
   const [colWidths,    setColWidths]    = useState<ColWidths>(DEFAULT_WIDTHS)
-  const [tableH,       setTableH]       = useState(480)
   const [selected,     setSelected]     = useState<Set<string>>(new Set())
   const [bulkConfirm,  setBulkConfirm]  = useState(false)
   const [inlineEdit,   setInlineEdit]   = useState<InlineEdit | null>(null)
@@ -182,20 +181,6 @@ export default function Transactions() {
       setColWidths(prev => ({ ...prev, [k]: Math.max(MIN_WIDTHS[k], colResizeStartW.current + ev.clientX - colResizeStartX.current) }))
     }
     function onUp() { colResizeKey.current = null; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup',   onUp)
-  }
-
-  // ── Table height resize ────────────────────────────────────────────────────
-  const tblResizeStartY = useRef(0)
-  const tblResizeStartH = useRef(0)
-
-  function startTableResize(e: React.MouseEvent) {
-    e.preventDefault()
-    tblResizeStartY.current = e.clientY
-    tblResizeStartH.current = tableH
-    function onMove(ev: MouseEvent) { setTableH(Math.max(200, Math.min(1200, tblResizeStartH.current + ev.clientY - tblResizeStartY.current))) }
-    function onUp() { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup',   onUp)
   }
@@ -408,7 +393,7 @@ export default function Transactions() {
         )}
 
         {/* Scroll area */}
-        <div className="overflow-auto" style={fullscreen ? { flex: 1 } : { height: tableH }}>
+        <div className={`overflow-auto ${fullscreen ? 'flex-1' : ''}`}>
           <table style={{ tableLayout: 'fixed', minWidth: totalW, width: '100%' }}>
             <colgroup>
               <col style={{ width: 32 }} />
@@ -586,26 +571,12 @@ export default function Transactions() {
         </div>
 
         {/* Status bar */}
-        <div className="px-5 py-2 border-t border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/50">
+        <div className="px-5 py-2 border-t border-slate-100 flex items-center shrink-0 bg-slate-50/50">
           <p className="text-xs text-slate-400">
             Показано {filtered.length} из {transactions.length}
             {selected.size > 0 && <span className="text-indigo-500 font-medium"> · выбрано {selected.size}</span>}
           </p>
-          {!fullscreen && (
-            <p className="text-xs text-slate-300 select-none">
-              ↕ потяните за нижнюю полосу · ↔ потяните за край колонки
-            </p>
-          )}
         </div>
-
-        {/* Resize handle */}
-        {!fullscreen && (
-          <div
-            onMouseDown={startTableResize}
-            className="h-2 shrink-0 bg-slate-100 hover:bg-indigo-200 active:bg-indigo-300 cursor-ns-resize transition-colors flex items-center justify-center">
-            <div className="w-10 h-0.5 bg-slate-300 rounded-full pointer-events-none" />
-          </div>
-        )}
       </div>
 
       {/* Bulk delete confirm */}
