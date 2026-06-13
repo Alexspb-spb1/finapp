@@ -420,21 +420,46 @@ export default function Reconciliation() {
                           {appOpeningBal !== undefined ? formatCurrency(appOpeningBal + appInc - appExp) : '—'}
                         </span>
                       </div>
+                      {/* Конечный по выписке считается из транзакций (согласованно с ФинУчётом) */}
                       <div className="flex justify-between items-center">
-                        <span className="text-xs text-slate-400">Выписка</span>
+                        <span className="text-xs text-slate-400">Выписка (расчёт)</span>
                         <span className="font-bold text-slate-700">
-                          {bankClosingBal !== undefined ? formatCurrency(bankClosingBal) : '—'}
+                          {bankOpeningBal !== undefined ? formatCurrency(bankOpeningBal + bankInc - bankExp) : '—'}
                         </span>
                       </div>
-                      {appOpeningBal !== undefined && bankClosingBal !== undefined && (() => {
-                        const appClose = appOpeningBal + appInc - appExp
-                        const d = bankClosingBal - appClose
+                      {appOpeningBal !== undefined && bankOpeningBal !== undefined && (() => {
+                        const appClose  = appOpeningBal  + appInc  - appExp
+                        const bankClose = bankOpeningBal + bankInc - bankExp
+                        const d = bankClose - appClose
                         return (
                           <div className={`flex justify-between border-t border-slate-100 pt-1.5 ${Math.abs(d) < 1 ? 'text-emerald-600' : 'text-red-500'}`}>
                             <span className="text-xs font-medium">Расхождение</span>
                             <span className="font-bold text-sm">
                               {Math.abs(d) < 1 ? '✓ 0' : (d > 0 ? '+' : '') + formatCurrency(d)}
                             </span>
+                          </div>
+                        )
+                      })()}
+                      {/* Фактический остаток из файла (КонечныйОстаток) — может отличаться из-за банковских комиссий, процентов и др. */}
+                      {bankClosingBal !== undefined && (() => {
+                        const bankCalc = bankOpeningBal !== undefined ? bankOpeningBal + bankInc - bankExp : undefined
+                        const hidden = bankCalc !== undefined && Math.abs(bankClosingBal - bankCalc) < 1
+                        if (hidden) return null
+                        const delta = bankCalc !== undefined ? bankClosingBal - bankCalc : undefined
+                        return (
+                          <div className="mt-1 pt-1.5 border-t border-dashed border-slate-200 space-y-1">
+                            <div className="flex justify-between items-center">
+                              <span className="text-xs text-slate-400">Файл банка (факт)</span>
+                              <span className="font-semibold text-slate-600">{formatCurrency(bankClosingBal)}</span>
+                            </div>
+                            {delta !== undefined && Math.abs(delta) >= 1 && (
+                              <div className="flex justify-between items-center text-amber-600">
+                                <span className="text-xs">Вне выписки</span>
+                                <span className="text-xs font-semibold" title="Комиссии, проценты, прочие банковские проводки не вошедшие в список операций">
+                                  {delta > 0 ? '+' : ''}{formatCurrency(delta)} ⚠
+                                </span>
+                              </div>
+                            )}
                           </div>
                         )
                       })()}
