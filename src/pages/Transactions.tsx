@@ -8,6 +8,98 @@ import TransactionEditModal from '../components/transactions/TransactionEditModa
 import TransactionRulesModal from '../components/transactions/TransactionRulesModal'
 import CategoryIcon from '../utils/categoryIcons'
 
+// ─── Inline edit cell ─────────────────────────────────────────────────────────
+interface InlineEdit { id: string; field: 'amount' | 'comment'; value: string }
+
+function InlineAmountCell({
+  tx, onStart, active, editVal, onChange, onSave, onCancel,
+}: {
+  tx: Transaction
+  onStart: () => void
+  active: boolean
+  editVal: string
+  onChange: (v: string) => void
+  onSave: () => void
+  onCancel: () => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (active) inputRef.current?.select() }, [active])
+
+  if (active) {
+    return (
+      <td className="px-2 py-2" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-1">
+          <input
+            ref={inputRef}
+            value={editVal}
+            onChange={e => onChange(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') onSave(); if (e.key === 'Escape') onCancel() }}
+            onBlur={onSave}
+            className="w-full border border-indigo-400 rounded px-2 py-1 text-sm font-semibold text-right outline-none focus:ring-2 focus:ring-indigo-300"
+          />
+        </div>
+      </td>
+    )
+  }
+  return (
+    <td
+      className={`px-4 py-3.5 text-sm font-semibold text-right whitespace-nowrap overflow-hidden cursor-text group/cell ${
+        tx.type === 'income' ? 'text-emerald-600' : tx.type === 'expense' ? 'text-red-500' : 'text-indigo-500'
+      }`}
+      onClick={e => { e.stopPropagation(); onStart() }}
+      title="Нажмите для редактирования"
+    >
+      {tx.type === 'income' ? '+' : tx.type === 'expense' ? '−' : '⇄'}{formatCurrency(tx.amount)}
+      <span className="ml-1 opacity-0 group-hover/cell:opacity-40 text-xs">✏</span>
+    </td>
+  )
+}
+
+function InlineCommentCell({
+  tx, onStart, active, editVal, onChange, onSave, onCancel,
+}: {
+  tx: Transaction
+  onStart: () => void
+  active: boolean
+  editVal: string
+  onChange: (v: string) => void
+  onSave: () => void
+  onCancel: () => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (active) inputRef.current?.focus() }, [active])
+
+  if (active) {
+    return (
+      <td className="px-2 py-2" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-1">
+          <input
+            ref={inputRef}
+            value={editVal}
+            onChange={e => onChange(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') onSave(); if (e.key === 'Escape') onCancel() }}
+            onBlur={onSave}
+            placeholder="Назначение платежа..."
+            className="w-full border border-indigo-400 rounded px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+          />
+        </div>
+      </td>
+    )
+  }
+  return (
+    <td
+      className="px-4 py-3.5 text-sm text-slate-500 overflow-hidden cursor-text group/cell"
+      onClick={e => { e.stopPropagation(); onStart() }}
+      title="Нажмите для редактирования"
+    >
+      <span className="block truncate">
+        {tx.comment || <span className="text-slate-300 italic">— нажмите для ввода</span>}
+        <span className="ml-1 opacity-0 group-hover/cell:opacity-40 text-xs">✏</span>
+      </span>
+    </td>
+  )
+}
+
 // ─── Column definitions ───────────────────────────────────────────────────────
 
 const COLS = [
@@ -44,6 +136,26 @@ export default function Transactions() {
   const [tableH,       setTableH]       = useState(480)
   const [selected,     setSelected]     = useState<Set<string>>(new Set())
   const [bulkConfirm,  setBulkConfirm]  = useState(false)
+  const [inlineEdit,   setInlineEdit]   = useState<InlineEdit | null>(null)
+
+  // ── Inline edit helpers ────────────────────────────────────────────────────
+  function startInline(id: string, field: 'amount' | 'comment', current: string) {
+    setInlineEdit({ id, field, value: current })
+  }
+
+  function saveInline() {
+    if (!inlineEdit) return
+    const { id, field, value } = inlineEdit
+    if (field === 'amount') {
+      const num = parseFloat(value.replace(/\s/g, '').replace(',', '.'))
+      if (num > 0) store.updateTransaction(id, { amount: num })
+    } else {
+      store.updateTransaction(id, { comment: value })
+    }
+    setInlineEdit(null)
+  }
+
+  function cancelInline() { setInlineEdit(null) }
 
   const checkAllRef = useRef<HTMLInputElement>(null)
 
@@ -418,19 +530,27 @@ export default function Transactions() {
                         }
                       </td>
 
-                      {/* Comment */}
-                      <td className="px-4 py-3.5 text-sm text-slate-500 overflow-hidden">
-                        <span className="block truncate">{t.comment || '—'}</span>
-                      </td>
+                      {/* Comment — inline editable */}
+                      <InlineCommentCell
+                        tx={t}
+                        onStart={() => startInline(t.id, 'comment', t.comment ?? '')}
+                        active={inlineEdit?.id === t.id && inlineEdit?.field === 'comment'}
+                        editVal={inlineEdit?.id === t.id && inlineEdit?.field === 'comment' ? inlineEdit.value : ''}
+                        onChange={v => setInlineEdit(prev => prev ? { ...prev, value: v } : null)}
+                        onSave={saveInline}
+                        onCancel={cancelInline}
+                      />
 
-                      {/* Amount */}
-                      <td className={`px-4 py-3.5 text-sm font-semibold text-right whitespace-nowrap overflow-hidden ${
-                        t.type === 'income'   ? 'text-emerald-600'
-                        : t.type === 'expense' ? 'text-red-500'
-                        : 'text-indigo-500'
-                      }`}>
-                        {t.type === 'income' ? '+' : t.type === 'expense' ? '−' : '⇄'}{formatCurrency(t.amount)}
-                      </td>
+                      {/* Amount — inline editable */}
+                      <InlineAmountCell
+                        tx={t}
+                        onStart={() => startInline(t.id, 'amount', String(t.amount))}
+                        active={inlineEdit?.id === t.id && inlineEdit?.field === 'amount'}
+                        editVal={inlineEdit?.id === t.id && inlineEdit?.field === 'amount' ? inlineEdit.value : ''}
+                        onChange={v => setInlineEdit(prev => prev ? { ...prev, value: v } : null)}
+                        onSave={saveInline}
+                        onCancel={cancelInline}
+                      />
 
                       {/* Edit */}
                       <td className="px-2 py-3.5 text-center">

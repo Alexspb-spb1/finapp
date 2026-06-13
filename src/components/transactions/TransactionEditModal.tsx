@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { X, Building2 } from 'lucide-react'
+import { X, Building2, AlertCircle } from 'lucide-react'
 import type { Transaction, TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
 
@@ -16,6 +16,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
 
   const [type,           setType]           = useState<TransactionType>(transaction.type)
   const [amount,         setAmount]         = useState(String(transaction.amount))
+  const [amountError,    setAmountError]    = useState('')
   const [date,           setDate]           = useState(transaction.date)
   const [accountId,      setAccountId]      = useState(transaction.accountId)
   const [toAccountId,    setToAccountId]    = useState(transaction.toAccountId ?? '')
@@ -31,7 +32,11 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
-    if (!num || num <= 0) return
+    if (!num || num <= 0) {
+      setAmountError('Введите сумму больше 0')
+      return
+    }
+    setAmountError('')
     store.updateTransaction(transaction.id, {
       type,
       amount: num,
@@ -94,11 +99,17 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               <input
                 type="text"
                 value={amount}
-                onChange={e => setAmount(e.target.value)}
+                onChange={e => { setAmount(e.target.value); setAmountError('') }}
                 placeholder="0"
-                required
-                className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-xl font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-300"
+                className={`w-full border rounded-lg px-3 py-2.5 text-xl font-semibold text-slate-800 outline-none focus:ring-2 transition ${
+                  amountError ? 'border-red-400 focus:ring-red-300' : 'border-slate-200 focus:ring-indigo-300'
+                }`}
               />
+              {amountError && (
+                <p className="mt-1 text-xs text-red-500 flex items-center gap-1">
+                  <AlertCircle size={11} /> {amountError}
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1.5">Дата</label>
@@ -227,14 +238,14 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
             </div>
           )}
 
-          {/* Comment */}
+          {/* Comment / Назначение платежа */}
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">Комментарий</label>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">Назначение платежа</label>
             <textarea
               value={comment}
               onChange={e => setComment(e.target.value)}
-              placeholder="Необязательно"
-              rows={3}
+              placeholder="Введите назначение платежа..."
+              rows={2}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
             />
           </div>
