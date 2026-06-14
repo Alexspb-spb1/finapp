@@ -84,8 +84,8 @@ function parse1C(text: string): ParseResult {
     if (inAcctSection) {
       const [key, val] = splitKV(line)
       if (key === 'РасчСчет' && val) ourAccount = val
-      if (key === 'НачальныйОстаток' && val) { const n = parseAmount(val); if (n !== null) openingBalance = Math.abs(n) }
-      if (key === 'КонечныйОстаток'  && val) { const n = parseAmount(val); if (n !== null) closingBalance  = Math.abs(n) }
+      if (key === 'НачальныйОстаток' && val) { const n = parseAmount(val); if (n !== null) openingBalance = n }
+      if (key === 'КонечныйОстаток'  && val) { const n = parseAmount(val); if (n !== null) closingBalance  = n }
     }
   }
 

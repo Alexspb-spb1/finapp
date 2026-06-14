@@ -177,6 +177,10 @@ export default function Accounts() {
     }
 
     // ── Add transactions with counterparty links ────────────────────────────
+    // Статья по умолчанию — первая существующая категория нужного типа.
+    // Не хардкодим cat_inc1/cat_exp1: их можно удалить в Настройках.
+    const firstInc = store.categories.find(c => c.type === 'income')?.id ?? ''
+    const firstExp = store.categories.find(c => c.type === 'expense')?.id ?? ''
     const sorted = [...selected].sort((a, b) => a.date.localeCompare(b.date))
     for (const t of sorted) {
       const cpName = t.counterpart?.trim()
@@ -186,7 +190,7 @@ export default function Accounts() {
         type: t.type,
         amount: t.amount,
         accountId: pendingAccountId,
-        categoryId: t.type === 'income' ? 'cat_inc1' : 'cat_exp1',
+        categoryId: t.type === 'income' ? firstInc : firstExp,
         counterpartyId: cpName ? nameToId.get(cpName.toLowerCase()) : undefined,
         // Сохраняем только назначение платежа, без имени контрагента
         comment: t.purpose ?? (t.description.includes(' | ') ? t.description.slice(t.description.indexOf(' | ') + 3) : t.description),

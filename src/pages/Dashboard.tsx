@@ -93,7 +93,7 @@ export default function Dashboard() {
   const prev = monthData[prevMonth] ?? { income: 0, expense: 0 }
 
   function trend(cur: number, prev: number) {
-    if (!prev) return 0
+    if (!prev) return cur > 0 ? 100 : 0
     return ((cur - prev) / prev) * 100
   }
 
