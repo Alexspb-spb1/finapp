@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap } from 'lucide-react'
+import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
 import type { Transaction, TransactionType } from '../types'
 import TransactionModal from '../components/transactions/TransactionModal'
 import TransactionEditModal from '../components/transactions/TransactionEditModal'
 import TransactionRulesModal from '../components/transactions/TransactionRulesModal'
+import DuplicateCheckerModal from '../components/transactions/DuplicateCheckerModal'
 import CategoryIcon from '../utils/categoryIcons'
 
 // ─── Inline edit cell ─────────────────────────────────────────────────────────
@@ -135,6 +136,7 @@ export default function Transactions() {
   const [search,       setSearch]       = useState('')
   const [addOpen,      setAddOpen]      = useState(false)
   const [rulesOpen,    setRulesOpen]    = useState(false)
+  const [dupeOpen,     setDupeOpen]     = useState(false)
   const [editTx,       setEditTx]       = useState<Transaction | null>(null)
   const [fullscreen,   setFullscreen]   = useState(false)
   const [colWidths,    setColWidths]    = useState<ColWidths>(DEFAULT_WIDTHS)
@@ -239,6 +241,16 @@ export default function Transactions() {
   // checkbox(32) + cols + edit(40) + delete(48)
   const totalW = 32 + COLS.reduce((s, c) => s + colWidths[c.key], 0) + 40 + 48
 
+  // Duplicate groups count for badge
+  const dupeCount = (() => {
+    const map = new Map<string, number>()
+    for (const tx of transactions) {
+      const key = `${tx.date}|${tx.type}|${tx.amount}|${tx.accountId}`
+      map.set(key, (map.get(key) ?? 0) + 1)
+    }
+    return [...map.values()].filter(n => n >= 2).length
+  })()
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className={fullscreen ? 'fixed inset-0 z-40 bg-white flex flex-col p-4 gap-3 overflow-hidden' : 'flex flex-col gap-4 md:h-full'}>
@@ -277,6 +289,18 @@ export default function Transactions() {
           {store.rules.filter(r => r.enabled).length > 0 && (
             <span className="bg-indigo-100 text-indigo-700 text-xs font-bold px-1.5 py-0.5 rounded-full">
               {store.rules.filter(r => r.enabled).length}
+            </span>
+          )}
+        </button>
+
+        <button onClick={() => setDupeOpen(true)}
+          className="flex items-center gap-2 border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-medium px-3 py-2 rounded-lg transition-colors"
+          title="Поиск дублирующихся операций">
+          <Copy size={16} className="text-amber-500" />
+          <span className="hidden sm:inline">Дубли</span>
+          {dupeCount > 0 && (
+            <span className="text-xs bg-amber-100 text-amber-700 font-bold px-1.5 py-0.5 rounded-full">
+              {dupeCount}
             </span>
           )}
         </button>
@@ -610,6 +634,7 @@ export default function Transactions() {
       <TransactionModal open={addOpen} onClose={() => setAddOpen(false)} />
       <TransactionEditModal transaction={editTx} onClose={() => setEditTx(null)} />
       <TransactionRulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
+      <DuplicateCheckerModal open={dupeOpen} onClose={() => setDupeOpen(false)} />
     </div>
   )
 }
