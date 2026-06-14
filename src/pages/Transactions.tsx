@@ -236,10 +236,10 @@ export default function Transactions() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className={fullscreen ? 'fixed inset-0 z-40 bg-white flex flex-col p-4 gap-3 overflow-hidden' : 'space-y-4'}>
+    <div className={fullscreen ? 'fixed inset-0 z-40 bg-white flex flex-col p-4 gap-3 overflow-hidden' : 'flex flex-col gap-4 md:h-full'}>
 
       {/* Toolbar */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex flex-wrap gap-3 items-center">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex flex-wrap gap-3 items-center shrink-0">
         <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
           {typeTabs.map(({ value, label }) => (
             <button key={value} onClick={() => setTypeFilter(value)}
@@ -371,7 +371,7 @@ export default function Transactions() {
 
       {/* ── Desktop table (hidden below md) ───────────────────────────── */}
       {/* Table card */}
-      <div className={`hidden md:flex bg-white rounded-xl border border-slate-200 shadow-sm flex-col overflow-hidden ${fullscreen ? '!flex flex-1 min-h-0' : ''}`}>
+      <div className={`hidden md:flex flex-1 min-h-0 bg-white rounded-xl border border-slate-200 shadow-sm flex-col overflow-hidden ${fullscreen ? '!flex' : ''}`}>
 
         {/* Bulk action bar */}
         {selected.size > 0 && (
@@ -393,7 +393,7 @@ export default function Transactions() {
         )}
 
         {/* Scroll area */}
-        <div className={`overflow-auto ${fullscreen ? 'flex-1' : ''}`}>
+        <div className="overflow-auto flex-1 min-h-0">
           <table style={{ tableLayout: 'fixed', minWidth: totalW, width: '100%' }}>
             <colgroup>
               <col style={{ width: 32 }} />
