@@ -74,7 +74,7 @@ export default function TransactionRulesModal({ open, onClose }: Props) {
   const store = useStore()
   const { rules, accounts, categories, counterparties, projects, transactions } = store
 
-  const [editing, setEditing] = useState<(TransactionRule & { isNew?: boolean }) | null>(null)
+  const [editing, setEditing] = useState<(TransactionRule & { isNew?: boolean; applyToAll?: boolean }) | null>(null)
   // Preview: apply rule to existing transactions
   const [applyPreview, setApplyPreview] = useState<{
     rule: TransactionRule
@@ -121,11 +121,16 @@ export default function TransactionRulesModal({ open, onClose }: Props) {
 
   function saveRule() {
     if (!editing) return
-    const { isNew, ...rule } = editing
+    const { isNew, applyToAll, ...rule } = editing
     if (!rule.name.trim()) return
+    setEditing(null)
     if (isNew) store.addRule(rule)
     else store.updateRule(rule.id, rule)
-    setEditing(null)
+    if (applyToAll) {
+      const matches = transactions.filter(tx => matchesRule(rule as TransactionRule, tx))
+      const changes = buildChanges(rule as TransactionRule)
+      if (matches.length > 0) store.batchUpdateTransactions(matches.map(tx => ({ id: tx.id, changes })))
+    }
   }
 
   // ── Apply preview modal ──────────────────────────────────────────────────────
@@ -306,19 +311,18 @@ export default function TransactionRulesModal({ open, onClose }: Props) {
               </div>
             </div>
 
-            {/* Apply to all existing — only for saved rules */}
-            {!editing.isNew && (
-              <div className="pt-1 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => { setEditing(null); startApplyPreview(editing) }}
-                  className="w-full flex items-center justify-center gap-2 border border-indigo-200 text-indigo-600 hover:bg-indigo-50 text-sm font-medium py-2.5 rounded-lg transition"
-                >
-                  <PlayCircle size={16} />
-                  Применить ко всем существующим операциям
-                </button>
-              </div>
-            )}
+            {/* Apply to all existing checkbox */}
+            <div className="pt-1 border-t border-slate-100">
+              <label className="flex items-center gap-2.5 cursor-pointer select-none py-1">
+                <input
+                  type="checkbox"
+                  checked={editing.applyToAll ?? false}
+                  onChange={e => setEditing(r => r && { ...r, applyToAll: e.target.checked })}
+                  className="w-4 h-4 rounded border-slate-300 text-indigo-600 accent-indigo-600 cursor-pointer"
+                />
+                <span className="text-sm text-slate-600">Применить ко всем существующим операциям</span>
+              </label>
+            </div>
           </div>
 
           <div className="px-6 py-4 border-t border-slate-100 flex gap-3 shrink-0">
