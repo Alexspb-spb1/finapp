@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, X, Trash2, Pencil, FolderOpen, TrendingUp, TrendingDown } from 'lucide-react'
+import { Plus, X, Trash2, Pencil, FolderOpen, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency } from '../utils/format'
 import type { Project } from '../types'
@@ -55,6 +55,29 @@ export default function Projects() {
     return { income, expense, count: tx.length }
   }
 
+  // Find duplicate project groups by name
+  const dupeGroups: Project[][] = (() => {
+    const map = new Map<string, Project[]>()
+    for (const p of projects) {
+      const key = p.name.trim().toLowerCase()
+      const arr = map.get(key) ?? []
+      arr.push(p)
+      map.set(key, arr)
+    }
+    return [...map.values()].filter(g => g.length >= 2)
+  })()
+
+  function removeDupeProjects() {
+    const toDelete: string[] = []
+    for (const group of dupeGroups) {
+      // Keep the one with most transactions, delete the rest
+      const scored = group.map(p => ({ p, count: transactions.filter(t => t.projectId === p.id).length }))
+      scored.sort((a, b) => b.count - a.count)
+      toDelete.push(...scored.slice(1).map(s => s.p.id))
+    }
+    for (const id of toDelete) store.deleteProject(id)
+  }
+
   return (
     <div className="space-y-4">
 
@@ -70,6 +93,21 @@ export default function Projects() {
           <Plus size={16} /> Добавить проект
         </button>
       </div>
+
+      {/* Duplicate projects warning */}
+      {dupeGroups.length > 0 && (
+        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+          <AlertTriangle size={16} className="text-amber-500 shrink-0" />
+          <p className="text-sm text-amber-800 flex-1">
+            <span className="font-semibold">Найдены дубли проектов:</span>{' '}
+            {dupeGroups.map(g => `«${g[0].name}»`).join(', ')} — одинаковые названия
+          </p>
+          <button onClick={removeDupeProjects}
+            className="shrink-0 text-sm font-medium text-white bg-amber-500 hover:bg-amber-600 px-3 py-1.5 rounded-lg transition">
+            Удалить дубли
+          </button>
+        </div>
+      )}
 
       {/* Empty state */}
       {projects.length === 0 && (
