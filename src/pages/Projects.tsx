@@ -31,8 +31,7 @@ export default function Projects() {
     setAddOpen(true)
   }
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+  function handleSubmit() {
     const data = { ...form, description: form.description || undefined,
                    startDate: form.startDate || undefined, endDate: form.endDate || undefined }
     if (editId) {
@@ -173,7 +172,7 @@ export default function Projects() {
                 className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400"><X size={18} /></button>
             </div>
 
-            <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+            <div className="px-6 py-5 space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">Название</label>
                 <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} required
@@ -231,12 +230,12 @@ export default function Projects() {
                   className="flex-1 py-2.5 border border-slate-200 text-sm text-slate-600 font-medium rounded-lg hover:bg-slate-50 transition">
                   Отмена
                 </button>
-                <button type="submit"
+                <button type="button" onClick={handleSubmit}
                   className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition">
                   {editId ? 'Сохранить' : 'Создать'}
                 </button>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}
