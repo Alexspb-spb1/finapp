@@ -11,6 +11,11 @@ import CategoryIcon from '../utils/categoryIcons'
 // ─── Inline edit cell ─────────────────────────────────────────────────────────
 interface InlineEdit { id: string; field: 'amount' | 'comment'; value: string }
 
+function stripCounterpart(s: string): string {
+  const pipe = s.indexOf(' | ')
+  return pipe !== -1 ? s.slice(pipe + 3) : s
+}
+
 function InlineAmountCell({
   tx, onStart, active, editVal, onChange, onSave, onCancel,
 }: {
@@ -93,7 +98,7 @@ function InlineCommentCell({
       title="Нажмите для редактирования"
     >
       <span className="block truncate">
-        {tx.comment || <span className="text-slate-300 italic">— нажмите для ввода</span>}
+        {tx.comment ? stripCounterpart(tx.comment) : <span className="text-slate-300 italic">— нажмите для ввода</span>}
         <span className="ml-1 opacity-0 group-hover/cell:opacity-40 text-xs">✏</span>
       </span>
     </td>
@@ -518,7 +523,7 @@ export default function Transactions() {
                       {/* Comment — inline editable */}
                       <InlineCommentCell
                         tx={t}
-                        onStart={() => startInline(t.id, 'comment', t.comment ?? '')}
+                        onStart={() => startInline(t.id, 'comment', stripCounterpart(t.comment ?? ''))}
                         active={inlineEdit?.id === t.id && inlineEdit?.field === 'comment'}
                         editVal={inlineEdit?.id === t.id && inlineEdit?.field === 'comment' ? inlineEdit.value : ''}
                         onChange={v => setInlineEdit(prev => prev ? { ...prev, value: v } : null)}
