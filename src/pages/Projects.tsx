@@ -32,14 +32,15 @@ export default function Projects() {
   }
 
   function handleSubmit() {
+    if (!form.name.trim()) return
     const data = { ...form, description: form.description || undefined,
                    startDate: form.startDate || undefined, endDate: form.endDate || undefined }
+    setAddOpen(false); setEditId(null)
     if (editId) {
       store.updateProject(editId, data)
     } else {
       store.addProject({ id: 'prj_' + Date.now(), ...data })
     }
-    setAddOpen(false); setEditId(null)
   }
 
   function confirmDelete() {
@@ -230,8 +231,10 @@ export default function Projects() {
                   className="flex-1 py-2.5 border border-slate-200 text-sm text-slate-600 font-medium rounded-lg hover:bg-slate-50 transition">
                   Отмена
                 </button>
-                <button type="button" onClick={handleSubmit}
-                  className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition">
+                <button type="button" onClick={handleSubmit} disabled={!form.name.trim()}
+                  className={`flex-1 py-2.5 text-white text-sm font-medium rounded-lg transition ${
+                    form.name.trim() ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-indigo-300 cursor-not-allowed'
+                  }`}>
                   {editId ? 'Сохранить' : 'Создать'}
                 </button>
               </div>
