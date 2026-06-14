@@ -245,7 +245,7 @@ export default function Transactions() {
   const dupeCount = (() => {
     const map = new Map<string, number>()
     for (const tx of transactions) {
-      const key = `${tx.date}|${tx.type}|${tx.amount}|${tx.accountId}`
+      const key = `${tx.date}|${tx.type}|${tx.amount}`
       map.set(key, (map.get(key) ?? 0) + 1)
     }
     return [...map.values()].filter(n => n >= 2).length

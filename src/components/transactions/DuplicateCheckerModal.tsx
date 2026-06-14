@@ -18,7 +18,8 @@ const TYPE_LABELS: Record<string, string> = {
 function findDuplicateGroups(transactions: Transaction[]): Transaction[][] {
   const map = new Map<string, Transaction[]>()
   for (const tx of transactions) {
-    const key = `${tx.date}|${tx.type}|${tx.amount}|${tx.accountId}`
+    // Не используем accountId — дубли могут быть на разных счетах после импорта
+    const key = `${tx.date}|${tx.type}|${tx.amount}`
     const arr = map.get(key) ?? []
     arr.push(tx)
     map.set(key, arr)
