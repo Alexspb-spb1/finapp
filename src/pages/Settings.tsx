@@ -82,8 +82,7 @@ export default function Settings() {
     setCatModal(true)
   }
 
-  function saveCat(e: React.FormEvent) {
-    e.preventDefault()
+  function saveCat() {
     if (!catName.trim()) return
     if (editingCat) {
       store.updateCategory(editingCat.id, { name: catName.trim(), icon: catIcon, color: catColor, type: catType })
@@ -397,7 +396,7 @@ export default function Settings() {
                 <X size={18} />
               </button>
             </div>
-            <form onSubmit={saveCat} className="px-6 py-5 space-y-4">
+            <div className="px-6 py-5 space-y-4">
 
               {/* Type */}
               <div>
@@ -475,12 +474,12 @@ export default function Settings() {
                   className="flex-1 py-2.5 border border-slate-200 text-sm text-slate-600 font-medium rounded-lg hover:bg-slate-50 transition">
                   Отмена
                 </button>
-                <button type="submit"
+                <button type="button" onClick={saveCat}
                   className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition">
                   {editingCat ? 'Сохранить' : 'Добавить'}
                 </button>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}

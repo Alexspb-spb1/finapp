@@ -57,8 +57,7 @@ export default function TransactionModal({ open, onClose }: Props) {
   const firstAcc = accounts[0]?.id ?? ''
   const secondAcc = accounts.find(a => a.id !== (accountId || firstAcc))?.id ?? ''
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+  function handleSubmit() {
     const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
     if (!num || num <= 0) return
     const acc = accountId || firstAcc
@@ -150,7 +149,7 @@ export default function TransactionModal({ open, onClose }: Props) {
           ))}
         </div>
 
-        <form onSubmit={handleSubmit} className="px-6 py-4 space-y-4">
+        <div className="px-6 py-4 space-y-4">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1.5">Сумма, ₽</label>
             <input
@@ -245,7 +244,7 @@ export default function TransactionModal({ open, onClose }: Props) {
               className="flex-1 py-2.5 rounded-lg border border-slate-200 text-sm text-slate-600 font-medium hover:bg-slate-50 transition">
               Отмена
             </button>
-            <button type="submit"
+            <button type="button" onClick={handleSubmit}
               className={`flex-1 py-2.5 rounded-lg text-white text-sm font-medium transition ${
                 type === 'income' ? 'bg-emerald-500 hover:bg-emerald-600'
                 : type === 'expense' ? 'bg-red-500 hover:bg-red-600'
@@ -254,7 +253,7 @@ export default function TransactionModal({ open, onClose }: Props) {
               Сохранить
             </button>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   )
