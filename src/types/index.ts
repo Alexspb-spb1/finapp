@@ -63,7 +63,9 @@ export interface BudgetItem {
   actual: number
 }
 
-export type RuleConditionField = 'type' | 'accountId' | 'counterpartyId' | 'categoryId' | 'projectId'
+export type RuleConditionField =
+  | 'type' | 'accountId' | 'counterpartyId' | 'categoryId' | 'projectId'
+  | 'commentContains' | 'counterpartyName' | 'amountGt' | 'amountLt' | 'amountEq'
 export type RuleActionField = 'categoryId' | 'projectId' | 'counterpartyId' | 'accountId' | 'comment'
 
 export interface RuleCondition {

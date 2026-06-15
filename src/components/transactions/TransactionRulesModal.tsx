@@ -16,6 +16,11 @@ const CONDITION_FIELD_LABELS: Record<RuleConditionField, string> = {
   counterpartyId: 'Контрагент',
   categoryId: 'Статья',
   projectId: 'Проект',
+  commentContains: 'Назначение платежа содержит',
+  counterpartyName: 'Название контрагента содержит',
+  amountGt: 'Сумма операции больше',
+  amountLt: 'Сумма операции меньше',
+  amountEq: 'Сумма операции равно',
 }
 
 const ACTION_FIELD_LABELS: Record<RuleActionField, string> = {
@@ -43,10 +48,26 @@ function emptyRule(): Omit<TransactionRule, 'id'> {
 }
 
 // Check if a transaction matches all conditions of a rule
-function matchesRule(rule: TransactionRule, tx: Transaction): boolean {
+function matchesRule(rule: TransactionRule, tx: Transaction, cpList?: import('../../types').Counterparty[]): boolean {
   return rule.conditions.every(cond => {
-    const val: string = (tx as any)[cond.field] ?? ''
-    return val === cond.value
+    switch (cond.field) {
+      case 'commentContains': {
+        const comment = (tx.comment ?? '').toLowerCase()
+        // comma-separated → OR logic ("зарплата, выходное пособие")
+        return cond.value.split(',').some(v => v.trim() && comment.includes(v.trim().toLowerCase()))
+      }
+      case 'counterpartyName': {
+        const cp = cpList?.find(c => c.id === tx.counterpartyId)
+        return (cp?.name ?? '').toLowerCase().includes(cond.value.toLowerCase())
+      }
+      case 'amountGt': return tx.amount > parseFloat(cond.value || '0')
+      case 'amountLt': return tx.amount < parseFloat(cond.value || '0')
+      case 'amountEq': return tx.amount === parseFloat(cond.value || '0')
+      default: {
+        const val: string = (tx as any)[cond.field] ?? ''
+        return val === cond.value
+      }
+    }
   })
 }
 
@@ -96,11 +117,14 @@ export default function TransactionRulesModal({ open, onClose }: Props) {
     }
     if (field === 'projectId') return projects.find(p => p.id === value)?.name ?? (value ? value : '— Без проекта —')
     if (field === 'comment') return `"${value}"`
+    if (field === 'commentContains') return `"${value}"`
+    if (field === 'counterpartyName') return `"${value}"`
+    if (field === 'amountGt' || field === 'amountLt' || field === 'amountEq') return value
     return value
   }
 
   function startApplyPreview(rule: TransactionRule) {
-    const matches = transactions.filter(tx => matchesRule(rule, tx))
+    const matches = transactions.filter(tx => matchesRule(rule, tx, counterparties))
     const changes = buildChanges(rule)
     setApplyPreview({ rule, matches, changes, applied: false })
   }
@@ -127,7 +151,7 @@ export default function TransactionRulesModal({ open, onClose }: Props) {
     if (isNew) store.addRule(rule)
     else store.updateRule(rule.id, rule)
     if (applyToAll) {
-      const matches = transactions.filter(tx => matchesRule(rule as TransactionRule, tx))
+      const matches = transactions.filter(tx => matchesRule(rule as TransactionRule, tx, counterparties))
       const changes = buildChanges(rule as TransactionRule)
       if (matches.length > 0) store.batchUpdateTransactions(matches.map(tx => ({ id: tx.id, changes })))
     }
@@ -419,6 +443,9 @@ export default function TransactionRulesModal({ open, onClose }: Props) {
 
 // ── Condition row ────────────────────────────────────────────────────────────
 
+const TEXT_CONDITION_FIELDS = new Set<RuleConditionField>(['commentContains', 'counterpartyName'])
+const AMOUNT_CONDITION_FIELDS = new Set<RuleConditionField>(['amountGt', 'amountLt', 'amountEq'])
+
 function ConditionRow({ cond, onChange, onRemove, canRemove, accounts, categories, counterparties, projects }: {
   cond: RuleCondition
   onChange: (c: RuleCondition) => void
@@ -432,46 +459,79 @@ function ConditionRow({ cond, onChange, onRemove, canRemove, accounts, categorie
       counterpartyId: counterparties[0]?.id ?? '',
       categoryId: categories[0]?.id ?? '',
       projectId: projects[0]?.id ?? '',
+      commentContains: '',
+      counterpartyName: '',
+      amountGt: '',
+      amountLt: '',
+      amountEq: '',
     }
     onChange({ ...cond, field, value: defaultValue[field] })
   }
 
+  const isText = TEXT_CONDITION_FIELDS.has(cond.field)
+  const isAmount = AMOUNT_CONDITION_FIELDS.has(cond.field)
+
   return (
-    <div className="flex items-center gap-2">
-      <select
-        value={cond.field}
-        onChange={e => setField(e.target.value as RuleConditionField)}
-        className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
-      >
-        {(Object.keys(CONDITION_FIELD_LABELS) as RuleConditionField[]).map(f => (
-          <option key={f} value={f}>{CONDITION_FIELD_LABELS[f]}</option>
-        ))}
-      </select>
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <select
+          value={cond.field}
+          onChange={e => setField(e.target.value as RuleConditionField)}
+          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
+        >
+          {(Object.keys(CONDITION_FIELD_LABELS) as RuleConditionField[]).map(f => (
+            <option key={f} value={f}>{CONDITION_FIELD_LABELS[f]}</option>
+          ))}
+        </select>
 
-      <span className="text-xs text-slate-400 shrink-0">=</span>
+        {!isText && !isAmount && <span className="text-xs text-slate-400 shrink-0">=</span>}
 
-      <select
-        value={cond.value}
-        onChange={e => onChange({ ...cond, value: e.target.value })}
-        className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
-      >
-        {cond.field === 'type' && (
-          <>
-            <option value="income">Доход</option>
-            <option value="expense">Расход</option>
-            <option value="transfer">Перевод</option>
-          </>
+        {isText ? (
+          <input
+            value={cond.value}
+            onChange={e => onChange({ ...cond, value: e.target.value })}
+            placeholder={cond.field === 'commentContains' ? 'зарплата, аренда, …' : 'Название контрагента'}
+            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
+          />
+        ) : isAmount ? (
+          <input
+            type="number"
+            min="0"
+            value={cond.value}
+            onChange={e => onChange({ ...cond, value: e.target.value })}
+            placeholder="0"
+            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
+          />
+        ) : (
+          <select
+            value={cond.value}
+            onChange={e => onChange({ ...cond, value: e.target.value })}
+            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
+          >
+            {cond.field === 'type' && (
+              <>
+                <option value="income">Доход</option>
+                <option value="expense">Расход</option>
+                <option value="transfer">Перевод</option>
+              </>
+            )}
+            {cond.field === 'accountId' && accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {cond.field === 'counterpartyId' && counterparties.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {cond.field === 'categoryId' && categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {cond.field === 'projectId' && projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
         )}
-        {cond.field === 'accountId' && accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-        {cond.field === 'counterpartyId' && counterparties.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        {cond.field === 'categoryId' && categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        {cond.field === 'projectId' && projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-      </select>
 
-      {canRemove && (
-        <button onClick={onRemove} className="p-1.5 text-slate-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition shrink-0">
-          <Trash2 size={14} />
-        </button>
+        {canRemove && (
+          <button onClick={onRemove} className="p-1.5 text-slate-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition shrink-0">
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
+      {cond.field === 'commentContains' && (
+        <p className="text-[11px] text-slate-400 pl-1">
+          Несколько значений через запятую — будет применено правило ИЛИ
+        </p>
       )}
     </div>
   )
