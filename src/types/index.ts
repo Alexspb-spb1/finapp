@@ -16,6 +16,7 @@ export interface Category {
   icon: string
   color: string
   parentId?: string
+  isGroup?: boolean
 }
 
 export interface Counterparty {

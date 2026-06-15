@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { UserPlus, Trash2, X, AlertCircle, KeyRound, User as UserIcon, Plus, Pencil, Tag } from 'lucide-react'
+import { UserPlus, Trash2, X, AlertCircle, KeyRound, User as UserIcon, Plus, Pencil, Tag, Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { authStore } from '../store/authStore'
 import { useStore } from '../store/useStore'
@@ -56,53 +56,86 @@ export default function Settings() {
   const [inviteError, setInviteError] = useState('')
 
   // Categories
-  const [catTab,      setCatTab]      = useState<TransactionType>('income')
-  const [catModal,    setCatModal]    = useState(false)
-  const [editingCat,  setEditingCat]  = useState<Category | null>(null)
-  const [catName,     setCatName]     = useState('')
-  const [catType,     setCatType]     = useState<TransactionType>('income')
-  const [catIcon,     setCatIcon]     = useState('TrendingUp')
-  const [catColor,    setCatColor]    = useState(CAT_COLORS[0])
-  const [deleteCatId, setDeleteCatId] = useState<string | null>(null)
+  const [catTab,        setCatTab]        = useState<TransactionType>('income')
+  const [catModal,      setCatModal]      = useState(false)
+  const [editingCat,    setEditingCat]    = useState<Category | null>(null)
+  const [catName,       setCatName]       = useState('')
+  const [catType,       setCatType]       = useState<TransactionType>('income')
+  const [catIcon,       setCatIcon]       = useState('TrendingUp')
+  const [catColor,      setCatColor]      = useState(CAT_COLORS[0])
+  const [catParentId,   setCatParentId]   = useState('')
+  const [catIsGroup,    setCatIsGroup]    = useState(false)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const [deleteCatId,   setDeleteCatId]  = useState<string | null>(null)
 
   const users = company ? authStore.getCompanyUsers(company.id) : []
 
   // Категории по текущей вкладке
   const visibleCats = store.categories.filter(c => c.type === catTab)
+  const visibleGroups = visibleCats.filter(c => c.isGroup)
 
-  function openAddCat() {
+  function toggleGroup(id: string) {
+    setExpandedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  function openAddCat(isGroup = false, parentId = '') {
     setEditingCat(null)
-    setCatName(''); setCatIcon('TrendingUp'); setCatColor(CAT_COLORS[0]); setCatType(catTab)
+    setCatIsGroup(isGroup)
+    setCatParentId(parentId)
+    setCatName('')
+    setCatIcon(isGroup ? 'Package' : 'TrendingUp')
+    setCatColor(isGroup ? '#64748b' : CAT_COLORS[0])
+    setCatType(catTab)
     setCatModal(true)
   }
 
   function openEditCat(cat: Category) {
     setEditingCat(cat)
-    setCatName(cat.name); setCatIcon(cat.icon); setCatColor(cat.color); setCatType(cat.type)
+    setCatName(cat.name)
+    setCatIcon(cat.icon)
+    setCatColor(cat.color)
+    setCatType(cat.type)
+    setCatIsGroup(cat.isGroup ?? false)
+    setCatParentId(cat.parentId ?? '')
     setCatModal(true)
   }
 
   function saveCat() {
     if (!catName.trim()) return
     if (editingCat) {
-      store.updateCategory(editingCat.id, { name: catName.trim(), icon: catIcon, color: catColor, type: catType })
+      store.updateCategory(editingCat.id, {
+        name: catName.trim(), icon: catIcon, color: catColor, type: catType,
+        isGroup: catIsGroup || undefined,
+        parentId: catParentId || undefined,
+      })
     } else {
-      store.addCategory({ id: 'cat_' + Date.now(), name: catName.trim(), type: catType, icon: catIcon, color: catColor })
+      store.addCategory({
+        id: 'cat_' + Date.now(), name: catName.trim(), type: catType,
+        icon: catIcon, color: catColor,
+        isGroup: catIsGroup || undefined,
+        parentId: catParentId || undefined,
+      })
     }
+    // Expand group when adding child
+    if (catParentId) setExpandedGroups(prev => new Set(prev).add(catParentId))
     setCatModal(false)
   }
 
   function confirmDeleteCat() {
     if (!deleteCatId) return
-    // Если статья используется в операциях — запрещаем удаление
     const inUse = store.transactions.some(t => t.categoryId === deleteCatId)
-    if (!inUse) store.deleteCategory(deleteCatId)
+    const hasChildren = store.categories.some(c => c.parentId === deleteCatId)
+    if (!inUse && !hasChildren) store.deleteCategory(deleteCatId)
     setDeleteCatId(null)
   }
 
-  const deleteCatInUse = deleteCatId
-    ? store.transactions.some(t => t.categoryId === deleteCatId)
-    : false
+  const deleteCatId_data = deleteCatId ? store.categories.find(c => c.id === deleteCatId) : null
+  const deleteCatInUse = deleteCatId ? store.transactions.some(t => t.categoryId === deleteCatId) : false
+  const deleteCatHasChildren = deleteCatId ? store.categories.some(c => c.parentId === deleteCatId) : false
 
   async function handleProfileSave(e: React.FormEvent) {
     e.preventDefault()
@@ -323,10 +356,16 @@ export default function Settings() {
             <Tag size={15} className="text-slate-400" />
             <h3 className="text-sm font-semibold text-slate-700">Статьи доходов и расходов</h3>
           </div>
-          <button onClick={openAddCat}
-            className="flex items-center gap-2 text-sm font-medium text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-lg transition-colors">
-            <Plus size={15} /> Добавить
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => openAddCat(true)}
+              className="flex items-center gap-1.5 text-sm font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 px-3 py-2 rounded-lg transition-colors">
+              <Folder size={14} /> Группа
+            </button>
+            <button onClick={() => openAddCat(false)}
+              className="flex items-center gap-1.5 text-sm font-medium text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-lg transition-colors">
+              <Plus size={14} /> Статья
+            </button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -348,10 +387,83 @@ export default function Settings() {
 
         {/* Category list */}
         {visibleCats.length === 0 ? (
-          <p className="text-sm text-slate-400 text-center py-6">Нет статей. Нажмите «Добавить»</p>
+          <p className="text-sm text-slate-400 text-center py-6">Нет статей. Нажмите «Статья» или «Группа»</p>
         ) : (
-          <ul className="space-y-1.5">
-            {visibleCats.map(cat => {
+          <ul className="space-y-1">
+            {/* Groups with children */}
+            {visibleGroups.map(group => {
+              const isOpen = expandedGroups.has(group.id)
+              const children = visibleCats.filter(c => c.parentId === group.id)
+              return (
+                <li key={group.id}>
+                  {/* Group row */}
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-slate-50 transition-colors group">
+                    <button onClick={() => toggleGroup(group.id)} className="text-slate-400 hover:text-slate-600 shrink-0">
+                      {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                    <div className="w-7 h-7 flex items-center justify-center shrink-0 rounded-lg"
+                      style={{ background: group.color + '22' }}>
+                      {isOpen
+                        ? <FolderOpen size={14} color={group.color} />
+                        : <Folder size={14} color={group.color} />}
+                    </div>
+                    <span className="flex-1 text-sm font-semibold text-slate-700">{group.name}</span>
+                    <span className="text-xs text-slate-400 shrink-0">{children.length} статей</span>
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={() => openAddCat(false, group.id)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                        title="Добавить статью в группу">
+                        <Plus size={13} />
+                      </button>
+                      <button onClick={() => openEditCat(group)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
+                        <Pencil size={13} />
+                      </button>
+                      <button onClick={() => setDeleteCatId(group.id)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                  {/* Children */}
+                  {isOpen && children.length > 0 && (
+                    <ul className="ml-8 mt-0.5 space-y-0.5 border-l border-slate-100 pl-3">
+                      {children.map(cat => {
+                        const inUse = store.transactions.some(t => t.categoryId === cat.id)
+                        return (
+                          <li key={cat.id}
+                            className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-slate-50 transition-colors group">
+                            <div className="w-7 h-7 icon-circle flex items-center justify-center shrink-0"
+                              style={{ background: cat.color + '22' }}>
+                              <CategoryIcon name={cat.icon} size={13} color={cat.color} />
+                            </div>
+                            <span className="flex-1 text-sm text-slate-700">{cat.name}</span>
+                            {inUse && (
+                              <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
+                                {store.transactions.filter(t => t.categoryId === cat.id).length} оп.
+                              </span>
+                            )}
+                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={() => openEditCat(cat)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
+                                <Pencil size={13} />
+                              </button>
+                              <button onClick={() => setDeleteCatId(cat.id)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </li>
+              )
+            })}
+
+            {/* Standalone categories (no parentId, no isGroup) */}
+            {visibleCats.filter(c => !c.isGroup && !c.parentId).map(cat => {
               const inUse = store.transactions.some(t => t.categoryId === cat.id)
               return (
                 <li key={cat.id}
@@ -390,7 +502,9 @@ export default function Settings() {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
               <h2 className="font-semibold text-slate-800">
-                {editingCat ? 'Редактировать статью' : 'Новая статья'}
+                {editingCat
+                  ? (catIsGroup ? 'Редактировать группу' : 'Редактировать статью')
+                  : (catIsGroup ? 'Новая группа' : 'Новая статья')}
               </h2>
               <button onClick={() => setCatModal(false)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400">
                 <X size={18} />
@@ -421,9 +535,23 @@ export default function Settings() {
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">Название</label>
                 <input value={catName} onChange={e => setCatName(e.target.value)} required
-                  placeholder="Например: Зарплата"
+                  placeholder={catIsGroup ? 'Например: Налоги и взносы' : 'Например: Зарплата'}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
               </div>
+
+              {/* Group selector — only for non-group categories */}
+              {!catIsGroup && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1.5">Группа <span className="font-normal text-slate-400">(необязательно)</span></label>
+                  <select value={catParentId} onChange={e => setCatParentId(e.target.value)}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
+                    <option value="">— Без группы —</option>
+                    {store.categories.filter(c => c.type === catType && c.isGroup).map(g =>
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    )}
+                  </select>
+                </div>
+              )}
 
               {/* Icon picker */}
               <div>
@@ -459,11 +587,14 @@ export default function Settings() {
               <div className="flex items-center gap-3 bg-slate-50 rounded-xl px-4 py-3">
                 <div className="w-9 h-9 icon-circle flex items-center justify-center shrink-0"
                   style={{ background: catColor + '22' }}>
-                  <CategoryIcon name={catIcon} size={16} color={catColor} />
+                  {catIsGroup
+                    ? <Folder size={16} color={catColor} />
+                    : <CategoryIcon name={catIcon} size={16} color={catColor} />}
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-slate-700">{catName || 'Название статьи'}</p>
+                  <p className="text-sm font-semibold text-slate-700">{catName || (catIsGroup ? 'Название группы' : 'Название статьи')}</p>
                   <p className="text-xs text-slate-400">
+                    {catIsGroup ? 'Группа · ' : ''}
                     {catType === 'income' ? 'Доход' : catType === 'expense' ? 'Расход' : 'Перевод'}
                   </p>
                 </div>
@@ -503,12 +634,28 @@ export default function Settings() {
                   Понятно
                 </button>
               </>
+            ) : deleteCatHasChildren ? (
+              <>
+                <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <AlertCircle size={22} className="text-amber-500" />
+                </div>
+                <h3 className="text-base font-semibold text-slate-800 mb-1">Группа не пуста</h3>
+                <p className="text-sm text-slate-500 mb-5">
+                  В группе «{deleteCatId_data?.name}» есть статьи. Сначала удалите или переместите все статьи из группы.
+                </p>
+                <button onClick={() => setDeleteCatId(null)}
+                  className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition">
+                  Понятно
+                </button>
+              </>
             ) : (
               <>
                 <div className="text-3xl mb-3">🗑️</div>
-                <h3 className="text-base font-semibold text-slate-800 mb-1">Удалить статью?</h3>
+                <h3 className="text-base font-semibold text-slate-800 mb-1">
+                  {deleteCatId_data?.isGroup ? 'Удалить группу?' : 'Удалить статью?'}
+                </h3>
                 <p className="text-sm text-slate-500 mb-5">
-                  «{store.categories.find(c => c.id === deleteCatId)?.name}» будет удалена безвозвратно.
+                  «{deleteCatId_data?.name}» будет удалена безвозвратно.
                 </p>
                 <div className="flex gap-3">
                   <button onClick={() => setDeleteCatId(null)}

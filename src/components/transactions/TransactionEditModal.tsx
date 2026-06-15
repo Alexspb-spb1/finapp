@@ -30,7 +30,10 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
     return pipe !== -1 ? raw.slice(pipe + 3) : raw
   })
 
-  const filteredCats = categories.filter(c => c.type === type)
+  const filteredCats = categories.filter(c => c.type === type && !c.isGroup)
+  const typeGroups = categories.filter(c => c.type === type && c.isGroup)
+  const standaloneCats = filteredCats.filter(c => !c.parentId)
+  const childCats = filteredCats.filter(c => !!c.parentId)
   const selectedCp   = counterparties.find(c => c.id === counterpartyId)
   const selectedAcc  = accounts.find(a => a.id === accountId)
 
@@ -174,7 +177,14 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
             >
               <option value="">— Выберите статью —</option>
-              {filteredCats.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {typeGroups.map(g => (
+                <optgroup key={g.id} label={g.name}>
+                  {childCats.filter(c => c.parentId === g.id).map(c =>
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  )}
+                </optgroup>
+              ))}
+              {standaloneCats.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
 
