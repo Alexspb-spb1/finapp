@@ -29,6 +29,8 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
     const pipe = raw.indexOf(' | ')
     return pipe !== -1 ? raw.slice(pipe + 3) : raw
   })
+  const [hasRelatedDate, setHasRelatedDate] = useState(!!transaction.relatedDate)
+  const [relatedDate,    setRelatedDate]    = useState(transaction.relatedDate ?? transaction.date)
 
   const filteredCats = categories.filter(c => c.type === type && !c.isGroup)
   const typeGroups = categories.filter(c => c.type === type && c.isGroup)
@@ -48,6 +50,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
       type,
       amount: num,
       date,
+      relatedDate: (type !== 'transfer' && hasRelatedDate) ? relatedDate : undefined,
       accountId,
       toAccountId: type === 'transfer' ? (toAccountId || undefined) : undefined,
       categoryId:  categoryId || (filteredCats[0]?.id ?? ''),
@@ -103,6 +106,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1.5">Сумма, ₽</label>
+
               <input
                 type="text"
                 value={amount}
@@ -119,15 +123,33 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               )}
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1.5">Дата</label>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                {hasRelatedDate ? 'Дата оплаты (ДДС)' : 'Дата'}
+              </label>
               <input
                 type="date"
                 value={date}
                 onChange={e => setDate(e.target.value)}
                 className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
               />
+              {type !== 'transfer' && (
+                <button type="button"
+                  onClick={() => { setHasRelatedDate(v => !v); if (!hasRelatedDate) setRelatedDate(date) }}
+                  className={`mt-1.5 text-[11px] font-medium transition-colors ${hasRelatedDate ? 'text-indigo-500 hover:text-indigo-700' : 'text-slate-400 hover:text-slate-600'}`}>
+                  {hasRelatedDate ? '✓ Дата начисления ≠' : '+ Дата начисления'}
+                </button>
+              )}
             </div>
           </div>
+
+          {type !== 'transfer' && hasRelatedDate && (
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">Дата начисления (ОПиУ)</label>
+              <input type="date" value={relatedDate} onChange={e => setRelatedDate(e.target.value)}
+                className="w-full border border-indigo-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-indigo-50/30" />
+              <p className="text-[11px] text-slate-400 mt-1">Используется в ОПиУ вместо даты оплаты</p>
+            </div>
+          )}
 
           {/* My account */}
           <div>

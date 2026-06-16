@@ -25,8 +25,15 @@ function PctBadge({ value }: { value: number | null }) {
 export default function PnL() {
   const { transactions, categories } = useStore()
 
+  const [method, setMethod] = useState<'cash' | 'accrual'>('cash')
+
+  // date to use for month grouping: accrual mode uses relatedDate if set
+  function txDate(t: typeof transactions[0]) {
+    return method === 'accrual' ? (t.relatedDate ?? t.date) : t.date
+  }
+
   // Period filter: list of available years
-  const allMonths = [...new Set(transactions.map(t => monthKey(t.date)))].sort()
+  const allMonths = [...new Set(transactions.map(t => monthKey(txDate(t))))].sort()
   const allYears  = [...new Set(allMonths.map(m => m.slice(0, 4)))].sort().reverse()
   const currentYear = new Date().getFullYear().toString()
   const [year, setYear] = useState(allYears[0] ?? currentYear)
@@ -47,7 +54,7 @@ export default function PnL() {
   // Helpers
   function sumByCategory(catId: string, month: string) {
     return transactions
-      .filter(t => t.categoryId === catId && monthKey(t.date) === month)
+      .filter(t => t.categoryId === catId && monthKey(txDate(t)) === month)
       .reduce((s, t) => s + t.amount, 0)
   }
 
@@ -56,7 +63,7 @@ export default function PnL() {
       .filter(c => !c.isGroup && c.type === type && (section === null ? !c.pnlSection : (c.pnlSection ?? (type === 'income' ? 'direct' : 'indirect')) === section))
       .map(c => c.id)
     return transactions
-      .filter(t => catIds.includes(t.categoryId) && monthKey(t.date) === month)
+      .filter(t => catIds.includes(t.categoryId) && monthKey(txDate(t)) === month)
       .reduce((s, t) => s + t.amount, 0)
   }
 
@@ -178,9 +185,22 @@ export default function PnL() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-base font-semibold text-slate-800">Отчёт о прибылях и убытках</h2>
-          <p className="text-xs text-slate-400 mt-0.5">ОПиУ · кассовый метод</p>
+          <p className="text-xs text-slate-400 mt-0.5">ОПиУ · {method === 'cash' ? 'кассовый метод' : 'метод начисления'}</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {/* Method toggle */}
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+            <button
+              onClick={() => setMethod('cash')}
+              className={`px-3 py-1.5 font-medium transition-colors ${method === 'cash' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
+              Кассовый
+            </button>
+            <button
+              onClick={() => setMethod('accrual')}
+              className={`px-3 py-1.5 font-medium transition-colors ${method === 'accrual' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
+              Начисления
+            </button>
+          </div>
           <select
             value={year}
             onChange={e => setYear(e.target.value)}

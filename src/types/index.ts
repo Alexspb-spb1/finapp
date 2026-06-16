@@ -43,7 +43,8 @@ export interface Counterparty {
 
 export interface Transaction {
   id: string
-  date: string
+  date: string          // дата оплаты → ДДС
+  relatedDate?: string  // дата начисления → ОПиУ (метод начисления)
   type: TransactionType
   amount: number
   accountId: string
