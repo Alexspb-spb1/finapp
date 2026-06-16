@@ -5,7 +5,7 @@ import { authStore } from '../store/authStore'
 import { useStore } from '../store/useStore'
 import CategoryIcon from '../utils/categoryIcons'
 import type { User } from '../types/auth'
-import type { Category, TransactionType } from '../types'
+import type { Category, CategoryKind, CategoryPnlSection, TransactionType } from '../types'
 
 // ── Палитра цветов и иконок для категорий ─────────────────────────────────────
 const CAT_COLORS = [
@@ -65,6 +65,8 @@ export default function Settings() {
   const [catColor,      setCatColor]      = useState(CAT_COLORS[0])
   const [catParentId,   setCatParentId]   = useState('')
   const [catIsGroup,    setCatIsGroup]    = useState(false)
+  const [catKind,       setCatKind]       = useState<CategoryKind>(1)
+  const [catPnlSection, setCatPnlSection] = useState<CategoryPnlSection>('direct')
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [deleteCatId,   setDeleteCatId]  = useState<string | null>(null)
 
@@ -90,6 +92,8 @@ export default function Settings() {
     setCatIcon(isGroup ? 'Package' : 'TrendingUp')
     setCatColor(isGroup ? '#64748b' : CAT_COLORS[0])
     setCatType(catTab)
+    setCatKind(1)
+    setCatPnlSection(catTab === 'income' ? 'direct' : 'indirect')
     setCatModal(true)
   }
 
@@ -101,23 +105,24 @@ export default function Settings() {
     setCatType(cat.type)
     setCatIsGroup(cat.isGroup ?? false)
     setCatParentId(cat.parentId ?? '')
+    setCatKind(cat.kind ?? 1)
+    setCatPnlSection(cat.pnlSection ?? (cat.type === 'income' ? 'direct' : 'indirect'))
     setCatModal(true)
   }
 
   function saveCat() {
     if (!catName.trim()) return
+    const extras = catIsGroup
+      ? { isGroup: true as const, parentId: undefined, kind: undefined, pnlSection: undefined }
+      : { isGroup: undefined, parentId: catParentId || undefined, kind: catKind, pnlSection: catPnlSection }
     if (editingCat) {
       store.updateCategory(editingCat.id, {
-        name: catName.trim(), icon: catIcon, color: catColor, type: catType,
-        isGroup: catIsGroup || undefined,
-        parentId: catParentId || undefined,
+        name: catName.trim(), icon: catIcon, color: catColor, type: catType, ...extras,
       })
     } else {
       store.addCategory({
         id: 'cat_' + Date.now(), name: catName.trim(), type: catType,
-        icon: catIcon, color: catColor,
-        isGroup: catIsGroup || undefined,
-        parentId: catParentId || undefined,
+        icon: catIcon, color: catColor, ...extras,
       })
     }
     // Expand group when adding child
@@ -553,6 +558,41 @@ export default function Settings() {
                 </div>
               )}
 
+              {/* kind + pnlSection — only for non-group, non-transfer */}
+              {!catIsGroup && catType !== 'transfer' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1.5">Вид деятельности</label>
+                    <select value={catKind} onChange={e => setCatKind(Number(e.target.value) as CategoryKind)}
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
+                      <option value={1}>Операционная</option>
+                      <option value={2}>Инвестиционная</option>
+                      <option value={3}>Финансовая</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1.5">Раздел ОПиУ</label>
+                    <select value={catPnlSection} onChange={e => setCatPnlSection(e.target.value as CategoryPnlSection)}
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
+                      {catType === 'income' ? (
+                        <>
+                          <option value="direct">Выручка</option>
+                          <option value="default">Прочие доходы</option>
+                          <option value="exclude">Не учитывается</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="direct">Прямые расходы</option>
+                          <option value="indirect">Косвенные расходы</option>
+                          <option value="default">Прочие расходы</option>
+                          <option value="exclude">Не учитывается</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                </div>
+              )}
+
               {/* Icon picker */}
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">Иконка</label>
@@ -594,8 +634,20 @@ export default function Settings() {
                 <div>
                   <p className="text-sm font-semibold text-slate-700">{catName || (catIsGroup ? 'Название группы' : 'Название статьи')}</p>
                   <p className="text-xs text-slate-400">
-                    {catIsGroup ? 'Группа · ' : ''}
-                    {catType === 'income' ? 'Доход' : catType === 'expense' ? 'Расход' : 'Перевод'}
+                    {catIsGroup
+                      ? `Группа · ${catType === 'income' ? 'Доход' : catType === 'expense' ? 'Расход' : 'Перевод'}`
+                      : catType === 'transfer'
+                        ? 'Перевод'
+                        : (() => {
+                            const kindLabel = catKind === 1 ? 'Операционная' : catKind === 2 ? 'Инвестиционная' : 'Финансовая'
+                            const sectionLabel =
+                              catPnlSection === 'direct'   ? (catType === 'income' ? 'Выручка' : 'Прямые расходы') :
+                              catPnlSection === 'indirect' ? 'Косвенные расходы' :
+                              catPnlSection === 'default'  ? (catType === 'income' ? 'Прочие доходы' : 'Прочие расходы') :
+                              'Не в ОПиУ'
+                            return `${kindLabel} · ${sectionLabel}`
+                          })()
+                    }
                   </p>
                 </div>
               </div>
