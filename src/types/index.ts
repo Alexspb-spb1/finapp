@@ -9,6 +9,13 @@ export interface Account {
   color: string
 }
 
+export type CategoryKind = 1 | 2 | 3           // 1=операционная, 2=инвестиционная, 3=финансовая
+export type CategoryPnlSection =
+  | 'direct'    // Выручка / Прямые расходы
+  | 'indirect'  // Косвенные расходы
+  | 'default'   // Прочие доходы/расходы
+  | 'exclude'   // Не в ОПиУ (кредиты, займы, дивиденды)
+
 export interface Category {
   id: string
   name: string
@@ -17,6 +24,8 @@ export interface Category {
   color: string
   parentId?: string
   isGroup?: boolean
+  kind?: CategoryKind
+  pnlSection?: CategoryPnlSection
 }
 
 export interface Counterparty {
