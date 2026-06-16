@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors } from 'lucide-react'
+import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors, RefreshCw } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
 import type { Transaction, TransactionType } from '../types'
@@ -8,6 +8,7 @@ import TransactionEditModal from '../components/transactions/TransactionEditModa
 import TransactionRulesModal from '../components/transactions/TransactionRulesModal'
 import DuplicateCheckerModal from '../components/transactions/DuplicateCheckerModal'
 import MatchmakerModal from '../components/transactions/MatchmakerModal'
+import RecurringModal from '../components/transactions/RecurringModal'
 import CategoryIcon from '../utils/categoryIcons'
 
 // ─── Inline edit cell ─────────────────────────────────────────────────────────
@@ -142,6 +143,7 @@ export default function Transactions() {
   const [rulesOpen,       setRulesOpen]       = useState(false)
   const [dupeOpen,        setDupeOpen]        = useState(false)
   const [matchmakerOpen,  setMatchmakerOpen]  = useState(false)
+  const [recurringOpen,   setRecurringOpen]   = useState(false)
   const [editTx,       setEditTx]       = useState<Transaction | null>(null)
   const [fullscreen,   setFullscreen]   = useState(false)
   const [colWidths,    setColWidths]    = useState<ColWidths>(DEFAULT_WIDTHS)
@@ -252,6 +254,8 @@ export default function Transactions() {
 
   // Uncategorized count for matchmaker badge
   const uncategorizedCount = transactions.filter(t => !t.categoryId && t.type !== 'transfer').length
+  const today = new Date().toISOString().slice(0, 10)
+  const overdueRecurringCount = store.recurring.filter(r => r.enabled && r.nextDate <= today).length
 
   // Duplicate groups count for badge
   const dupeCount = (() => {
@@ -331,6 +335,22 @@ export default function Transactions() {
           {dupeCount > 0 && (
             <span className="text-xs bg-amber-100 text-amber-700 font-bold px-1.5 py-0.5 rounded-full">
               {dupeCount}
+            </span>
+          )}
+        </button>
+
+        <button onClick={() => setRecurringOpen(true)}
+          className={`flex items-center gap-2 border text-sm font-medium px-3 py-2 rounded-lg transition-colors ${
+            overdueRecurringCount > 0
+              ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+              : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+          title="Регулярные операции">
+          <RefreshCw size={15} className={overdueRecurringCount > 0 ? 'text-amber-500' : 'text-slate-400'} />
+          <span className="hidden sm:inline">Регулярные</span>
+          {overdueRecurringCount > 0 && (
+            <span className="text-xs bg-amber-200 text-amber-800 font-bold px-1.5 py-0.5 rounded-full">
+              {overdueRecurringCount}
             </span>
           )}
         </button>
@@ -735,6 +755,7 @@ export default function Transactions() {
       <TransactionRulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
       <DuplicateCheckerModal open={dupeOpen} onClose={() => setDupeOpen(false)} />
       <MatchmakerModal open={matchmakerOpen} onClose={() => setMatchmakerOpen(false)} />
+      <RecurringModal open={recurringOpen} onClose={() => setRecurringOpen(false)} />
     </div>
   )
 }

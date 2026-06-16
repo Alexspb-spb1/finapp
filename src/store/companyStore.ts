@@ -1,7 +1,7 @@
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore'
 import { db, auth } from '../lib/firebase'
 import { subscribeAuth, authStore } from './authStore'
-import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart } from '../types'
+import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart, RecurringTemplate, RecurringPeriod } from '../types'
 
 const DEFAULT_CATEGORIES: Category[] = [
   { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',     color: '#22c55e' },
@@ -18,18 +18,19 @@ const DEFAULT_CATEGORIES: Category[] = [
 ]
 
 interface CompanyData {
-  accounts:       Account[]
-  categories:     Category[]
+  accounts:    Account[]
+  categories:  Category[]
   counterparties: Counterparty[]
-  transactions:   Transaction[]
-  projects:       Project[]
-  rules:          TransactionRule[]
-  budgets:        BudgetItem[]
+  transactions: Transaction[]
+  projects:    Project[]
+  rules:       TransactionRule[]
+  budgets:     BudgetItem[]
+  recurring:   RecurringTemplate[]
 }
 
 const EMPTY: CompanyData = {
   accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
-  transactions: [], projects: [], rules: [], budgets: [],
+  transactions: [], projects: [], rules: [], budgets: [], recurring: [],
 }
 
 // ── Pub/sub ──────────────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ let unsubSnapshot: (() => void) | null = null
     const saved = JSON.parse(raw) as CompanyData
     if (!saved.rules)      saved.rules      = []
     if (!saved.budgets)    saved.budgets    = []
+    if (!saved.recurring)  saved.recurring  = []
     if (!saved.categories) saved.categories = DEFAULT_CATEGORIES
     state            = saved
     currentCompanyId = lastId   // ← чтобы persist() работал сразу
@@ -92,6 +94,17 @@ function persist() {
 
 function savedAt(d: CompanyData): number { return (d as any)._savedAt ?? 0 }
 
+function advanceDate(dateStr: string, period: RecurringPeriod): string {
+  const d = new Date(dateStr)
+  switch (period) {
+    case 'weekly':    d.setDate(d.getDate() + 7);       break
+    case 'monthly':   d.setMonth(d.getMonth() + 1);     break
+    case 'quarterly': d.setMonth(d.getMonth() + 3);     break
+    case 'yearly':    d.setFullYear(d.getFullYear() + 1); break
+  }
+  return d.toISOString().slice(0, 10)
+}
+
 export const companyStore = {
   // ── Init: load data + subscribe to real-time changes ──────────────────────
   async init(companyId: string) {
@@ -108,6 +121,7 @@ export const companyStore = {
         const lsData = JSON.parse(lsRaw) as CompanyData
         if (!lsData.rules)      lsData.rules      = []
         if (!lsData.budgets)    lsData.budgets    = []
+        if (!lsData.recurring)  lsData.recurring  = []
         if (!lsData.categories) lsData.categories = DEFAULT_CATEGORIES
         state = lsData
         notify()
@@ -123,6 +137,7 @@ export const companyStore = {
         const fresh = snap.data() as CompanyData
         if (!fresh.rules)      fresh.rules      = []
         if (!fresh.budgets)    fresh.budgets    = []
+        if (!fresh.recurring)  fresh.recurring  = []
         if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
         if (savedAt(fresh) >= savedAt(state)) {
           state = fresh
@@ -144,6 +159,7 @@ export const companyStore = {
           const fresh = docSnap.data() as CompanyData
           if (!fresh.rules)      fresh.rules      = []
           if (!fresh.budgets)    fresh.budgets    = []
+          if (!fresh.recurring)  fresh.recurring  = []
           if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
           // Принимаем только если Firestore новее текущего состояния
           if (savedAt(fresh) >= savedAt(state)) {
@@ -162,8 +178,9 @@ export const companyStore = {
   get counterparties() { return state.counterparties  },
   get transactions()   { return state.transactions    },
   get projects()       { return state.projects        },
-  get rules()          { return state.rules   ?? []   },
-  get budgets()        { return state.budgets ?? []   },
+  get rules()          { return state.rules     ?? [] },
+  get budgets()        { return state.budgets   ?? [] },
+  get recurring()      { return state.recurring ?? [] },
 
   // ── Transactions ──────────────────────────────────────────────────────────
   addTransaction(t: Transaction) {
@@ -353,6 +370,53 @@ export const companyStore = {
   },
   deleteBudget(categoryId: string, month: string) {
     state = { ...state, budgets: (state.budgets ?? []).filter(b => !(b.categoryId === categoryId && b.month === month)) }
+    persist()
+  },
+
+  // ── Recurring templates ───────────────────────────────────────────────────
+  addRecurring(t: RecurringTemplate) {
+    state = { ...state, recurring: [...(state.recurring ?? []), t] }
+    persist()
+  },
+  updateRecurring(id: string, changes: Partial<Omit<RecurringTemplate, 'id'>>) {
+    state = { ...state, recurring: (state.recurring ?? []).map(r => r.id === id ? { ...r, ...changes } : r) }
+    persist()
+  },
+  deleteRecurring(id: string) {
+    state = { ...state, recurring: (state.recurring ?? []).filter(r => r.id !== id) }
+    persist()
+  },
+  // Создаёт реальную транзакцию из шаблона и сдвигает nextDate на следующий период
+  executeRecurring(id: string) {
+    const tmpl = (state.recurring ?? []).find(r => r.id === id)
+    if (!tmpl || !tmpl.enabled) return
+    const tx: Transaction = {
+      id: 'tx' + Date.now(),
+      date: tmpl.nextDate,
+      type: tmpl.type,
+      amount: tmpl.amount,
+      accountId: tmpl.accountId,
+      categoryId: tmpl.categoryId,
+      counterpartyId: tmpl.counterpartyId,
+      projectId: tmpl.projectId,
+      comment: tmpl.comment,
+      tags: [],
+    }
+    // Advance nextDate by period
+    const next = advanceDate(tmpl.nextDate, tmpl.period)
+    const expired = tmpl.endDate && next > tmpl.endDate
+    // Add transaction + update template
+    let { transactions, accounts, recurring } = state
+    accounts = accounts.map(a => {
+      if (tx.type === 'income'  && a.id === tx.accountId) return { ...a, balance: a.balance + tx.amount }
+      if (tx.type === 'expense' && a.id === tx.accountId) return { ...a, balance: a.balance - tx.amount }
+      return a
+    })
+    transactions = [tx, ...transactions]
+    recurring = (recurring ?? []).map(r =>
+      r.id === id ? { ...r, nextDate: next, enabled: expired ? false : r.enabled } : r
+    )
+    state = { ...state, transactions, accounts, recurring }
     persist()
   },
 

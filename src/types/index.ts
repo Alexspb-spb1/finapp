@@ -107,6 +107,24 @@ export interface TransactionRule {
   actions: RuleAction[]
 }
 
+export type RecurringPeriod = 'weekly' | 'monthly' | 'quarterly' | 'yearly'
+
+export interface RecurringTemplate {
+  id: string
+  name: string
+  type: 'income' | 'expense'
+  amount: number
+  accountId: string
+  categoryId: string
+  counterpartyId?: string
+  projectId?: string
+  comment: string
+  period: RecurringPeriod
+  nextDate: string   // YYYY-MM-DD — когда создать следующую операцию
+  endDate?: string   // не создавать после этой даты
+  enabled: boolean
+}
+
 export interface PaymentCalendarItem {
   id: string
   date: string
