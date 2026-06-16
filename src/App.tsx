@@ -16,6 +16,7 @@ import Settings from './pages/Settings'
 import Users from './pages/Users'
 import Reconciliation from './pages/Reconciliation'
 import Budget from './pages/Budget'
+import Balance from './pages/Balance'
 
 export default function App() {
   return (
@@ -43,6 +44,7 @@ export default function App() {
           <Route path="users" element={<Users />} />
           <Route path="reconciliation" element={<Reconciliation />} />
           <Route path="reports/budget" element={<Budget />} />
+          <Route path="reports/balance" element={<Balance />} />
           <Route path="settings" element={<Settings />} />
         </Route>
 
