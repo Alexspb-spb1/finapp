@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors, RefreshCw } from 'lucide-react'
+import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors, RefreshCw, Download } from 'lucide-react'
+import { downloadSheet } from '../utils/exportExcel'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
 import type { Transaction, TransactionType } from '../types'
@@ -221,6 +222,22 @@ export default function Transactions() {
 
   const periodActive = !!(dateFrom || dateTo)
 
+  function handleExport() {
+    const TYPE_RU: Record<string, string> = { income: 'Доход', expense: 'Расход', transfer: 'Перевод' }
+    const rows = filtered.map(t => ({
+      'Дата':          t.date,
+      'Тип':           TYPE_RU[t.type] ?? t.type,
+      'Статья':        categories.find(c => c.id === t.categoryId)?.name ?? '',
+      'Счёт':          accounts.find(a => a.id === t.accountId)?.name ?? '',
+      'Контрагент':    counterparties.find(c => c.id === t.counterpartyId)?.name ?? '',
+      'Проект':        projects.find(p => p.id === t.projectId)?.name ?? '',
+      'Назначение':    t.comment,
+      'Сумма':         t.type === 'expense' ? -t.amount : t.amount,
+    }))
+    const today = new Date().toISOString().slice(0, 10)
+    downloadSheet(rows, 'Операции', `operations_${today}.xlsx`)
+  }
+
   // ── Selection helpers ──────────────────────────────────────────────────────
   const allSelected  = filtered.length > 0 && filtered.every(t => selected.has(t.id))
 
@@ -366,6 +383,12 @@ export default function Transactions() {
             </span>
           </button>
         )}
+
+        <button onClick={handleExport}
+          title={`Экспорт ${filtered.length} операций в Excel`}
+          className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-300 transition-colors">
+          <Download size={16} />
+        </button>
 
         <button onClick={() => setAddOpen(true)}
           className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">

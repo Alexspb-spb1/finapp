@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, TrendingUp, TrendingDown } from 'lucide-react'
+import { ChevronDown, ChevronRight, TrendingUp, TrendingDown, Download } from 'lucide-react'
+import { downloadSheet } from '../utils/exportExcel'
 import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
 import CategoryIcon from '../utils/categoryIcons'
@@ -159,6 +160,27 @@ export default function PnL() {
     )
   }
 
+  function handleExport() {
+    const mh = reversedMonths.map(m => MONTH_LABELS[m.slice(5)] ?? m)
+    const row = (label: string, vals: number[]) =>
+      ({ 'Статья': label, ...Object.fromEntries(mh.map((h, i) => [h, vals[i] || null])) })
+
+    const rows = [
+      row('Выручка (Прямые доходы)', reversedMonths.map(m => sumBySection('income', 'direct', m))),
+      ...catsForSection('income', 'direct').map(c => row(`  ${c.name}`, reversedMonths.map(m => sumByCategory(c.id, m)))),
+      row('Прямые расходы', reversedMonths.map(m => -sumBySection('expense', 'direct', m))),
+      ...catsForSection('expense', 'direct').map(c => row(`  ${c.name}`, reversedMonths.map(m => -sumByCategory(c.id, m)))),
+      row('ВАЛОВАЯ ПРИБЫЛЬ', reversedMonths.map((_, i) => directIncomes[i] - directExpenses[i])),
+      row('Косвенные расходы', reversedMonths.map(m => -sumBySection('expense', 'indirect', m))),
+      ...catsForSection('expense', 'indirect').map(c => row(`  ${c.name}`, reversedMonths.map(m => -sumByCategory(c.id, m)))),
+      row('ОПЕРАЦИОННАЯ ПРИБЫЛЬ (EBIT)', ebitValues),
+      row('Прочие доходы', reversedMonths.map(m => sumBySection('income', 'default', m))),
+      row('Прочие расходы', reversedMonths.map(m => -sumBySection('expense', 'default', m))),
+      row('ЧИСТАЯ ПРИБЫЛЬ', netProfits),
+    ]
+    downloadSheet(rows, 'ОПиУ', `pnl_${year}_${method}.xlsx`)
+  }
+
   if (months.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-12 text-center">
@@ -209,6 +231,10 @@ export default function PnL() {
             {allYears.map(y => <option key={y} value={y}>{y}</option>)}
             {!allYears.includes(currentYear) && <option value={currentYear}>{currentYear}</option>}
           </select>
+          <button onClick={handleExport} title="Экспорт в Excel"
+            className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-300 transition-colors">
+            <Download size={15} />
+          </button>
         </div>
       </div>
 

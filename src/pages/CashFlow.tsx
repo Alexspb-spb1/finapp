@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, Wallet } from 'lucide-react'
+import { ChevronDown, ChevronRight, Wallet, Download } from 'lucide-react'
+import { downloadSheet } from '../utils/exportExcel'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
@@ -120,6 +121,37 @@ export default function CashFlow() {
   const totalExpense = months.reduce((s, m) => s + ([1,2,3] as CategoryKind[]).reduce((ss, k) => ss + sumKindMonth('expense', k, m), 0), 0)
   const totalNet     = totalIncome - totalExpense
 
+  function handleExport() {
+    const monthHeaders = months.map(m => MONTH_LABELS[m.slice(5)] ?? m)
+    const rows: Record<string, string | number | null>[] = []
+
+    for (const kind of [1, 2, 3] as CategoryKind[]) {
+      rows.push({ 'Статья': KIND_LABELS[kind], ...Object.fromEntries(monthHeaders.map(h => [h, null])) })
+
+      // Income categories
+      for (const cat of catsForSection('income', kind)) {
+        const vals = months.map(m => sumCatMonth(cat.id, m))
+        if (vals.every(v => v === 0)) continue
+        rows.push({ 'Статья': `  ${cat.name} (поступление)`, ...Object.fromEntries(months.map((_, i) => [monthHeaders[i], vals[i] || null])) })
+      }
+      // Expense categories
+      for (const cat of catsForSection('expense', kind)) {
+        const vals = months.map(m => sumCatMonth(cat.id, m))
+        if (vals.every(v => v === 0)) continue
+        rows.push({ 'Статья': `  ${cat.name} (выплата)`, ...Object.fromEntries(months.map((_, i) => [monthHeaders[i], vals[i] ? -vals[i] : null])) })
+      }
+      // Net row
+      rows.push({ 'Статья': `Чистый поток (${KIND_LABELS[kind]})`, ...Object.fromEntries(months.map((m, i) => [monthHeaders[i], sumKindMonth('income', kind, m) - sumKindMonth('expense', kind, m)])) })
+      rows.push({ 'Статья': '', ...Object.fromEntries(monthHeaders.map(h => [h, null])) })
+    }
+
+    // Total net + closing balance
+    rows.push({ 'Статья': 'ИТОГО чистый поток', ...Object.fromEntries(months.map((_, i) => [monthHeaders[i], totalNetPerMonth[i]])) })
+    rows.push({ 'Статья': 'Остаток на конец месяца', ...Object.fromEntries(months.map((m, i) => [monthHeaders[i], closingBalances[m]])) })
+
+    downloadSheet(rows, 'ДДС', `cashflow_${year}.xlsx`)
+  }
+
   if (months.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-12 text-center">
@@ -138,11 +170,17 @@ export default function CashFlow() {
           <h2 className="text-base font-semibold text-slate-800">Движение денежных средств</h2>
           <p className="text-xs text-slate-400 mt-0.5">ДДС · кассовый метод</p>
         </div>
-        <select value={year} onChange={e => setYear(e.target.value)}
-          className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
-          {allYears.map(y => <option key={y} value={y}>{y}</option>)}
-          {!allYears.includes(currentYear) && <option value={currentYear}>{currentYear}</option>}
-        </select>
+        <div className="flex items-center gap-2">
+          <select value={year} onChange={e => setYear(e.target.value)}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
+            {allYears.map(y => <option key={y} value={y}>{y}</option>)}
+            {!allYears.includes(currentYear) && <option value={currentYear}>{currentYear}</option>}
+          </select>
+          <button onClick={handleExport} title="Экспорт в Excel"
+            className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-300 transition-colors">
+            <Download size={15} />
+          </button>
+        </div>
       </div>
 
       {/* Summary cards */}
