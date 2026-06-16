@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle } from 'lucide-react'
+import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
 import type { Transaction, TransactionType } from '../types'
@@ -135,6 +135,9 @@ export default function Transactions() {
 
   const [typeFilter,   setTypeFilter]   = useState<TransactionType | 'all'>('all')
   const [search,       setSearch]       = useState('')
+  const [dateFrom,     setDateFrom]     = useState('')
+  const [dateTo,       setDateTo]       = useState('')
+  const [showPeriod,   setShowPeriod]   = useState(false)
   const [addOpen,         setAddOpen]         = useState(false)
   const [rulesOpen,       setRulesOpen]       = useState(false)
   const [dupeOpen,        setDupeOpen]        = useState(false)
@@ -197,6 +200,8 @@ export default function Transactions() {
   // ── Filtering ──────────────────────────────────────────────────────────────
   const filtered = transactions.filter(t => {
     if (typeFilter !== 'all' && t.type !== typeFilter) return false
+    if (dateFrom && t.date < dateFrom) return false
+    if (dateTo   && t.date > dateTo)   return false
     if (search) {
       const cat  = categories.find(c => c.id === t.categoryId)
       const cp   = counterparties.find(c => c.id === t.counterpartyId)
@@ -211,6 +216,8 @@ export default function Transactions() {
     }
     return true
   })
+
+  const periodActive = !!(dateFrom || dateTo)
 
   // ── Selection helpers ──────────────────────────────────────────────────────
   const allSelected  = filtered.length > 0 && filtered.every(t => selected.has(t.id))
@@ -280,6 +287,24 @@ export default function Transactions() {
             className="bg-transparent text-sm outline-none w-full text-slate-600 placeholder:text-slate-400" />
         </div>
 
+        <button
+          onClick={() => setShowPeriod(v => !v)}
+          title="Фильтр по периоду"
+          className={`flex items-center gap-2 border text-sm font-medium px-3 py-2 rounded-lg transition-colors ${
+            periodActive
+              ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
+              : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}>
+          <CalendarRange size={15} className={periodActive ? 'text-indigo-500' : 'text-slate-400'} />
+          <span className="hidden sm:inline">{periodActive ? 'Период ✓' : 'Период'}</span>
+          {periodActive && (
+            <span onClick={e => { e.stopPropagation(); setDateFrom(''); setDateTo('') }}
+              className="text-indigo-400 hover:text-red-400 transition-colors" title="Сбросить период">
+              <X size={13} />
+            </span>
+          )}
+        </button>
+
         <button onClick={() => setFullscreen(v => !v)}
           title={fullscreen ? 'Свернуть' : 'На весь экран'}
           className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-indigo-600 transition-colors">
@@ -327,6 +352,57 @@ export default function Transactions() {
           <Plus size={16} /> Добавить
         </button>
       </div>
+
+      {/* Period filter panel */}
+      {showPeriod && (
+        <div className="bg-white rounded-xl border border-slate-200 px-4 py-3 shadow-sm flex flex-wrap items-center gap-4 shrink-0">
+          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Период:</span>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-400">с</label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={e => setDateFrom(e.target.value)}
+              className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-400">по</label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={e => setDateTo(e.target.value)}
+              className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400"
+            />
+          </div>
+          {/* Quick shortcuts */}
+          {[
+            { label: 'Сегодня',     from: new Date().toISOString().slice(0,10), to: new Date().toISOString().slice(0,10) },
+            { label: 'Эта неделя',  from: (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay() + 1); return d.toISOString().slice(0,10) })(), to: new Date().toISOString().slice(0,10) },
+            { label: 'Этот месяц',  from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10), to: new Date().toISOString().slice(0,10) },
+            { label: 'Этот год',    from: `${new Date().getFullYear()}-01-01`, to: new Date().toISOString().slice(0,10) },
+          ].map(({ label, from, to }) => (
+            <button key={label}
+              onClick={() => { setDateFrom(from); setDateTo(to) }}
+              className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
+                dateFrom === from && dateTo === to
+                  ? 'border-indigo-400 bg-indigo-50 text-indigo-700 font-medium'
+                  : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+              }`}>
+              {label}
+            </button>
+          ))}
+          {periodActive && (
+            <button onClick={() => { setDateFrom(''); setDateTo('') }}
+              className="text-xs text-red-400 hover:text-red-600 px-2.5 py-1 rounded-lg border border-red-200 hover:bg-red-50 transition-colors">
+              Сбросить
+            </button>
+          )}
+          <span className="text-xs text-slate-400 ml-auto">
+            Найдено: <span className="font-semibold text-slate-600">{filtered.length}</span>
+          </span>
+        </div>
+      )}
 
       {/* ── Mobile card list (hidden on md+) ─────────────────────────── */}
       <div className="md:hidden bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
