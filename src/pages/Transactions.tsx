@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy } from 'lucide-react'
+import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
 import type { Transaction, TransactionType } from '../types'
@@ -7,6 +7,7 @@ import TransactionModal from '../components/transactions/TransactionModal'
 import TransactionEditModal from '../components/transactions/TransactionEditModal'
 import TransactionRulesModal from '../components/transactions/TransactionRulesModal'
 import DuplicateCheckerModal from '../components/transactions/DuplicateCheckerModal'
+import MatchmakerModal from '../components/transactions/MatchmakerModal'
 import CategoryIcon from '../utils/categoryIcons'
 
 // ─── Inline edit cell ─────────────────────────────────────────────────────────
@@ -134,9 +135,10 @@ export default function Transactions() {
 
   const [typeFilter,   setTypeFilter]   = useState<TransactionType | 'all'>('all')
   const [search,       setSearch]       = useState('')
-  const [addOpen,      setAddOpen]      = useState(false)
-  const [rulesOpen,    setRulesOpen]    = useState(false)
-  const [dupeOpen,     setDupeOpen]     = useState(false)
+  const [addOpen,         setAddOpen]         = useState(false)
+  const [rulesOpen,       setRulesOpen]       = useState(false)
+  const [dupeOpen,        setDupeOpen]        = useState(false)
+  const [matchmakerOpen,  setMatchmakerOpen]  = useState(false)
   const [editTx,       setEditTx]       = useState<Transaction | null>(null)
   const [fullscreen,   setFullscreen]   = useState(false)
   const [colWidths,    setColWidths]    = useState<ColWidths>(DEFAULT_WIDTHS)
@@ -241,6 +243,9 @@ export default function Transactions() {
   // checkbox(32) + cols + edit(40) + delete(48)
   const totalW = 32 + COLS.reduce((s, c) => s + colWidths[c.key], 0) + 40 + 48
 
+  // Uncategorized count for matchmaker badge
+  const uncategorizedCount = transactions.filter(t => !t.categoryId && t.type !== 'transfer').length
+
   // Duplicate groups count for badge
   const dupeCount = (() => {
     const map = new Map<string, number>()
@@ -304,6 +309,18 @@ export default function Transactions() {
             </span>
           )}
         </button>
+
+        {uncategorizedCount > 0 && (
+          <button onClick={() => setMatchmakerOpen(true)}
+            className="flex items-center gap-2 border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-700 text-sm font-medium px-3 py-2 rounded-lg transition-colors"
+            title="Операции без статьи">
+            <AlertCircle size={15} className="text-amber-500" />
+            <span className="hidden sm:inline">Без статьи</span>
+            <span className="bg-amber-200 text-amber-800 text-xs font-bold px-1.5 py-0.5 rounded-full">
+              {uncategorizedCount}
+            </span>
+          </button>
+        )}
 
         <button onClick={() => setAddOpen(true)}
           className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
@@ -635,6 +652,7 @@ export default function Transactions() {
       <TransactionEditModal transaction={editTx} onClose={() => setEditTx(null)} />
       <TransactionRulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
       <DuplicateCheckerModal open={dupeOpen} onClose={() => setDupeOpen(false)} />
+      <MatchmakerModal open={matchmakerOpen} onClose={() => setMatchmakerOpen(false)} />
     </div>
   )
 }

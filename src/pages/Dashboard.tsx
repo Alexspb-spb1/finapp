@@ -1,12 +1,14 @@
+import { useState } from 'react'
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts'
-import { TrendingUp, TrendingDown, Wallet, ArrowLeftRight } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, BarChart2, AlertCircle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDateShort, monthKey } from '../utils/format'
 import CategoryIcon from '../utils/categoryIcons'
+import MatchmakerModal from '../components/transactions/MatchmakerModal'
 
 function MetricCard({
   label, value, sub, icon: Icon, color, trend,
@@ -42,6 +44,7 @@ const MONTH_LABELS: Record<string, string> = {
 }
 
 export default function Dashboard() {
+  const [matchmakerOpen, setMatchmakerOpen] = useState(false)
   const { transactions, accounts, categories } = useStore()
 
   const totalBalance = accounts.reduce((s, a) => s + a.balance, 0)
@@ -97,6 +100,27 @@ export default function Dashboard() {
     return ((cur - prev) / prev) * 100
   }
 
+  // Gross profit (direct income - direct expenses, by pnlSection)
+  function sectionSum(type: 'income' | 'expense', section: string, month: string) {
+    const catIds = categories
+      .filter(c => !c.isGroup && c.type === type && (c.pnlSection ?? (type === 'income' ? 'direct' : 'indirect')) === section)
+      .map(c => c.id)
+    return transactions
+      .filter(t => catIds.includes(t.categoryId) && monthKey(t.date) === month)
+      .reduce((s, t) => s + t.amount, 0)
+  }
+  const curDirectInc  = sectionSum('income',  'direct', currentMonth)
+  const curDirectExp  = sectionSum('expense', 'direct', currentMonth)
+  const curGrossProfit = curDirectInc - curDirectExp
+  const curGrossMargin = curDirectInc > 0 ? Math.round((curGrossProfit / curDirectInc) * 100) : null
+
+  const prevDirectInc  = sectionSum('income',  'direct', prevMonth)
+  const prevDirectExp  = sectionSum('expense', 'direct', prevMonth)
+  const prevGrossProfit = prevDirectInc - prevDirectExp
+
+  // Uncategorized count
+  const uncategorizedCount = transactions.filter(t => !t.categoryId && t.type !== 'transfer').length
+
   // expenses by category (current month)
   const expByCat: Record<string, number> = {}
   transactions.filter(t => t.type === 'expense' && monthKey(t.date) === currentMonth).forEach(t => {
@@ -127,6 +151,23 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {/* Uncategorized banner */}
+      {uncategorizedCount > 0 && (
+        <button onClick={() => setMatchmakerOpen(true)}
+          className="w-full flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3.5 text-left hover:bg-amber-100 transition-colors group">
+          <AlertCircle size={18} className="text-amber-500 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-semibold text-amber-800">
+              {uncategorizedCount} {uncategorizedCount === 1 ? 'операция без статьи' : uncategorizedCount < 5 ? 'операции без статьи' : 'операций без статьи'}
+            </span>
+            <span className="text-xs text-amber-600 ml-2">— нажмите чтобы назначить статьи</span>
+          </div>
+          <span className="text-xs font-medium text-amber-700 border border-amber-300 px-2.5 py-1 rounded-lg group-hover:bg-amber-200 transition-colors shrink-0">
+            Категоризировать →
+          </span>
+        </button>
+      )}
+
       {/* Metric cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
@@ -151,11 +192,12 @@ export default function Dashboard() {
           trend={-trend(cur.expense, prev.expense)}
         />
         <MetricCard
-          label={`Прибыль за ${currentMonthLabel}`}
-          value={formatCurrency(cur.income - cur.expense)}
-          icon={ArrowLeftRight}
-          color="bg-amber-500"
-          trend={trend(cur.income - cur.expense, prev.income - prev.expense)}
+          label={`Валовая прибыль · ${currentMonthLabel}`}
+          value={formatCurrency(curGrossProfit)}
+          sub={curGrossMargin !== null ? `Маржа ${curGrossMargin}%` : 'Настройте pnlSection статей'}
+          icon={BarChart2}
+          color="bg-violet-500"
+          trend={trend(curGrossProfit, prevGrossProfit)}
         />
       </div>
 
@@ -228,6 +270,8 @@ export default function Dashboard() {
         </ResponsiveContainer>
       </div>
 
+      <MatchmakerModal open={matchmakerOpen} onClose={() => setMatchmakerOpen(false)} />
+
       {/* Bottom row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Recent transactions */}
@@ -236,16 +280,21 @@ export default function Dashboard() {
           <ul className="space-y-3">
             {recent.map(t => {
               const cat = categories.find(c => c.id === t.categoryId)
+              const hasNoCategory = !t.categoryId && t.type !== 'transfer'
               return (
                 <li key={t.id} className="flex items-center gap-3">
                   <div
                     className="w-9 h-9 icon-circle flex items-center justify-center shrink-0"
                     style={{ background: (cat?.color ?? '#94a3b8') + '22' }}
                   >
-                    <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={15} color={cat?.color ?? '#94a3b8'} />
+                    {hasNoCategory
+                      ? <AlertCircle size={15} className="text-amber-400" />
+                      : <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={15} color={cat?.color ?? '#94a3b8'} />}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-700 truncate">{cat?.name ?? '—'}</p>
+                    <p className={`text-sm font-medium truncate ${hasNoCategory ? 'text-amber-600 italic' : 'text-slate-700'}`}>
+                      {cat?.name ?? (hasNoCategory ? 'Без статьи' : '—')}
+                    </p>
                     <p className="text-xs text-slate-400">{formatDateShort(t.date)}</p>
                   </div>
                   <span className={`text-sm font-semibold ${t.type === 'income' ? 'text-emerald-600' : t.type === 'expense' ? 'text-red-500' : 'text-indigo-500'}`}>
