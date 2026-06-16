@@ -1,7 +1,7 @@
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore'
 import { db, auth } from '../lib/firebase'
 import { subscribeAuth, authStore } from './authStore'
-import type { Account, Category, Counterparty, Transaction, Project, TransactionRule } from '../types'
+import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart } from '../types'
 
 const DEFAULT_CATEGORIES: Category[] = [
   { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',     color: '#22c55e' },
@@ -24,11 +24,12 @@ interface CompanyData {
   transactions:   Transaction[]
   projects:       Project[]
   rules:          TransactionRule[]
+  budgets:        BudgetItem[]
 }
 
 const EMPTY: CompanyData = {
   accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
-  transactions: [], projects: [], rules: [],
+  transactions: [], projects: [], rules: [], budgets: [],
 }
 
 // ── Pub/sub ──────────────────────────────────────────────────────────────────
@@ -56,6 +57,7 @@ let unsubSnapshot: (() => void) | null = null
     if (!raw) return
     const saved = JSON.parse(raw) as CompanyData
     if (!saved.rules)      saved.rules      = []
+    if (!saved.budgets)    saved.budgets    = []
     if (!saved.categories) saved.categories = DEFAULT_CATEGORIES
     state            = saved
     currentCompanyId = lastId   // ← чтобы persist() работал сразу
@@ -105,6 +107,7 @@ export const companyStore = {
       try {
         const lsData = JSON.parse(lsRaw) as CompanyData
         if (!lsData.rules)      lsData.rules      = []
+        if (!lsData.budgets)    lsData.budgets    = []
         if (!lsData.categories) lsData.categories = DEFAULT_CATEGORIES
         state = lsData
         notify()
@@ -119,6 +122,7 @@ export const companyStore = {
       if (snap.exists()) {
         const fresh = snap.data() as CompanyData
         if (!fresh.rules)      fresh.rules      = []
+        if (!fresh.budgets)    fresh.budgets    = []
         if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
         if (savedAt(fresh) >= savedAt(state)) {
           state = fresh
@@ -139,6 +143,7 @@ export const companyStore = {
         if (docSnap.exists()) {
           const fresh = docSnap.data() as CompanyData
           if (!fresh.rules)      fresh.rules      = []
+          if (!fresh.budgets)    fresh.budgets    = []
           if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
           // Принимаем только если Firestore новее текущего состояния
           if (savedAt(fresh) >= savedAt(state)) {
@@ -152,12 +157,13 @@ export const companyStore = {
   },
 
   // ── Getters ───────────────────────────────────────────────────────────────
-  get accounts()       { return state.accounts      },
-  get categories()     { return state.categories    },
-  get counterparties() { return state.counterparties },
-  get transactions()   { return state.transactions  },
-  get projects()       { return state.projects      },
-  get rules()          { return state.rules ?? []   },
+  get accounts()       { return state.accounts        },
+  get categories()     { return state.categories      },
+  get counterparties() { return state.counterparties  },
+  get transactions()   { return state.transactions    },
+  get projects()       { return state.projects        },
+  get rules()          { return state.rules   ?? []   },
+  get budgets()        { return state.budgets ?? []   },
 
   // ── Transactions ──────────────────────────────────────────────────────────
   addTransaction(t: Transaction) {
@@ -331,6 +337,75 @@ export const companyStore = {
   },
   deleteProject(id: string) {
     state = { ...state, projects: state.projects.filter(p => p.id !== id) }
+    persist()
+  },
+
+  // ── Budgets ───────────────────────────────────────────────────────────────
+  upsertBudget(categoryId: string, month: string, planned: number) {
+    const budgets = state.budgets ?? []
+    const existing = budgets.find(b => b.categoryId === categoryId && b.month === month)
+    if (existing) {
+      state = { ...state, budgets: budgets.map(b => b.id === existing.id ? { ...b, planned } : b) }
+    } else {
+      state = { ...state, budgets: [...budgets, { id: 'b' + Date.now(), categoryId, month, planned, actual: 0 }] }
+    }
+    persist()
+  },
+  deleteBudget(categoryId: string, month: string) {
+    state = { ...state, budgets: (state.budgets ?? []).filter(b => !(b.categoryId === categoryId && b.month === month)) }
+    persist()
+  },
+
+  // ── Split transaction ─────────────────────────────────────────────────────
+  // Удаляет оригинальную операцию и создаёт N частей с общим splitId.
+  // Баланс счёта не меняется, т.к. сумма частей == сумма оригинала.
+  splitTransaction(originalId: string, parts: SplitPart[]) {
+    const original = state.transactions.find(t => t.id === originalId)
+    if (!original || parts.length < 2) return
+
+    const splitId = 'sp' + Date.now()
+    const ts = Date.now()
+
+    // Удаляем оригинал из списка (без пересчёта баланса — он компенсируется частями)
+    let { transactions, accounts } = state
+
+    // Реверсируем баланс от оригинала
+    accounts = accounts.map(a => {
+      if (original.type === 'income'  && a.id === original.accountId) return { ...a, balance: a.balance - original.amount }
+      if (original.type === 'expense' && a.id === original.accountId) return { ...a, balance: a.balance + original.amount }
+      return a
+    })
+
+    transactions = transactions.filter(t => t.id !== originalId)
+
+    // Добавляем части
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i]
+      const newTx: Transaction = {
+        ...original,
+        id: `${splitId}_${i}_${ts + i}`,
+        amount: p.amount,
+        categoryId: p.categoryId,
+        comment: p.comment ?? original.comment,
+        projectId: p.projectId ?? original.projectId,
+        tags: original.tags,
+        splitId,
+      }
+      transactions = [newTx, ...transactions]
+      accounts = accounts.map(a => {
+        if (original.type === 'income'  && a.id === original.accountId) return { ...a, balance: a.balance + p.amount }
+        if (original.type === 'expense' && a.id === original.accountId) return { ...a, balance: a.balance - p.amount }
+        return a
+      })
+    }
+
+    // Сортируем: части split рядом, сверху
+    transactions = [
+      ...transactions.filter(t => t.splitId === splitId),
+      ...transactions.filter(t => t.splitId !== splitId),
+    ]
+
+    state = { ...state, transactions, accounts }
     persist()
   },
 

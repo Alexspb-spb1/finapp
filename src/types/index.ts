@@ -54,6 +54,14 @@ export interface Transaction {
   projectId?: string
   comment: string
   tags: string[]
+  splitId?: string      // общий ID для частей разделённой операции
+}
+
+export interface SplitPart {
+  categoryId: string
+  amount: number
+  comment?: string
+  projectId?: string
 }
 
 export interface Project {

@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { X, Building2, AlertCircle } from 'lucide-react'
+import { X, Building2, AlertCircle, Scissors } from 'lucide-react'
 import type { Transaction, TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
+import SplitTransactionModal from './SplitTransactionModal'
 
 interface Props {
   transaction: Transaction | null
@@ -31,6 +32,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
   })
   const [hasRelatedDate, setHasRelatedDate] = useState(!!transaction.relatedDate)
   const [relatedDate,    setRelatedDate]    = useState(transaction.relatedDate ?? transaction.date)
+  const [splitOpen,      setSplitOpen]      = useState(false)
 
   const filteredCats = categories.filter(c => c.type === type && !c.isGroup)
   const typeGroups = categories.filter(c => c.type === type && c.isGroup)
@@ -292,6 +294,13 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               className="flex-1 py-2.5 rounded-lg border border-slate-200 text-sm text-slate-600 font-medium hover:bg-slate-50 transition">
               Отмена
             </button>
+            {type !== 'transfer' && !transaction.splitId && (
+              <button type="button" onClick={() => setSplitOpen(true)}
+                className="px-3 py-2.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-indigo-50 hover:border-indigo-300 hover:text-indigo-600 transition-colors"
+                title="Разделить операцию на части">
+                <Scissors size={15} />
+              </button>
+            )}
             <button type="button" onClick={handleSave}
               className={`flex-1 py-2.5 rounded-lg text-white text-sm font-medium transition ${
                 type === 'income'   ? 'bg-emerald-500 hover:bg-emerald-600'
@@ -303,6 +312,11 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
           </div>
         </div>
       </div>
+
+      <SplitTransactionModal
+        transaction={splitOpen ? transaction : null}
+        onClose={() => { setSplitOpen(false); onClose() }}
+      />
     </div>
   )
 }

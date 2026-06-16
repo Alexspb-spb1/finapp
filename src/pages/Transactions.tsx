@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange } from 'lucide-react'
+import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
 import type { Transaction, TransactionType } from '../types'
@@ -456,6 +456,7 @@ export default function Transactions() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 mb-0.5">
                       <span className="text-sm font-medium text-slate-700 truncate">{cat?.name ?? '—'}</span>
+                      {t.splitId && <span title="Часть разделённой операции"><Scissors size={11} className="text-indigo-300 shrink-0" /></span>}
                       <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
                         t.type === 'income'   ? 'bg-emerald-50 text-emerald-700'
                         : t.type === 'expense' ? 'bg-red-50 text-red-700'
@@ -608,6 +609,11 @@ export default function Transactions() {
                             <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={13} color={cat?.color ?? '#94a3b8'} />
                           </div>
                           <span className="text-sm text-slate-700 truncate">{cat?.name ?? '—'}</span>
+                          {t.splitId && (
+                            <span title="Часть разделённой операции" className="shrink-0">
+                              <Scissors size={11} className="text-indigo-300" />
+                            </span>
+                          )}
                         </div>
                       </td>
 
