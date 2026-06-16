@@ -17,6 +17,7 @@ const titles: Record<string, string> = {
   '/counterparties': 'Контрагенты',
   '/projects': 'Проекты',
   '/reconciliation': 'Сверка остатков',
+  '/import': 'Импорт операций',
   '/users': 'Пользователи',
   '/settings': 'Настройки',
 }

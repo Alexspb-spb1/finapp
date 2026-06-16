@@ -16,6 +16,11 @@ import type { User, Company } from '../types/auth'
 let currentUser:    User    | null = null
 let currentCompany: Company | null = null
 let companyUsers:   User[]         = []
+let allUserCompanies: Company[]    = []
+
+// Active company may differ from user.companyId when user switches company
+const LS_ACTIVE_COMPANY = 'finapp_active_company'
+let activeCompanyId: string | null = localStorage.getItem(LS_ACTIVE_COMPANY)
 
 export type AuthError = 'email_taken' | 'invalid_credentials' | 'user_not_found'
 
@@ -117,30 +122,40 @@ onAuthStateChanged(auth, async firebaseUser => {
 
     currentUser = userSnap.data() as User
 
-    const [companySnap, usersSnap] = await Promise.all([
-      getDoc(doc(db, 'companies', currentUser.companyId)),
-      getDocs(query(collection(db, 'users'), where('companyId', '==', currentUser.companyId))),
+    // Resolve active company: last switched, else home
+    const resolvedActiveId = activeCompanyId ?? currentUser.companyId
+    if (!activeCompanyId) activeCompanyId = currentUser.companyId
+
+    // Collect all company IDs this user belongs to
+    const memberIds = [
+      currentUser.companyId,
+      ...( (currentUser.companies ?? []).map(m => m.companyId).filter(id => id !== currentUser!.companyId) ),
+    ]
+
+    const [companySnap, usersSnap, ...extraSnaps] = await Promise.all([
+      getDoc(doc(db, 'companies', resolvedActiveId)),
+      getDocs(query(collection(db, 'users'), where('companyId', '==', resolvedActiveId))),
+      ...memberIds.filter(id => id !== resolvedActiveId).map(id => getDoc(doc(db, 'companies', id))),
     ])
 
     if (!companySnap.exists()) {
       // companies/{companyId} is missing — auto-create it
       const now = new Date().toISOString()
       const recoveredCompany: Company = {
-        id: currentUser.companyId, name: 'Моя компания', legalType: 'ip',
+        id: resolvedActiveId, name: 'Моя компания', legalType: 'ip',
         currency: 'RUB', createdAt: now, ownerId: currentUser.id,
       }
-      // Use recovered data in memory regardless of Firestore write success
       currentCompany = recoveredCompany
 
       try {
         await Promise.all([
-          setDoc(doc(db, 'companies',    currentUser.companyId), recoveredCompany),
-          setDoc(doc(db, 'company_data', currentUser.companyId), {
+          setDoc(doc(db, 'companies',    resolvedActiveId), recoveredCompany),
+          setDoc(doc(db, 'company_data', resolvedActiveId), {
             accounts: [], categories: DEFAULT_CATEGORIES_AUTH, counterparties: [],
             transactions: [], projects: [], rules: [],
           }),
         ])
-        console.log('[authStore] Auto-recovered missing company doc:', currentUser.companyId)
+        console.log('[authStore] Auto-recovered missing company doc:', resolvedActiveId)
       } catch (recoveryErr) {
         console.warn('[authStore] Company recovery write failed (will use localStorage fallback):', recoveryErr)
       }
@@ -149,6 +164,15 @@ onAuthStateChanged(auth, async firebaseUser => {
     }
 
     companyUsers = usersSnap.docs.map(d => d.data() as User)
+
+    // Build list of all companies user belongs to
+    const extraCompanies = extraSnaps
+      .filter(s => s.exists())
+      .map(s => s.data() as Company)
+    allUserCompanies = [
+      ...(currentCompany ? [currentCompany] : []),
+      ...extraCompanies,
+    ]
   } catch (err) {
     console.error('[authStore] onAuthStateChanged error:', err)
     currentUser = null; currentCompany = null; companyUsers = []
@@ -348,6 +372,64 @@ export const authStore = {
   async updateCompany(companyId: string, data: Partial<Pick<Company, 'name' | 'legalType' | 'inn' | 'currency'>>) {
     await updateDoc(doc(db, 'companies', companyId), data)
     if (currentCompany) currentCompany = { ...currentCompany, ...data }
+    allUserCompanies = allUserCompanies.map(c => c.id === companyId ? { ...c, ...data } : c)
     notify()
+  },
+
+  // ── Multi-company: getters ────────────────────────────────────────────────
+  getActiveCompanyId() {
+    return activeCompanyId ?? currentUser?.companyId ?? null
+  },
+
+  getAllCompanies() {
+    return allUserCompanies
+  },
+
+  // ── Multi-company: switch active company ──────────────────────────────────
+  async switchCompany(companyId: string) {
+    if (companyId === activeCompanyId) return
+    activeCompanyId = companyId
+    localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
+
+    // Load new company metadata
+    const snap = await getDoc(doc(db, 'companies', companyId))
+    if (snap.exists()) currentCompany = snap.data() as Company
+
+    // Refresh users for new company
+    const usersSnap = await getDocs(query(collection(db, 'users'), where('companyId', '==', companyId)))
+    companyUsers = usersSnap.docs.map(d => d.data() as User)
+
+    notify()
+  },
+
+  // ── Multi-company: create new company ────────────────────────────────────
+  async createCompany(params: { name: string; legalType: 'ooo' | 'ip'; inn?: string }) {
+    if (!currentUser) return
+    const now = new Date().toISOString()
+    const companyId = 'co_' + Date.now()
+
+    const company: Company = {
+      id: companyId, name: params.name, legalType: params.legalType,
+      inn: params.inn, currency: 'RUB', createdAt: now, ownerId: currentUser.id,
+    }
+
+    // Add membership to user record
+    const existingCompanies = currentUser.companies ?? [{ companyId: currentUser.companyId, role: 'admin' as const }]
+    const updatedCompanies = [...existingCompanies, { companyId, role: 'admin' as const }]
+
+    await Promise.all([
+      setDoc(doc(db, 'companies', companyId), company),
+      setDoc(doc(db, 'company_data', companyId), {
+        accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
+        transactions: [], projects: [], rules: [], budgets: [], recurring: [],
+      }),
+      updateDoc(doc(db, 'users', currentUser.id), { companies: updatedCompanies }),
+    ])
+
+    currentUser = { ...currentUser, companies: updatedCompanies }
+    allUserCompanies = [...allUserCompanies, company]
+
+    // Switch to newly created company
+    await authStore.switchCompany(companyId)
   },
 }

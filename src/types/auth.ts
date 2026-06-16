@@ -3,7 +3,8 @@ export interface User {
   name: string
   email: string
   role: 'admin' | 'accountant' | 'viewer'
-  companyId: string
+  companyId: string   // primary (home) company
+  companies?: { companyId: string; role: 'admin' | 'accountant' | 'viewer' }[]
   createdAt: string
   avatar?: string
 }

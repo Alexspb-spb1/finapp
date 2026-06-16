@@ -495,11 +495,8 @@ export const companyStore = {
 
 // ── Авто-инициализация при смене пользователя ─────────────────────────────────
 subscribeAuth(() => {
-  const company = authStore.getCurrentCompany()
-  // Если есть company.id — используем его.
-  // Иначе используем Firebase Auth UID как запасной ключ.
-  // Это гарантирует что init() вызывается даже если companies/{id} отсутствует в Firestore.
-  const initId = company?.id ?? auth.currentUser?.uid ?? null
+  // Use active company (may differ from home company after switchCompany)
+  const initId = authStore.getActiveCompanyId() ?? auth.currentUser?.uid ?? null
 
   if (initId) {
     void companyStore.init(initId)
