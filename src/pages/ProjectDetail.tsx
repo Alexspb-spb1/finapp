@@ -7,6 +7,7 @@ import {
 } from 'recharts'
 import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
+import { toBase } from '../utils/currency'
 
 const MONTH_LABELS: Record<string, string> = {
   '01': 'Янв', '02': 'Фев', '03': 'Мар', '04': 'Апр',
@@ -38,8 +39,8 @@ export default function ProjectDetail() {
   tx.forEach(t => {
     const m = monthKey(t.date)
     if (!monthData[m]) monthData[m] = { income: 0, expense: 0, net: 0 }
-    if (t.type === 'income') monthData[m].income += t.amount
-    else monthData[m].expense += t.amount
+    if (t.type === 'income') monthData[m].income += toBase(t)
+    else monthData[m].expense += toBase(t)
   })
   Object.values(monthData).forEach(d => { d.net = d.income - d.expense })
 
@@ -52,8 +53,8 @@ export default function ProjectDetail() {
     'Чистый поток': d.net,
   }))
 
-  const totalIncome  = tx.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0)
-  const totalExpense = tx.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+  const totalIncome  = tx.filter(t => t.type === 'income').reduce((s, t) => s + toBase(t), 0)
+  const totalExpense = tx.filter(t => t.type === 'expense').reduce((s, t) => s + toBase(t), 0)
   const totalNet     = totalIncome - totalExpense
 
   const CustomTooltip = ({ active, payload, label }: any) => {

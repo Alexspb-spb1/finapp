@@ -1,9 +1,10 @@
-import { useState } from 'react'
-import { X, Building2, AlertCircle, Scissors } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { X, Building2, AlertCircle, Scissors, RefreshCw } from 'lucide-react'
 import type { Transaction, TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
 import SplitTransactionModal from './SplitTransactionModal'
 import TagInput from '../ui/TagInput'
+import { isForeign, fetchRate } from '../../utils/currency'
 
 interface Props {
   transaction: Transaction | null
@@ -34,7 +35,22 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
   const [hasRelatedDate, setHasRelatedDate] = useState(!!transaction.relatedDate)
   const [relatedDate,    setRelatedDate]    = useState(transaction.relatedDate ?? transaction.date)
   const [tags,           setTags]           = useState<string[]>(transaction.tags ?? [])
+  const [exchangeRate,   setExchangeRate]   = useState(String(transaction.exchangeRate ?? ''))
+  const [toAmount,       setToAmount]       = useState(String(transaction.toAmount ?? ''))
+  const [fetchingRate,   setFetchingRate]   = useState(false)
   const [splitOpen,      setSplitOpen]      = useState(false)
+
+  useEffect(() => {
+    const acc = accounts.find(a => a.id === accountId)
+    if (!acc || !isForeign(acc)) { setExchangeRate(''); return }
+    if (exchangeRate) return  // don't overwrite existing rate
+    setFetchingRate(true)
+    fetchRate(acc.currency, 'RUB').then(r => {
+      if (r) setExchangeRate(String(r))
+      setFetchingRate(false)
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId])
 
   const filteredCats = categories.filter(c => c.type === type && !c.isGroup)
   const typeGroups = categories.filter(c => c.type === type && c.isGroup)
@@ -50,9 +66,18 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
       return
     }
     setAmountError('')
+    const accObj = accounts.find(a => a.id === accountId)
+    const toAccObj = accounts.find(a => a.id === toAccountId)
+    const rate = exchangeRate ? parseFloat(exchangeRate) : undefined
+    const isCross = type === 'transfer' && accObj && toAccObj && accObj.currency !== toAccObj.currency
+    const toAmt = isCross && toAmount ? parseFloat(toAmount) : undefined
+
     store.updateTransaction(transaction.id, {
       type,
       amount: num,
+      currency: accObj?.currency,
+      exchangeRate: rate,
+      toAmount: toAmt,
       date,
       relatedDate: (type !== 'transfer' && hasRelatedDate) ? relatedDate : undefined,
       accountId,
@@ -194,6 +219,55 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               </select>
             </div>
           )}
+
+          {/* Exchange rate — shown when source account is foreign currency */}
+          {(() => {
+            const acc = accounts.find(a => a.id === accountId)
+            if (!acc || !isForeign(acc)) return null
+            const toAcc = type === 'transfer' ? accounts.find(a => a.id === toAccountId) : undefined
+            const isCross = type === 'transfer' && toAcc && toAcc.currency !== acc.currency
+            return (
+              <div className="grid grid-cols-2 gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                <div>
+                  <label className="block text-xs font-medium text-amber-700 mb-1.5">
+                    Курс ({acc.currency} → RUB)
+                    {fetchingRate && <span className="ml-1 animate-spin inline-block"><RefreshCw size={10} /></span>}
+                  </label>
+                  <input
+                    type="number" step="0.0001" min="0"
+                    value={exchangeRate}
+                    onChange={e => setExchangeRate(e.target.value)}
+                    placeholder="например 90.5"
+                    className="w-full border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-amber-300"
+                  />
+                </div>
+                {isCross ? (
+                  <div>
+                    <label className="block text-xs font-medium text-amber-700 mb-1.5">
+                      Сумма в {toAcc?.currency ?? ''}
+                    </label>
+                    <input
+                      type="number" step="0.01" min="0"
+                      value={toAmount}
+                      onChange={e => setToAmount(e.target.value)}
+                      placeholder="0"
+                      className="w-full border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-amber-300"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-end pb-2">
+                    <p className="text-xs text-amber-600">
+                      ≈ {exchangeRate && amount
+                        ? new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(
+                            parseFloat(amount.replace(/\s/g, '').replace(',', '.') || '0') * parseFloat(exchangeRate)
+                          ) + ' ₽'
+                        : '— ₽'}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
 
           {/* Category */}
           <div>

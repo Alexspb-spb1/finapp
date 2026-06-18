@@ -7,6 +7,7 @@ import {
 } from 'recharts'
 import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
+import { toBase } from '../utils/currency'
 import CategoryIcon from '../utils/categoryIcons'
 import type { CategoryKind } from '../types'
 
@@ -75,13 +76,13 @@ export default function CashFlow() {
   function sumKindMonth(type: 'income' | 'expense', kind: CategoryKind, month: string) {
     return transactions
       .filter(t => t.type === type && catKind(t.categoryId) === kind && monthKey(t.date) === month)
-      .reduce((s, t) => s + t.amount, 0)
+      .reduce((s, t) => s + toBase(t), 0)
   }
 
   function sumCatMonth(catId: string, month: string) {
     return transactions
       .filter(t => t.categoryId === catId && monthKey(t.date) === month)
-      .reduce((s, t) => s + t.amount, 0)
+      .reduce((s, t) => s + toBase(t), 0)
   }
 
   // Categories for section

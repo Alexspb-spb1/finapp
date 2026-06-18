@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Plus, X, Trash2, Pencil, Phone, Mail, FileText, Hash, ArrowUpRight, ArrowDownRight, Landmark } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
+import { toBase } from '../utils/currency'
 import type { Counterparty } from '../types'
 
 const TYPE_LABEL: Record<Counterparty['type'], string> = {
@@ -51,8 +52,8 @@ export default function Counterparties() {
   // ── Computed stats ──────────────────────────────────────────────────────────
   const stats = counterparties.map(cp => {
     const cpTx  = transactions.filter(t => t.counterpartyId === cp.id)
-    const income  = cpTx.filter(t => t.type === 'income').reduce((s, t)  => s + t.amount, 0)
-    const expense = cpTx.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+    const income  = cpTx.filter(t => t.type === 'income').reduce((s, t)  => s + toBase(t), 0)
+    const expense = cpTx.filter(t => t.type === 'expense').reduce((s, t) => s + toBase(t), 0)
     return { ...cp, income, expense, count: cpTx.length }
   }).sort((a, b) => (b.income + b.expense) - (a.income + a.expense))
 

@@ -1,0 +1,53 @@
+import type { Transaction, Account } from '../types'
+
+export const CURRENCIES = [
+  { code: 'RUB', symbol: '₽', name: 'Российский рубль' },
+  { code: 'USD', symbol: '$', name: 'Доллар США' },
+  { code: 'EUR', symbol: '€', name: 'Евро' },
+  { code: 'CNY', symbol: '¥', name: 'Китайский юань' },
+  { code: 'GBP', symbol: '£', name: 'Фунт стерлингов' },
+  { code: 'CHF', symbol: '₣', name: 'Швейцарский франк' },
+  { code: 'TRY', symbol: '₺', name: 'Турецкая лира' },
+  { code: 'KZT', symbol: '₸', name: 'Казахстанский тенге' },
+  { code: 'BYN', symbol: 'Br', name: 'Белорусский рубль' },
+  { code: 'AMD', symbol: '֏', name: 'Армянский драм' },
+  { code: 'GEL', symbol: '₾', name: 'Грузинский лари' },
+  { code: 'BTC', symbol: '₿', name: 'Bitcoin' },
+  { code: 'USDT', symbol: '₮', name: 'Tether USDT' },
+]
+
+export function currencySymbol(code: string): string {
+  return CURRENCIES.find(c => c.code === code)?.symbol ?? code
+}
+
+/** Convert transaction amount to base currency amount */
+export function toBase(tx: Transaction): number {
+  return tx.amount * (tx.exchangeRate ?? 1)
+}
+
+/** Format amount with currency symbol */
+export function formatWithCurrency(amount: number, currency: string): string {
+  const sym = currencySymbol(currency)
+  const formatted = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Math.abs(amount))
+  // Put symbol before for $, €, £; after for ₽, ₸, etc.
+  const before = ['$', '€', '£', '₣', '₿', '₮']
+  return before.includes(sym) ? `${sym}${formatted}` : `${formatted} ${sym}`
+}
+
+/** Check if account uses non-base currency */
+export function isForeign(account: Account | undefined, baseCurrency = 'RUB'): boolean {
+  return !!account && account.currency !== baseCurrency
+}
+
+/** Fetch current exchange rate from CBR-compatible free API */
+export async function fetchRate(from: string, to = 'RUB'): Promise<number | null> {
+  if (from === to) return 1
+  try {
+    const res = await fetch(`https://api.exchangerate-api.com/v4/latest/${from}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.rates?.[to] ?? null
+  } catch {
+    return null
+  }
+}

@@ -1,9 +1,10 @@
-import { useState, useCallback } from 'react'
-import { X, Zap } from 'lucide-react'
+import { useState, useCallback, useEffect } from 'react'
+import { X, Zap, RefreshCw } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
 import TagInput from '../ui/TagInput'
+import { isForeign, fetchRate } from '../../utils/currency'
 
 interface Props {
   open: boolean
@@ -28,6 +29,9 @@ export default function TransactionModal({ open, onClose }: Props) {
   const [hasRelatedDate, setHasRelatedDate] = useState(false)
   const [relatedDate, setRelatedDate] = useState(new Date().toISOString().slice(0, 10))
   const [appliedRule, setAppliedRule] = useState<string | null>(null)
+  const [exchangeRate, setExchangeRate] = useState('')
+  const [toAmount, setToAmount] = useState('')
+  const [fetchingRate, setFetchingRate] = useState(false)
 
   // Apply matching enabled rules to current form state
   const applyRules = useCallback((fields: {
@@ -54,6 +58,17 @@ export default function TransactionModal({ open, onClose }: Props) {
     setAppliedRule(null)
   }, [rules])
 
+  // Auto-fetch rate when account changes to foreign currency
+  useEffect(() => {
+    const acc = accounts.find(a => a.id === (accountId || accounts[0]?.id))
+    if (!acc || acc.currency === 'RUB') { setExchangeRate(''); return }
+    setFetchingRate(true)
+    fetchRate(acc.currency, 'RUB').then(r => {
+      if (r) setExchangeRate(String(r))
+      setFetchingRate(false)
+    })
+  }, [accountId, accounts])
+
   if (!open) return null
 
   const curAccountId = accountId || (accounts[0]?.id ?? '')
@@ -68,14 +83,24 @@ export default function TransactionModal({ open, onClose }: Props) {
     const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
     if (!num || num <= 0) return
     const acc = accountId || firstAcc
+    const accObj = accounts.find(a => a.id === acc)
+    const rate = exchangeRate ? parseFloat(exchangeRate) : undefined
+    const toAcc = type === 'transfer' ? (toAccountId || secondAcc) : undefined
+    const toAccObj = accounts.find(a => a.id === toAcc)
+    const crossCurrency = type === 'transfer' && accObj && toAccObj && accObj.currency !== toAccObj.currency
+    const toAmt = crossCurrency && toAmount ? parseFloat(toAmount) : undefined
+
     store.addTransaction({
       id: 't' + Date.now(),
       date,
       relatedDate: (type !== 'transfer' && hasRelatedDate) ? relatedDate : undefined,
       type,
       amount: num,
+      currency: accObj?.currency,
+      exchangeRate: rate,
+      toAmount: toAmt,
       accountId: acc,
-      toAccountId: type === 'transfer' ? (toAccountId || secondAcc) : undefined,
+      toAccountId: toAcc,
       categoryId: categoryId || (filteredCats[0]?.id ?? ''),
       counterpartyId: counterpartyId || undefined,
       projectId: projectId || undefined,
@@ -92,6 +117,8 @@ export default function TransactionModal({ open, onClose }: Props) {
     setProjectId('')
     setComment('')
     setTags([])
+    setExchangeRate('')
+    setToAmount('')
     setDate(new Date().toISOString().slice(0, 10))
     setHasRelatedDate(false)
     setAppliedRule(null)
@@ -216,6 +243,56 @@ export default function TransactionModal({ open, onClose }: Props) {
               </select>
             </div>
           )}
+
+          {/* Exchange rate — shown when source account is foreign currency */}
+          {(() => {
+            const acc = accounts.find(a => a.id === (accountId || firstAcc))
+            if (!acc || !isForeign(acc)) return null
+            const toAcc = type === 'transfer' ? accounts.find(a => a.id === (toAccountId || secondAcc)) : undefined
+            const isCross = type === 'transfer' && toAcc && toAcc.currency !== acc.currency
+            return (
+              <div className="grid grid-cols-2 gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                <div>
+                  <label className="block text-xs font-medium text-amber-700 mb-1.5">
+                    Курс ({acc.currency} → RUB)
+                    {fetchingRate && <span className="ml-1 animate-spin inline-block"><RefreshCw size={10} /></span>}
+                  </label>
+                  <input
+                    type="number" step="0.0001" min="0"
+                    value={exchangeRate}
+                    onChange={e => setExchangeRate(e.target.value)}
+                    placeholder="например 90.5"
+                    className="w-full border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-amber-300"
+                  />
+                </div>
+                {isCross && (
+                  <div>
+                    <label className="block text-xs font-medium text-amber-700 mb-1.5">
+                      Сумма в {toAcc?.currency ?? ''}
+                    </label>
+                    <input
+                      type="number" step="0.01" min="0"
+                      value={toAmount}
+                      onChange={e => setToAmount(e.target.value)}
+                      placeholder="0"
+                      className="w-full border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-amber-300"
+                    />
+                  </div>
+                )}
+                {!isCross && (
+                  <div className="flex items-end pb-2">
+                    <p className="text-xs text-amber-600">
+                      ≈ {exchangeRate && amount
+                        ? new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(
+                            parseFloat(amount.replace(/\s/g, '').replace(',', '.') || '0') * parseFloat(exchangeRate)
+                          ) + ' ₽'
+                        : '— ₽'}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
 
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1.5">Статья</label>

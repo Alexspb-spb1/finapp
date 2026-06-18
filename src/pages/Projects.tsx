@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, X, Trash2, Pencil, FolderOpen, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency } from '../utils/format'
+import { toBase } from '../utils/currency'
 import type { Project } from '../types'
 
 const COLORS = ['#6366f1','#22c55e','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4']
@@ -50,8 +51,8 @@ export default function Projects() {
   // Stats per project
   function projectStats(id: string) {
     const tx = transactions.filter(t => t.projectId === id && t.type !== 'transfer')
-    const income  = tx.filter(t => t.type === 'income').reduce((s, t)  => s + t.amount, 0)
-    const expense = tx.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+    const income  = tx.filter(t => t.type === 'income').reduce((s, t)  => s + toBase(t), 0)
+    const expense = tx.filter(t => t.type === 'expense').reduce((s, t) => s + toBase(t), 0)
     return { income, expense, count: tx.length }
   }
 

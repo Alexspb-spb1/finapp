@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, TrendingUp, TrendingDown, Download } from 'l
 import { downloadSheet } from '../utils/exportExcel'
 import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
+import { toBase } from '../utils/currency'
 import CategoryIcon from '../utils/categoryIcons'
 import type { CategoryPnlSection } from '../types'
 
@@ -56,7 +57,7 @@ export default function PnL() {
   function sumByCategory(catId: string, month: string) {
     return transactions
       .filter(t => t.categoryId === catId && monthKey(txDate(t)) === month)
-      .reduce((s, t) => s + t.amount, 0)
+      .reduce((s, t) => s + toBase(t), 0)
   }
 
   function sumBySection(type: 'income' | 'expense', section: CategoryPnlSection | null, month: string) {
@@ -65,7 +66,7 @@ export default function PnL() {
       .map(c => c.id)
     return transactions
       .filter(t => catIds.includes(t.categoryId) && monthKey(txDate(t)) === month)
-      .reduce((s, t) => s + t.amount, 0)
+      .reduce((s, t) => s + toBase(t), 0)
   }
 
   function catsForSection(type: 'income' | 'expense', section: CategoryPnlSection) {

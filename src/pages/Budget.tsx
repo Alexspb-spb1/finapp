@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { ChevronLeft, ChevronRight, Target, TrendingUp, TrendingDown } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
+import { toBase } from '../utils/currency'
 import CategoryIcon from '../utils/categoryIcons'
 
 const MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь']
@@ -85,7 +86,7 @@ export default function Budget() {
   function actual(catId: string) {
     return transactions
       .filter(t => t.categoryId === catId && monthKey(t.date) === monthStr)
-      .reduce((s, t) => s + t.amount, 0)
+      .reduce((s, t) => s + toBase(t), 0)
   }
 
   function plannedFor(catId: string) {
