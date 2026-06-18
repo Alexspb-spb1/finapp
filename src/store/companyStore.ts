@@ -181,6 +181,11 @@ export const companyStore = {
   get rules()          { return state.rules     ?? [] },
   get budgets()        { return state.budgets   ?? [] },
   get recurring()      { return state.recurring ?? [] },
+  get allTags()        {
+    const set = new Set<string>()
+    for (const t of state.transactions) for (const tag of (t.tags ?? [])) set.add(tag)
+    return [...set].sort()
+  },
 
   // ── Transactions ──────────────────────────────────────────────────────────
   addTransaction(t: Transaction) {

@@ -3,6 +3,7 @@ import { X, Building2, AlertCircle, Scissors } from 'lucide-react'
 import type { Transaction, TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
 import SplitTransactionModal from './SplitTransactionModal'
+import TagInput from '../ui/TagInput'
 
 interface Props {
   transaction: Transaction | null
@@ -32,6 +33,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
   })
   const [hasRelatedDate, setHasRelatedDate] = useState(!!transaction.relatedDate)
   const [relatedDate,    setRelatedDate]    = useState(transaction.relatedDate ?? transaction.date)
+  const [tags,           setTags]           = useState<string[]>(transaction.tags ?? [])
   const [splitOpen,      setSplitOpen]      = useState(false)
 
   const filteredCats = categories.filter(c => c.type === type && !c.isGroup)
@@ -59,6 +61,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
       counterpartyId: (type !== 'transfer' && counterpartyId) ? counterpartyId : undefined,
       projectId:   (type !== 'transfer' && projectId) ? projectId : undefined,
       comment,
+      tags,
     })
     onClose()
   }
@@ -285,6 +288,16 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               placeholder="Введите назначение платежа..."
               rows={2}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+            />
+          </div>
+
+          {/* Tags */}
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">Теги</label>
+            <TagInput
+              value={tags}
+              onChange={setTags}
+              suggestions={store.allTags}
             />
           </div>
 

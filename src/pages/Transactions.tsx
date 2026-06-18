@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors, RefreshCw, Download } from 'lucide-react'
+import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors, RefreshCw, Download, Tag } from 'lucide-react'
 import { downloadSheet } from '../utils/exportExcel'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
@@ -140,6 +140,7 @@ export default function Transactions() {
   const [dateFrom,     setDateFrom]     = useState('')
   const [dateTo,       setDateTo]       = useState('')
   const [showPeriod,   setShowPeriod]   = useState(false)
+  const [tagFilter,    setTagFilter]    = useState<string[]>([])
   const [addOpen,         setAddOpen]         = useState(false)
   const [rulesOpen,       setRulesOpen]       = useState(false)
   const [dupeOpen,        setDupeOpen]        = useState(false)
@@ -205,6 +206,7 @@ export default function Transactions() {
     if (typeFilter !== 'all' && t.type !== typeFilter) return false
     if (dateFrom && t.date < dateFrom) return false
     if (dateTo   && t.date > dateTo)   return false
+    if (tagFilter.length > 0 && !tagFilter.every(tag => (t.tags ?? []).includes(tag))) return false
     if (search) {
       const cat  = categories.find(c => c.id === t.categoryId)
       const cp   = counterparties.find(c => c.id === t.counterpartyId)
@@ -214,13 +216,15 @@ export default function Transactions() {
         !(t.comment ?? '').toLowerCase().includes(q) &&
         !cat?.name.toLowerCase().includes(q) &&
         !cp?.name.toLowerCase().includes(q) &&
-        !proj?.name.toLowerCase().includes(q)
+        !proj?.name.toLowerCase().includes(q) &&
+        !(t.tags ?? []).some(tag => tag.includes(q))
       ) return false
     }
     return true
   })
 
   const periodActive = !!(dateFrom || dateTo)
+  const allTags = store.allTags
 
   function handleExport() {
     const TYPE_RU: Record<string, string> = { income: 'Доход', expense: 'Расход', transfer: 'Перевод' }
@@ -232,6 +236,7 @@ export default function Transactions() {
       'Контрагент':    counterparties.find(c => c.id === t.counterpartyId)?.name ?? '',
       'Проект':        projects.find(p => p.id === t.projectId)?.name ?? '',
       'Назначение':    t.comment,
+      'Теги':          (t.tags ?? []).join(', '),
       'Сумма':         t.type === 'expense' ? -t.amount : t.amount,
     }))
     const today = new Date().toISOString().slice(0, 10)
@@ -325,6 +330,32 @@ export default function Transactions() {
             </span>
           )}
         </button>
+
+        {/* Tag filter chips */}
+        {allTags.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <Tag size={13} className="text-slate-400 shrink-0" />
+            {allTags.slice(0, 12).map(tag => (
+              <button key={tag}
+                onClick={() => setTagFilter(prev =>
+                  prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
+                )}
+                className={`text-xs px-2 py-0.5 rounded-full border transition-colors font-medium ${
+                  tagFilter.includes(tag)
+                    ? 'bg-indigo-100 border-indigo-300 text-indigo-700'
+                    : 'bg-white border-slate-200 text-slate-500 hover:border-indigo-300 hover:text-indigo-600'
+                }`}>
+                #{tag}
+              </button>
+            ))}
+            {tagFilter.length > 0 && (
+              <button onClick={() => setTagFilter([])}
+                className="text-xs text-red-400 hover:text-red-600 transition-colors px-1">
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        )}
 
         <button onClick={() => setFullscreen(v => !v)}
           title={fullscreen ? 'Свернуть' : 'На весь экран'}
@@ -514,6 +545,13 @@ export default function Transactions() {
                       {cp  && <span> · {cp.name}</span>}
                       {t.comment && <span> · {t.comment}</span>}
                     </p>
+                    {(t.tags ?? []).length > 0 && (
+                      <div className="flex gap-1 mt-1 flex-wrap">
+                        {(t.tags ?? []).map(tag => (
+                          <span key={tag} className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-500 rounded-full font-medium">#{tag}</span>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* Amount */}
@@ -645,8 +683,8 @@ export default function Transactions() {
                         </span>
                       </td>
 
-                      {/* Category */}
-                      <td className="px-4 py-3.5 overflow-hidden">
+                      {/* Category + tags */}
+                      <td className="px-4 py-2 overflow-hidden">
                         <div className="flex items-center gap-2 min-w-0">
                           <div className="w-6 h-6 icon-circle flex items-center justify-center shrink-0" style={{ background: (cat?.color ?? '#94a3b8') + '20' }}>
                             <CategoryIcon name={cat?.icon ?? 'DollarSign'} size={13} color={cat?.color ?? '#94a3b8'} />
@@ -658,6 +696,17 @@ export default function Transactions() {
                             </span>
                           )}
                         </div>
+                        {(t.tags ?? []).length > 0 && (
+                          <div className="flex gap-1 mt-1 flex-wrap">
+                            {(t.tags ?? []).map(tag => (
+                              <span key={tag}
+                                onClick={e => { e.stopPropagation(); setTagFilter(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]) }}
+                                className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-500 rounded-full font-medium cursor-pointer hover:bg-indigo-100 transition-colors">
+                                #{tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </td>
 
                       {/* Account */}

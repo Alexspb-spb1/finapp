@@ -3,6 +3,7 @@ import { X, Zap } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
+import TagInput from '../ui/TagInput'
 
 interface Props {
   open: boolean
@@ -22,6 +23,7 @@ export default function TransactionModal({ open, onClose }: Props) {
   const [counterpartyId, setCounterpartyId] = useState('')
   const [projectId, setProjectId] = useState('')
   const [comment, setComment] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [hasRelatedDate, setHasRelatedDate] = useState(false)
   const [relatedDate, setRelatedDate] = useState(new Date().toISOString().slice(0, 10))
@@ -78,7 +80,7 @@ export default function TransactionModal({ open, onClose }: Props) {
       counterpartyId: counterpartyId || undefined,
       projectId: projectId || undefined,
       comment,
-      tags: [],
+      tags,
     })
     onClose()
     setType('income')
@@ -89,6 +91,7 @@ export default function TransactionModal({ open, onClose }: Props) {
     setCounterpartyId('')
     setProjectId('')
     setComment('')
+    setTags([])
     setDate(new Date().toISOString().slice(0, 10))
     setHasRelatedDate(false)
     setAppliedRule(null)
@@ -262,6 +265,16 @@ export default function TransactionModal({ open, onClose }: Props) {
             <input type="text" value={comment} onChange={e => setComment(e.target.value)}
               placeholder="Необязательно"
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">Теги</label>
+            <TagInput
+              value={tags}
+              onChange={setTags}
+              suggestions={store.allTags}
+              placeholder="Добавить тег…"
+            />
           </div>
 
           {appliedRule && (
