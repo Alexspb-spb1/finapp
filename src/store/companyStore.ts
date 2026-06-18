@@ -1,7 +1,7 @@
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore'
 import { db, auth } from '../lib/firebase'
 import { subscribeAuth, authStore } from './authStore'
-import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart, RecurringTemplate, RecurringPeriod } from '../types'
+import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart, RecurringTemplate, RecurringPeriod, PaymentCalendarItem } from '../types'
 
 const DEFAULT_CATEGORIES: Category[] = [
   { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',     color: '#22c55e' },
@@ -18,19 +18,21 @@ const DEFAULT_CATEGORIES: Category[] = [
 ]
 
 interface CompanyData {
-  accounts:    Account[]
-  categories:  Category[]
-  counterparties: Counterparty[]
-  transactions: Transaction[]
-  projects:    Project[]
-  rules:       TransactionRule[]
-  budgets:     BudgetItem[]
-  recurring:   RecurringTemplate[]
+  accounts:        Account[]
+  categories:      Category[]
+  counterparties:  Counterparty[]
+  transactions:    Transaction[]
+  projects:        Project[]
+  rules:           TransactionRule[]
+  budgets:         BudgetItem[]
+  recurring:       RecurringTemplate[]
+  paymentCalendar: PaymentCalendarItem[]
 }
 
 const EMPTY: CompanyData = {
   accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
   transactions: [], projects: [], rules: [], budgets: [], recurring: [],
+  paymentCalendar: [],
 }
 
 // ── Pub/sub ──────────────────────────────────────────────────────────────────
@@ -57,10 +59,11 @@ let unsubSnapshot: (() => void) | null = null
     const raw = localStorage.getItem(lsKey(lastId))
     if (!raw) return
     const saved = JSON.parse(raw) as CompanyData
-    if (!saved.rules)      saved.rules      = []
-    if (!saved.budgets)    saved.budgets    = []
-    if (!saved.recurring)  saved.recurring  = []
-    if (!saved.categories) saved.categories = DEFAULT_CATEGORIES
+    if (!saved.rules)           saved.rules           = []
+    if (!saved.budgets)         saved.budgets         = []
+    if (!saved.recurring)       saved.recurring       = []
+    if (!saved.paymentCalendar) saved.paymentCalendar = []
+    if (!saved.categories)      saved.categories      = DEFAULT_CATEGORIES
     state            = saved
     currentCompanyId = lastId   // ← чтобы persist() работал сразу
   } catch {}
@@ -119,10 +122,11 @@ export const companyStore = {
     if (lsRaw) {
       try {
         const lsData = JSON.parse(lsRaw) as CompanyData
-        if (!lsData.rules)      lsData.rules      = []
-        if (!lsData.budgets)    lsData.budgets    = []
-        if (!lsData.recurring)  lsData.recurring  = []
-        if (!lsData.categories) lsData.categories = DEFAULT_CATEGORIES
+        if (!lsData.rules)           lsData.rules           = []
+        if (!lsData.budgets)         lsData.budgets         = []
+        if (!lsData.recurring)       lsData.recurring       = []
+        if (!lsData.paymentCalendar) lsData.paymentCalendar = []
+        if (!lsData.categories)      lsData.categories      = DEFAULT_CATEGORIES
         state = lsData
         notify()
       } catch {}
@@ -135,10 +139,11 @@ export const companyStore = {
       const snap = await getDoc(doc(db, 'company_data', companyId))
       if (snap.exists()) {
         const fresh = snap.data() as CompanyData
-        if (!fresh.rules)      fresh.rules      = []
-        if (!fresh.budgets)    fresh.budgets    = []
-        if (!fresh.recurring)  fresh.recurring  = []
-        if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
+        if (!fresh.rules)           fresh.rules           = []
+        if (!fresh.budgets)         fresh.budgets         = []
+        if (!fresh.recurring)       fresh.recurring       = []
+        if (!fresh.paymentCalendar) fresh.paymentCalendar = []
+        if (!fresh.categories)      fresh.categories      = DEFAULT_CATEGORIES
         if (savedAt(fresh) >= savedAt(state)) {
           state = fresh
           notify()
@@ -157,10 +162,11 @@ export const companyStore = {
       docSnap => {
         if (docSnap.exists()) {
           const fresh = docSnap.data() as CompanyData
-          if (!fresh.rules)      fresh.rules      = []
-          if (!fresh.budgets)    fresh.budgets    = []
-          if (!fresh.recurring)  fresh.recurring  = []
-          if (!fresh.categories) fresh.categories = DEFAULT_CATEGORIES
+          if (!fresh.rules)           fresh.rules           = []
+          if (!fresh.budgets)         fresh.budgets         = []
+          if (!fresh.recurring)       fresh.recurring       = []
+          if (!fresh.paymentCalendar) fresh.paymentCalendar = []
+          if (!fresh.categories)      fresh.categories      = DEFAULT_CATEGORIES
           // Принимаем только если Firestore новее текущего состояния
           if (savedAt(fresh) >= savedAt(state)) {
             state = fresh
@@ -180,7 +186,8 @@ export const companyStore = {
   get projects()       { return state.projects        },
   get rules()          { return state.rules     ?? [] },
   get budgets()        { return state.budgets   ?? [] },
-  get recurring()      { return state.recurring ?? [] },
+  get recurring()        { return state.recurring        ?? [] },
+  get paymentCalendar()  { return state.paymentCalendar  ?? [] },
   get allTags()        {
     const set = new Set<string>()
     for (const t of state.transactions) for (const tag of (t.tags ?? [])) set.add(tag)
@@ -197,7 +204,8 @@ export const companyStore = {
         if (t.type === 'expense'  && a.id === t.accountId)   return { ...a, balance: a.balance - t.amount }
         if (t.type === 'transfer') {
           if (a.id === t.accountId)   return { ...a, balance: a.balance - t.amount }
-          if (a.id === t.toAccountId) return { ...a, balance: a.balance + t.amount }
+          // Cross-currency transfer: credit toAmount (if set) else amount
+          if (a.id === t.toAccountId) return { ...a, balance: a.balance + (t.toAmount ?? t.amount) }
         }
         return a
       }),
@@ -216,7 +224,7 @@ export const companyStore = {
         if (t.type === 'expense'  && a.id === t.accountId)   return { ...a, balance: a.balance + t.amount }
         if (t.type === 'transfer') {
           if (a.id === t.accountId)   return { ...a, balance: a.balance + t.amount }
-          if (a.id === t.toAccountId) return { ...a, balance: a.balance - t.amount }
+          if (a.id === t.toAccountId) return { ...a, balance: a.balance - (t.toAmount ?? t.amount) }
         }
         return a
       }),
@@ -475,6 +483,49 @@ export const companyStore = {
     ]
 
     state = { ...state, transactions, accounts }
+    persist()
+  },
+
+  // ── Payment Calendar ─────────────────────────────────────────────────────
+  addCalendarItem(item: PaymentCalendarItem) {
+    state = { ...state, paymentCalendar: [item, ...(state.paymentCalendar ?? [])] }
+    persist()
+  },
+  updateCalendarItem(id: string, changes: Partial<Omit<PaymentCalendarItem, 'id'>>) {
+    state = { ...state, paymentCalendar: (state.paymentCalendar ?? []).map(i => i.id === id ? { ...i, ...changes } : i) }
+    persist()
+  },
+  deleteCalendarItem(id: string) {
+    state = { ...state, paymentCalendar: (state.paymentCalendar ?? []).filter(i => i.id !== id) }
+    persist()
+  },
+  /** Mark item as paid and create a real transaction */
+  payCalendarItem(id: string) {
+    const item = (state.paymentCalendar ?? []).find(i => i.id === id)
+    if (!item) return
+    const acc = state.accounts[0]
+    if (!acc) return
+    const tx: Transaction = {
+      id: 'tx_cal_' + Date.now(),
+      date: new Date().toISOString().slice(0, 10),
+      type: item.type,
+      amount: item.amount,
+      accountId: acc.id,
+      categoryId: item.categoryId,
+      counterpartyId: item.counterpartyId,
+      comment: item.description,
+      tags: [],
+    }
+    // Add transaction + update account balance
+    state = {
+      ...state,
+      transactions: [tx, ...state.transactions],
+      accounts: state.accounts.map(a => {
+        if (a.id !== acc.id) return a
+        return { ...a, balance: item.type === 'income' ? a.balance + item.amount : a.balance - item.amount }
+      }),
+      paymentCalendar: (state.paymentCalendar ?? []).map(i => i.id === id ? { ...i, status: 'paid' } : i),
+    }
     persist()
   },
 
