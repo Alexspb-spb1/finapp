@@ -22,6 +22,9 @@ let allUserCompanies: Company[]    = []
 const LS_ACTIVE_COMPANY = 'finapp_active_company'
 let activeCompanyId: string | null = localStorage.getItem(LS_ACTIVE_COMPANY)
 
+// Prevents recovery code from firing while register() is still writing Firestore docs
+let _registrationInProgress = false
+
 export type AuthError = 'email_taken' | 'invalid_credentials' | 'user_not_found'
 
 // ── Pub/sub ──────────────────────────────────────────────────────────────────
@@ -78,6 +81,10 @@ onAuthStateChanged(auth, async firebaseUser => {
     const userSnap = await getDoc(doc(db, 'users', firebaseUser.uid))
 
     if (!userSnap.exists()) {
+      if (_registrationInProgress) {
+        // register() is still writing Firestore docs — skip recovery, it will call notify() itself
+        return
+      }
       // users/{uid} document is missing — recovery: create it from Auth data
       const now = new Date().toISOString()
       const companyId = 'co_' + firebaseUser.uid   // stable UID-based ID
@@ -121,6 +128,16 @@ onAuthStateChanged(auth, async firebaseUser => {
     }
 
     currentUser = userSnap.data() as User
+
+    // Validate activeCompanyId belongs to this user — clear it if it's from a different account
+    const validCompanyIds = [
+      currentUser.companyId,
+      ...(currentUser.companies ?? []).map(m => m.companyId),
+    ]
+    if (activeCompanyId && !validCompanyIds.includes(activeCompanyId)) {
+      activeCompanyId = null
+      localStorage.removeItem(LS_ACTIVE_COMPANY)
+    }
 
     // Resolve active company: last switched, else home
     const resolvedActiveId = activeCompanyId ?? currentUser.companyId
@@ -208,44 +225,57 @@ export const authStore = {
     name: string; email: string; password: string
     companyName: string; legalType: 'ooo' | 'ip'; inn?: string
   }): Promise<{ ok: true } | { ok: false; error: AuthError }> {
+    // Step 1: Create Firebase Auth user — isolated catch so Firestore errors don't mask auth errors
+    let cred: Awaited<ReturnType<typeof createUserWithEmailAndPassword>>
     try {
-      const cred = await createUserWithEmailAndPassword(auth, params.email, params.password)
-      const uid = cred.user.uid
-      const now = new Date().toISOString()
-      const companyId = 'co_' + Date.now()
+      _registrationInProgress = true
+      cred = await createUserWithEmailAndPassword(auth, params.email, params.password)
+    } catch (e: any) {
+      _registrationInProgress = false
+      if (e?.code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
+      return { ok: false, error: 'invalid_credentials' }
+    }
 
-      const company: Company = {
-        id: companyId, name: params.companyName, legalType: params.legalType,
-        inn: params.inn, currency: 'RUB', createdAt: now, ownerId: uid,
-      }
-      const user: User = {
-        id: uid, name: params.name, email: params.email.toLowerCase(),
-        role: 'admin', companyId, createdAt: now,
-      }
-      const defaultData = {
-        accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
-        transactions: [], projects: [], rules: [],
-      }
+    const uid = cred.user.uid
+    const now = new Date().toISOString()
+    const companyId = 'co_' + Date.now()
 
+    const company: Company = {
+      id: companyId, name: params.companyName, legalType: params.legalType,
+      inn: params.inn, currency: 'RUB', createdAt: now, ownerId: uid,
+    }
+    const user: User = {
+      id: uid, name: params.name, email: params.email.toLowerCase(),
+      role: 'admin', companyId, createdAt: now,
+    }
+    const defaultData = {
+      accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
+      transactions: [], projects: [], rules: [],
+    }
+
+    // Step 2: Write Firestore docs — errors here don't mean auth failed
+    try {
       await Promise.all([
         setDoc(doc(db, 'users',        uid),        user),
         setDoc(doc(db, 'companies',    companyId),  company),
         setDoc(doc(db, 'company_data', companyId),  defaultData),
       ])
-
-      // Вручную обновляем in-memory state — onAuthStateChanged мог сработать
-      // ДО того как setDoc завершился, и обнаружить что doc ещё не существует.
-      // Здесь гарантируем что состояние актуально после успешной регистрации.
-      currentUser    = user
-      currentCompany = company
-      companyUsers   = [user]
-      notify()
-
-      return { ok: true }
-    } catch (e: any) {
-      if (e?.code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
-      return { ok: false, error: 'invalid_credentials' }
+    } catch (e) {
+      console.error('[register] Firestore write failed (auth succeeded):', e)
+      // Auth user exists — let recovery handle it on next onAuthStateChanged
     }
+
+    // Step 3: Update in-memory state and clear any stale company from localStorage
+    activeCompanyId = companyId
+    localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
+    currentUser    = user
+    currentCompany = company
+    companyUsers   = [user]
+    allUserCompanies = [company]
+    _registrationInProgress = false
+    notify()
+
+    return { ok: true }
   },
 
   // ── Login ─────────────────────────────────────────────────────────────────
@@ -260,6 +290,8 @@ export const authStore = {
 
   // ── Logout ────────────────────────────────────────────────────────────────
   async logout() {
+    activeCompanyId = null
+    localStorage.removeItem(LS_ACTIVE_COMPANY)
     await signOut(auth)
   },
 
