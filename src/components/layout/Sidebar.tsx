@@ -21,6 +21,7 @@ import {
   Plus,
   Upload,
   Building2,
+  Sparkles,
 } from 'lucide-react'
 import { authStore } from '../../store/authStore'
 import { useAuth } from '../../hooks/useAuth'
@@ -32,6 +33,7 @@ const nav = [
   { to: '/reports/pnl',       icon: PieChart,        label: 'P&L',               adminOnly: false },
   { to: '/reports/budget',    icon: Target,          label: 'Бюджет',            adminOnly: false },
   { to: '/reports/balance',   icon: Scale,           label: 'Баланс',            adminOnly: false },
+  { to: '/reports/forecast',  icon: Sparkles,        label: 'Прогнозы',          adminOnly: false },
   { to: '/calendar',          icon: Calendar,        label: 'Платёж. календарь', adminOnly: false },
   { to: '/accounts',          icon: CreditCard,      label: 'Счета',             adminOnly: false },
   { to: '/counterparties',    icon: Users,           label: 'Контрагенты',       adminOnly: false },

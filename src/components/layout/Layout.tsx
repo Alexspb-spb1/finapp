@@ -12,6 +12,7 @@ const titles: Record<string, string> = {
   '/reports/pnl': 'Прибыль и убытки',
   '/reports/budget': 'Бюджет',
   '/reports/balance': 'Баланс',
+  '/reports/forecast': 'Прогнозы и тренды',
   '/calendar': 'Платёжный календарь',
   '/accounts': 'Счета',
   '/counterparties': 'Контрагенты',
