@@ -47,6 +47,9 @@ export interface Transaction {
   relatedDate?: string  // дата начисления → ОПиУ (метод начисления)
   type: TransactionType
   amount: number
+  currency?: string     // валюта операции (если не указана = валюта счёта)
+  exchangeRate?: number // 1 единица валюты = N базовой валюты (RUB)
+  toAmount?: number     // для кросс-валютных переводов: сумма в валюте счёта-получателя
   accountId: string
   toAccountId?: string
   categoryId: string

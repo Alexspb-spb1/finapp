@@ -4,6 +4,7 @@ import { useStore } from '../store/useStore'
 import { formatCurrency } from '../utils/format'
 import { parseBankStatement, type ParsedTransaction } from '../utils/bankStatementParser'
 import StatementPreview from '../components/bank/StatementPreview'
+import { CURRENCIES, formatWithCurrency, currencySymbol } from '../utils/currency'
 import type { Account, Counterparty } from '../types'
 
 const typeIcon: Record<string, React.ElementType> = {
@@ -27,6 +28,7 @@ export default function Accounts() {
   const [step, setStep] = useState<ModalStep>('form')
   const [name, setName] = useState('')
   const [type, setType] = useState<Account['type']>('bank')
+  const [currency, setCurrency] = useState('RUB')
   const [balance, setBalance] = useState('')
   const [color, setColor] = useState(COLORS[0])
 
@@ -44,7 +46,7 @@ export default function Accounts() {
 
   function openAdd() {
     setEditingId(null)
-    setName(''); setBalance(''); setColor(COLORS[0]); setType('bank')
+    setName(''); setBalance(''); setColor(COLORS[0]); setType('bank'); setCurrency('RUB')
     setStatementFile(null); setStatementParsed(null); setParseError('')
     setOpen(true)
   }
@@ -53,6 +55,7 @@ export default function Accounts() {
     setEditingId(a.id)
     setName(a.name)
     setType(a.type)
+    setCurrency(a.currency || 'RUB')
     setColor(a.color)
     // Вычисляем начальный остаток = текущий баланс − сумма операций
     const inc = transactions.filter(t => t.type === 'income'   && t.accountId === a.id).reduce((s, t) => s + t.amount, 0)
@@ -68,7 +71,7 @@ export default function Accounts() {
     setOpen(false)
     setEditingId(null)
     setStep('form')
-    setName(''); setBalance(''); setColor(COLORS[0]); setType('bank')
+    setName(''); setBalance(''); setColor(COLORS[0]); setType('bank'); setCurrency('RUB')
     setStatementFile(null); setStatementParsed(null); setParseError('')
     setPendingAccountId(null)
     if (fileRef.current) fileRef.current.value = ''
@@ -108,7 +111,7 @@ export default function Accounts() {
 
     const accId = 'acc_' + Date.now()
     const initialBalance = parseFloat(balance.replace(/\s/g, '').replace(',', '.')) || 0
-    store.addAccount({ id: accId, name, type, currency: 'RUB', balance: initialBalance, color })
+    store.addAccount({ id: accId, name, type, currency, balance: initialBalance, color })
 
     if (statementParsed && statementParsed.ok) {
       setPendingAccountId(accId)
@@ -269,15 +272,23 @@ export default function Accounts() {
                 </div>
                 <p className="text-sm text-slate-500">{typeLabel[a.type] ?? a.type}</p>
                 <p className="text-lg font-bold text-slate-800 mt-0.5">{a.name}</p>
-                <p className="text-2xl font-bold mt-3" style={{ color: a.color }}>{formatCurrency(a.balance)}</p>
+                <p className="text-2xl font-bold mt-3" style={{ color: a.color }}>
+                  {a.currency && a.currency !== 'RUB'
+                    ? formatWithCurrency(a.balance, a.currency)
+                    : formatCurrency(a.balance)}
+                </p>
                 <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-2 gap-3">
                   <div>
                     <p className="text-xs text-slate-400">Поступления</p>
-                    <p className="text-sm font-semibold text-emerald-600 mt-0.5">{formatCurrency(inc)}</p>
+                    <p className="text-sm font-semibold text-emerald-600 mt-0.5">
+                      {a.currency && a.currency !== 'RUB' ? formatWithCurrency(inc, a.currency) : formatCurrency(inc)}
+                    </p>
                   </div>
                   <div>
                     <p className="text-xs text-slate-400">Списания</p>
-                    <p className="text-sm font-semibold text-red-500 mt-0.5">{formatCurrency(exp)}</p>
+                    <p className="text-sm font-semibold text-red-500 mt-0.5">
+                      {a.currency && a.currency !== 'RUB' ? formatWithCurrency(exp, a.currency) : formatCurrency(exp)}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -347,10 +358,21 @@ export default function Accounts() {
                 </div>
               </div>
 
-              {/* Balance — для нового счёта и при редактировании */}
+              {/* Currency */}
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1.5">Валюта</label>
+                <select value={currency} onChange={e => setCurrency(e.target.value)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300">
+                  {CURRENCIES.map(c => (
+                    <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Balance */}
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">
-                  Начальный остаток, ₽
+                  Начальный остаток, {currencySymbol(currency)}
                 </label>
                 <input value={balance} onChange={e => setBalance(e.target.value)}
                   placeholder="0"
