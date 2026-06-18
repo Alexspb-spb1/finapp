@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { Scale, Wallet, TrendingUp, TrendingDown, Landmark, ChevronDown, ChevronRight } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency } from '../utils/format'
+import { toBase, accountToBase, sumAccountsBase } from '../utils/currency'
 import CategoryIcon from '../utils/categoryIcons'
 
 // ── Mini bar (визуализация доли) ──────────────────────────────────────────────
@@ -87,11 +88,11 @@ export default function Balance() {
   const store = useStore()
   const { accounts, transactions, categories } = store
 
-  // ── Assets: денежные средства по счетам ───────────────────────────────────
-  const totalCash = accounts.reduce((s, a) => s + a.balance, 0)
+  // ── Assets: денежные средства по счетам (в базовой валюте) ─────────────────
+  const totalCash = sumAccountsBase(accounts)
 
   // ── Equity: нераспределённая прибыль (операционная + инвестиционная)
-  // kind=1,2 — operational & investment transactions
+  // kind=1,2 — operational & investment transactions. Все суммы — в базовой валюте (toBase)
   const operationalCats = useMemo(() => {
     const ids = new Set(categories.filter(c => (c.kind ?? 1) !== 3).map(c => c.id))
     return ids
@@ -102,7 +103,7 @@ export default function Balance() {
     for (const t of transactions) {
       if (t.type === 'transfer') continue
       if (!operationalCats.has(t.categoryId)) continue
-      profit += t.type === 'income' ? t.amount : -t.amount
+      profit += t.type === 'income' ? toBase(t) : -toBase(t)
     }
     return profit
   }, [transactions, operationalCats])
@@ -113,7 +114,7 @@ export default function Balance() {
     for (const t of transactions) {
       if (t.type !== 'income') continue
       const cat = categories.find(c => c.id === t.categoryId)
-      if ((cat?.kind ?? 1) === 3) sum += t.amount
+      if ((cat?.kind ?? 1) === 3) sum += toBase(t)
     }
     return sum
   }, [transactions, categories])
@@ -123,19 +124,37 @@ export default function Balance() {
     for (const t of transactions) {
       if (t.type !== 'expense') continue
       const cat = categories.find(c => c.id === t.categoryId)
-      if ((cat?.kind ?? 1) === 3) sum += t.amount
+      if ((cat?.kind ?? 1) === 3) sum += toBase(t)
     }
     return sum
   }, [transactions, categories])
 
   const netFinancial = financialIncome - financialExpense
 
-  // ── Initial capital = Cash − Profit − Net financial flows
-  // (what was deposited before any transactions)
-  const initialCapital = totalCash - cumulativeProfit - netFinancial
+  // ── Начальный капитал — рассчитывается НЕЗАВИСИМО (не выводится из равенства).
+  // Для каждого счёта восстанавливаем остаток на момент до первой операции
+  // (в родной валюте счёта), затем конвертируем в базовую. Так уравнение баланса
+  // перестаёт быть тавтологией: курсовые разницы по кросс-валютным переводам
+  // проявятся как реальное расхождение. (БАГ № 3)
+  const initialCapital = useMemo(() => {
+    let sum = 0
+    for (const acc of accounts) {
+      let openingNative = acc.balance
+      for (const t of transactions) {
+        if (t.type === 'income'  && t.accountId === acc.id) openingNative -= t.amount
+        else if (t.type === 'expense' && t.accountId === acc.id) openingNative += t.amount
+        else if (t.type === 'transfer') {
+          if (t.accountId === acc.id)   openingNative += t.amount
+          if (t.toAccountId === acc.id) openingNative -= (t.toAmount ?? t.amount)
+        }
+      }
+      sum += accountToBase({ ...acc, balance: openingNative })
+    }
+    return sum
+  }, [accounts, transactions])
 
-  // ── Total liabilities+equity = totalCash (balance equation holds)
-  const totalEquity = cumulativeProfit + netFinancial + initialCapital // == totalCash
+  // ── Капитал и обязательства = нач. капитал + прибыль + финансовые потоки
+  const totalEquity = cumulativeProfit + netFinancial + initialCapital
 
   // Category breakdowns for financial section
   const financialIncCats = useMemo(() => {
@@ -143,7 +162,7 @@ export default function Balance() {
     for (const t of transactions) {
       if (t.type !== 'income') continue
       const cat = categories.find(c => c.id === t.categoryId)
-      if ((cat?.kind ?? 1) === 3 && cat) map.set(cat.id, (map.get(cat.id) ?? 0) + t.amount)
+      if ((cat?.kind ?? 1) === 3 && cat) map.set(cat.id, (map.get(cat.id) ?? 0) + toBase(t))
     }
     return map
   }, [transactions, categories])
@@ -153,7 +172,7 @@ export default function Balance() {
     for (const t of transactions) {
       if (t.type !== 'expense') continue
       const cat = categories.find(c => c.id === t.categoryId)
-      if ((cat?.kind ?? 1) === 3 && cat) map.set(cat.id, (map.get(cat.id) ?? 0) + t.amount)
+      if ((cat?.kind ?? 1) === 3 && cat) map.set(cat.id, (map.get(cat.id) ?? 0) + toBase(t))
     }
     return map
   }, [transactions, categories])
@@ -217,7 +236,7 @@ export default function Balance() {
               value={(() => {
                 let s = 0
                 for (const t of transactions) {
-                  if (t.type === 'income' && operationalCats.has(t.categoryId)) s += t.amount
+                  if (t.type === 'income' && operationalCats.has(t.categoryId)) s += toBase(t)
                 }
                 return s
               })()}
@@ -228,7 +247,7 @@ export default function Balance() {
               value={-(() => {
                 let s = 0
                 for (const t of transactions) {
-                  if (t.type === 'expense' && operationalCats.has(t.categoryId)) s += t.amount
+                  if (t.type === 'expense' && operationalCats.has(t.categoryId)) s += toBase(t)
                 }
                 return s
               })()}

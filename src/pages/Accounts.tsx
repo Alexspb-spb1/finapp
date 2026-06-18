@@ -1,10 +1,10 @@
-import { useState, useRef } from 'react'
-import { CreditCard, Banknote, Wallet, Bitcoin, Plus, X, Trash2, Upload, FileText, Loader2, Pencil } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { CreditCard, Banknote, Wallet, Bitcoin, Plus, X, Trash2, Upload, FileText, Loader2, Pencil, RefreshCw, AlertCircle } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency } from '../utils/format'
 import { parseBankStatement, type ParsedTransaction } from '../utils/bankStatementParser'
 import StatementPreview from '../components/bank/StatementPreview'
-import { CURRENCIES, formatWithCurrency, currencySymbol } from '../utils/currency'
+import { CURRENCIES, formatWithCurrency, currencySymbol, sumAccountsBase, fetchRate } from '../utils/currency'
 import type { Account, Counterparty } from '../types'
 
 const typeIcon: Record<string, React.ElementType> = {
@@ -20,7 +20,7 @@ type ModalStep = 'form' | 'preview'
 export default function Accounts() {
   const store = useStore()
   const { accounts, transactions } = store
-  const total = accounts.reduce((s, a) => s + a.balance, 0)
+  const total = sumAccountsBase(accounts)
 
   // Modal state
   const [open, setOpen] = useState(false)
@@ -29,11 +29,25 @@ export default function Accounts() {
   const [name, setName] = useState('')
   const [type, setType] = useState<Account['type']>('bank')
   const [currency, setCurrency] = useState('RUB')
+  const [rate, setRate] = useState('')
+  const [fetchingRate, setFetchingRate] = useState(false)
   const [balance, setBalance] = useState('')
   const [color, setColor] = useState(COLORS[0])
 
   // Delete confirmation
   const [deleteId, setDeleteId] = useState<string | null>(null)
+
+  // Авто-загрузка курса при выборе валютного счёта (если курс ещё не задан)
+  useEffect(() => {
+    if (!open || currency === 'RUB') { return }
+    if (rate) return
+    setFetchingRate(true)
+    fetchRate(currency, 'RUB').then(r => {
+      if (r) setRate(String(r))
+      setFetchingRate(false)
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currency, open])
 
   // Statement state
   const [statementFile, setStatementFile] = useState<File | null>(null)
@@ -46,7 +60,7 @@ export default function Accounts() {
 
   function openAdd() {
     setEditingId(null)
-    setName(''); setBalance(''); setColor(COLORS[0]); setType('bank'); setCurrency('RUB')
+    setName(''); setBalance(''); setColor(COLORS[0]); setType('bank'); setCurrency('RUB'); setRate('')
     setStatementFile(null); setStatementParsed(null); setParseError('')
     setOpen(true)
   }
@@ -56,6 +70,7 @@ export default function Accounts() {
     setName(a.name)
     setType(a.type)
     setCurrency(a.currency || 'RUB')
+    setRate(a.rate ? String(a.rate) : '')
     setColor(a.color)
     // Вычисляем начальный остаток = текущий баланс − сумма операций
     const inc = transactions.filter(t => t.type === 'income'   && t.accountId === a.id).reduce((s, t) => s + t.amount, 0)
@@ -71,7 +86,7 @@ export default function Accounts() {
     setOpen(false)
     setEditingId(null)
     setStep('form')
-    setName(''); setBalance(''); setColor(COLORS[0]); setType('bank'); setCurrency('RUB')
+    setName(''); setBalance(''); setColor(COLORS[0]); setType('bank'); setCurrency('RUB'); setRate('')
     setStatementFile(null); setStatementParsed(null); setParseError('')
     setPendingAccountId(null)
     if (fileRef.current) fileRef.current.value = ''
@@ -98,20 +113,22 @@ export default function Accounts() {
   function handleFormSubmit(e: React.FormEvent) {
     e.preventDefault()
 
+    const parsedRate = currency === 'RUB' ? undefined : (parseFloat(rate) || undefined)
+
     if (editingId) {
       const newInitial = parseFloat(balance.replace(/\s/g, '').replace(',', '.')) || 0
       // Пересчитываем баланс: начальный остаток + все операции по счёту
       const inc = transactions.filter(t => t.type === 'income'  && t.accountId === editingId).reduce((s, t) => s + t.amount, 0)
       const exp = transactions.filter(t => t.type === 'expense' && t.accountId === editingId).reduce((s, t) => s + t.amount, 0)
       const newBalance = newInitial + (inc - exp)
-      store.updateAccount(editingId, { name, type, color, balance: newBalance })
+      store.updateAccount(editingId, { name, type, color, currency, rate: parsedRate, balance: newBalance })
       resetModal()
       return
     }
 
     const accId = 'acc_' + Date.now()
     const initialBalance = parseFloat(balance.replace(/\s/g, '').replace(',', '.')) || 0
-    store.addAccount({ id: accId, name, type, currency, balance: initialBalance, color })
+    store.addAccount({ id: accId, name, type, currency, rate: parsedRate, balance: initialBalance, color })
 
     if (statementParsed && statementParsed.ok) {
       setPendingAccountId(accId)
@@ -203,8 +220,12 @@ export default function Accounts() {
     resetModal()
   }
 
+  const deleteTxCount = deleteId
+    ? transactions.filter(t => t.accountId === deleteId || t.toAccountId === deleteId).length
+    : 0
+
   function confirmDelete() {
-    if (deleteId) store.deleteAccount(deleteId)
+    if (deleteId && deleteTxCount === 0) store.deleteAccount(deleteId)
     setDeleteId(null)
   }
 
@@ -303,21 +324,40 @@ export default function Accounts() {
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6">
-              <div className="text-3xl mb-3 text-center">🗑️</div>
-              <h3 className="text-base font-semibold text-slate-800 text-center mb-1">Удалить счёт?</h3>
-              <p className="text-sm text-slate-500 text-center mb-5">
-                «{a?.name}» будет удалён. Операции по этому счёту останутся.
-              </p>
-              <div className="flex gap-3">
-                <button onClick={() => setDeleteId(null)}
-                  className="flex-1 py-2.5 border border-slate-200 text-sm text-slate-600 font-medium rounded-lg hover:bg-slate-50 transition">
-                  Отмена
-                </button>
-                <button onClick={confirmDelete}
-                  className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-lg transition">
-                  Удалить
-                </button>
-              </div>
+              {deleteTxCount > 0 ? (
+                <>
+                  <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <AlertCircle size={22} className="text-amber-500" />
+                  </div>
+                  <h3 className="text-base font-semibold text-slate-800 text-center mb-1">Счёт используется</h3>
+                  <p className="text-sm text-slate-500 text-center mb-5">
+                    К счёту «{a?.name}» привязано {deleteTxCount} операций. Сначала удалите или
+                    перенесите эти операции на другой счёт, иначе они останутся без счёта.
+                  </p>
+                  <button onClick={() => setDeleteId(null)}
+                    className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition">
+                    Понятно
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="text-3xl mb-3 text-center">🗑️</div>
+                  <h3 className="text-base font-semibold text-slate-800 text-center mb-1">Удалить счёт?</h3>
+                  <p className="text-sm text-slate-500 text-center mb-5">
+                    «{a?.name}» будет удалён безвозвратно.
+                  </p>
+                  <div className="flex gap-3">
+                    <button onClick={() => setDeleteId(null)}
+                      className="flex-1 py-2.5 border border-slate-200 text-sm text-slate-600 font-medium rounded-lg hover:bg-slate-50 transition">
+                      Отмена
+                    </button>
+                    <button onClick={confirmDelete}
+                      className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-lg transition">
+                      Удалить
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )
@@ -361,13 +401,33 @@ export default function Accounts() {
               {/* Currency */}
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">Валюта</label>
-                <select value={currency} onChange={e => setCurrency(e.target.value)}
+                <select value={currency} onChange={e => { setCurrency(e.target.value); setRate('') }}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300">
                   {CURRENCIES.map(c => (
                     <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
                   ))}
                 </select>
               </div>
+
+              {/* Exchange rate — only for foreign-currency accounts (БАГ № 2) */}
+              {currency !== 'RUB' && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                  <label className="block text-xs font-medium text-amber-700 mb-1.5">
+                    Курс ({currency} → RUB)
+                    {fetchingRate && <span className="ml-1 animate-spin inline-block"><RefreshCw size={10} /></span>}
+                  </label>
+                  <input
+                    type="number" step="0.0001" min="0"
+                    value={rate}
+                    onChange={e => setRate(e.target.value)}
+                    placeholder="например 90.5"
+                    className="w-full border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-amber-300"
+                  />
+                  <p className="text-[11px] text-amber-600 mt-1.5">
+                    Используется для пересчёта остатка в рубли в сводных отчётах
+                  </p>
+                </div>
+              )}
 
               {/* Balance */}
               <div>

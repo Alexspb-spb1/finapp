@@ -1,6 +1,7 @@
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore'
 import { db, auth } from '../lib/firebase'
 import { subscribeAuth, authStore } from './authStore'
+import { round2 } from '../utils/currency'
 import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart, RecurringTemplate, RecurringPeriod, PaymentCalendarItem } from '../types'
 
 const DEFAULT_CATEGORIES: Category[] = [
@@ -200,12 +201,12 @@ export const companyStore = {
       ...state,
       transactions: [t, ...state.transactions],
       accounts: state.accounts.map(a => {
-        if (t.type === 'income'   && a.id === t.accountId)   return { ...a, balance: a.balance + t.amount }
-        if (t.type === 'expense'  && a.id === t.accountId)   return { ...a, balance: a.balance - t.amount }
+        if (t.type === 'income'   && a.id === t.accountId)   return { ...a, balance: round2(a.balance + t.amount) }
+        if (t.type === 'expense'  && a.id === t.accountId)   return { ...a, balance: round2(a.balance - t.amount) }
         if (t.type === 'transfer') {
-          if (a.id === t.accountId)   return { ...a, balance: a.balance - t.amount }
+          if (a.id === t.accountId)   return { ...a, balance: round2(a.balance - t.amount) }
           // Cross-currency transfer: credit toAmount (if set) else amount
-          if (a.id === t.toAccountId) return { ...a, balance: a.balance + (t.toAmount ?? t.amount) }
+          if (a.id === t.toAccountId) return { ...a, balance: round2(a.balance + (t.toAmount ?? t.amount)) }
         }
         return a
       }),
@@ -220,11 +221,11 @@ export const companyStore = {
       ...state,
       transactions: state.transactions.filter(x => x.id !== id),
       accounts: state.accounts.map(a => {
-        if (t.type === 'income'   && a.id === t.accountId)   return { ...a, balance: a.balance - t.amount }
-        if (t.type === 'expense'  && a.id === t.accountId)   return { ...a, balance: a.balance + t.amount }
+        if (t.type === 'income'   && a.id === t.accountId)   return { ...a, balance: round2(a.balance - t.amount) }
+        if (t.type === 'expense'  && a.id === t.accountId)   return { ...a, balance: round2(a.balance + t.amount) }
         if (t.type === 'transfer') {
-          if (a.id === t.accountId)   return { ...a, balance: a.balance + t.amount }
-          if (a.id === t.toAccountId) return { ...a, balance: a.balance - (t.toAmount ?? t.amount) }
+          if (a.id === t.accountId)   return { ...a, balance: round2(a.balance + t.amount) }
+          if (a.id === t.toAccountId) return { ...a, balance: round2(a.balance - (t.toAmount ?? t.amount)) }
         }
         return a
       }),
@@ -239,11 +240,11 @@ export const companyStore = {
       const t = transactions.find(x => x.id === id)
       if (!t) continue
       accounts = accounts.map(a => {
-        if (t.type === 'income'  && a.id === t.accountId)   return { ...a, balance: a.balance - t.amount }
-        if (t.type === 'expense' && a.id === t.accountId)   return { ...a, balance: a.balance + t.amount }
+        if (t.type === 'income'  && a.id === t.accountId)   return { ...a, balance: round2(a.balance - t.amount) }
+        if (t.type === 'expense' && a.id === t.accountId)   return { ...a, balance: round2(a.balance + t.amount) }
         if (t.type === 'transfer') {
-          if (a.id === t.accountId)   return { ...a, balance: a.balance + t.amount }
-          if (a.id === t.toAccountId) return { ...a, balance: a.balance - t.amount }
+          if (a.id === t.accountId)   return { ...a, balance: round2(a.balance + t.amount) }
+          if (a.id === t.toAccountId) return { ...a, balance: round2(a.balance - (t.toAmount ?? t.amount)) }
         }
         return a
       })
@@ -258,20 +259,20 @@ export const companyStore = {
     if (!old) return
     const updated: Transaction = { ...old, ...changes }
     let accounts = state.accounts.map(a => {
-      if (old.type === 'income'  && a.id === old.accountId)   return { ...a, balance: a.balance - old.amount }
-      if (old.type === 'expense' && a.id === old.accountId)   return { ...a, balance: a.balance + old.amount }
+      if (old.type === 'income'  && a.id === old.accountId)   return { ...a, balance: round2(a.balance - old.amount) }
+      if (old.type === 'expense' && a.id === old.accountId)   return { ...a, balance: round2(a.balance + old.amount) }
       if (old.type === 'transfer') {
-        if (a.id === old.accountId)   return { ...a, balance: a.balance + old.amount }
-        if (a.id === old.toAccountId) return { ...a, balance: a.balance - old.amount }
+        if (a.id === old.accountId)   return { ...a, balance: round2(a.balance + old.amount) }
+        if (a.id === old.toAccountId) return { ...a, balance: round2(a.balance - (old.toAmount ?? old.amount)) }
       }
       return a
     })
     accounts = accounts.map(a => {
-      if (updated.type === 'income'  && a.id === updated.accountId)   return { ...a, balance: a.balance + updated.amount }
-      if (updated.type === 'expense' && a.id === updated.accountId)   return { ...a, balance: a.balance - updated.amount }
+      if (updated.type === 'income'  && a.id === updated.accountId)   return { ...a, balance: round2(a.balance + updated.amount) }
+      if (updated.type === 'expense' && a.id === updated.accountId)   return { ...a, balance: round2(a.balance - updated.amount) }
       if (updated.type === 'transfer') {
-        if (a.id === updated.accountId)   return { ...a, balance: a.balance - updated.amount }
-        if (a.id === updated.toAccountId) return { ...a, balance: a.balance + updated.amount }
+        if (a.id === updated.accountId)   return { ...a, balance: round2(a.balance - updated.amount) }
+        if (a.id === updated.toAccountId) return { ...a, balance: round2(a.balance + (updated.toAmount ?? updated.amount)) }
       }
       return a
     })
@@ -286,20 +287,20 @@ export const companyStore = {
       if (!old) continue
       const updated: Transaction = { ...old, ...changes }
       accounts = accounts.map(a => {
-        if (old.type === 'income'  && a.id === old.accountId)   return { ...a, balance: a.balance - old.amount }
-        if (old.type === 'expense' && a.id === old.accountId)   return { ...a, balance: a.balance + old.amount }
+        if (old.type === 'income'  && a.id === old.accountId)   return { ...a, balance: round2(a.balance - old.amount) }
+        if (old.type === 'expense' && a.id === old.accountId)   return { ...a, balance: round2(a.balance + old.amount) }
         if (old.type === 'transfer') {
-          if (a.id === old.accountId)   return { ...a, balance: a.balance + old.amount }
-          if (a.id === old.toAccountId) return { ...a, balance: a.balance - old.amount }
+          if (a.id === old.accountId)   return { ...a, balance: round2(a.balance + old.amount) }
+          if (a.id === old.toAccountId) return { ...a, balance: round2(a.balance - (old.toAmount ?? old.amount)) }
         }
         return a
       })
       accounts = accounts.map(a => {
-        if (updated.type === 'income'  && a.id === updated.accountId)   return { ...a, balance: a.balance + updated.amount }
-        if (updated.type === 'expense' && a.id === updated.accountId)   return { ...a, balance: a.balance - updated.amount }
+        if (updated.type === 'income'  && a.id === updated.accountId)   return { ...a, balance: round2(a.balance + updated.amount) }
+        if (updated.type === 'expense' && a.id === updated.accountId)   return { ...a, balance: round2(a.balance - updated.amount) }
         if (updated.type === 'transfer') {
-          if (a.id === updated.accountId)   return { ...a, balance: a.balance - updated.amount }
-          if (a.id === updated.toAccountId) return { ...a, balance: a.balance + updated.amount }
+          if (a.id === updated.accountId)   return { ...a, balance: round2(a.balance - updated.amount) }
+          if (a.id === updated.toAccountId) return { ...a, balance: round2(a.balance + (updated.toAmount ?? updated.amount)) }
         }
         return a
       })
@@ -315,6 +316,12 @@ export const companyStore = {
     persist()
   },
   deleteAccount(id: string) {
+    // Защита: нельзя удалить счёт с привязанными операциями — иначе они осиротеют (БАГ № 6)
+    const hasTx = state.transactions.some(t => t.accountId === id || t.toAccountId === id)
+    if (hasTx) {
+      console.warn('[companyStore] deleteAccount отклонён: к счёту привязаны операции', id)
+      return
+    }
     state = { ...state, accounts: state.accounts.filter(a => a.id !== id) }
     persist()
   },
@@ -421,8 +428,8 @@ export const companyStore = {
     // Add transaction + update template
     let { transactions, accounts, recurring } = state
     accounts = accounts.map(a => {
-      if (tx.type === 'income'  && a.id === tx.accountId) return { ...a, balance: a.balance + tx.amount }
-      if (tx.type === 'expense' && a.id === tx.accountId) return { ...a, balance: a.balance - tx.amount }
+      if (tx.type === 'income'  && a.id === tx.accountId) return { ...a, balance: round2(a.balance + tx.amount) }
+      if (tx.type === 'expense' && a.id === tx.accountId) return { ...a, balance: round2(a.balance - tx.amount) }
       return a
     })
     transactions = [tx, ...transactions]
@@ -448,8 +455,8 @@ export const companyStore = {
 
     // Реверсируем баланс от оригинала
     accounts = accounts.map(a => {
-      if (original.type === 'income'  && a.id === original.accountId) return { ...a, balance: a.balance - original.amount }
-      if (original.type === 'expense' && a.id === original.accountId) return { ...a, balance: a.balance + original.amount }
+      if (original.type === 'income'  && a.id === original.accountId) return { ...a, balance: round2(a.balance - original.amount) }
+      if (original.type === 'expense' && a.id === original.accountId) return { ...a, balance: round2(a.balance + original.amount) }
       return a
     })
 
@@ -470,8 +477,8 @@ export const companyStore = {
       }
       transactions = [newTx, ...transactions]
       accounts = accounts.map(a => {
-        if (original.type === 'income'  && a.id === original.accountId) return { ...a, balance: a.balance + p.amount }
-        if (original.type === 'expense' && a.id === original.accountId) return { ...a, balance: a.balance - p.amount }
+        if (original.type === 'income'  && a.id === original.accountId) return { ...a, balance: round2(a.balance + p.amount) }
+        if (original.type === 'expense' && a.id === original.accountId) return { ...a, balance: round2(a.balance - p.amount) }
         return a
       })
     }
@@ -522,7 +529,7 @@ export const companyStore = {
       transactions: [tx, ...state.transactions],
       accounts: state.accounts.map(a => {
         if (a.id !== acc.id) return a
-        return { ...a, balance: item.type === 'income' ? a.balance + item.amount : a.balance - item.amount }
+        return { ...a, balance: round2(item.type === 'income' ? a.balance + item.amount : a.balance - item.amount) }
       }),
       paymentCalendar: (state.paymentCalendar ?? []).map(i => i.id === id ? { ...i, status: 'paid' } : i),
     }

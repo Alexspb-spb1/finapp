@@ -20,9 +20,29 @@ export function currencySymbol(code: string): string {
   return CURRENCIES.find(c => c.code === code)?.symbol ?? code
 }
 
+/** Округление денежной суммы до копеек — защита от дрейфа float (БАГ № 1) */
+export function round2(x: number): number {
+  return Math.round((x + Number.EPSILON) * 100) / 100
+}
+
 /** Convert transaction amount to base currency amount */
 export function toBase(tx: Transaction): number {
-  return tx.amount * (tx.exchangeRate ?? 1)
+  return round2(tx.amount * (tx.exchangeRate ?? 1))
+}
+
+/**
+ * Остаток счёта в базовой валюте (RUB).
+ * account.rate = сколько базовой валюты стоит 1 единица валюты счёта.
+ * Для рублёвого счёта rate отсутствует → 1:1. (БАГ № 2)
+ */
+export function accountToBase(account: Account, baseCurrency = 'RUB'): number {
+  if (account.currency === baseCurrency) return round2(account.balance)
+  return round2(account.balance * (account.rate ?? 1))
+}
+
+/** Сумма остатков всех счетов в базовой валюте */
+export function sumAccountsBase(accounts: Account[], baseCurrency = 'RUB'): number {
+  return round2(accounts.reduce((s, a) => s + accountToBase(a, baseCurrency), 0))
 }
 
 /** Format amount with currency symbol */

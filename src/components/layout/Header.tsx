@@ -2,6 +2,7 @@ import { Bell, Plus, Search, Menu, Wallet } from 'lucide-react'
 import { useState } from 'react'
 import TransactionModal from '../transactions/TransactionModal'
 import { useStore } from '../../store/useStore'
+import { sumAccountsBase } from '../../utils/currency'
 
 interface Props {
   title: string
@@ -18,7 +19,7 @@ export default function Header({ title, onMenuClick }: Props) {
   const [open, setOpen] = useState(false)
   const store = useStore()
 
-  const totalBalance = store.accounts.reduce((sum, a) => sum + a.balance, 0)
+  const totalBalance = sumAccountsBase(store.accounts)
 
   return (
     <>

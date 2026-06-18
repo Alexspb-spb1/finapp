@@ -19,7 +19,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { Link } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDateShort, monthKey } from '../utils/format'
-import { toBase } from '../utils/currency'
+import { toBase, sumAccountsBase } from '../utils/currency'
 import CategoryIcon from '../utils/categoryIcons'
 import MatchmakerModal from '../components/transactions/MatchmakerModal'
 
@@ -157,7 +157,7 @@ export default function Dashboard() {
   }, [disabledWidgets])
 
   // ── Data calculations ───────────────────────────────────────────────────────
-  const totalBalance = accounts.reduce((s, a) => s + a.balance, 0)
+  const totalBalance = sumAccountsBase(accounts)
   const curMonthLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long' })
     .format(new Date()).replace(/^./, c => c.toUpperCase())
 

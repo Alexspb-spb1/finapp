@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { X, Zap, RefreshCw } from 'lucide-react'
+import { X, Zap, RefreshCw, AlertCircle } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
@@ -32,6 +32,7 @@ export default function TransactionModal({ open, onClose }: Props) {
   const [exchangeRate, setExchangeRate] = useState('')
   const [toAmount, setToAmount] = useState('')
   const [fetchingRate, setFetchingRate] = useState(false)
+  const [error, setError] = useState('')
 
   // Apply matching enabled rules to current form state
   const applyRules = useCallback((fields: {
@@ -81,14 +82,24 @@ export default function TransactionModal({ open, onClose }: Props) {
 
   function handleSubmit() {
     const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
-    if (!num || num <= 0) return
+    if (!num || num <= 0) { setError('Введите сумму больше 0'); return }
     const acc = accountId || firstAcc
     const accObj = accounts.find(a => a.id === acc)
     const rate = exchangeRate ? parseFloat(exchangeRate) : undefined
+    // Валютная операция обязана иметь курс — иначе уйдёт в отчёты как 1:1 (БАГ № 4)
+    if (accObj && isForeign(accObj) && (!rate || rate <= 0)) {
+      setError(`Укажите курс ${accObj.currency} → RUB`)
+      return
+    }
     const toAcc = type === 'transfer' ? (toAccountId || secondAcc) : undefined
     const toAccObj = accounts.find(a => a.id === toAcc)
     const crossCurrency = type === 'transfer' && accObj && toAccObj && accObj.currency !== toAccObj.currency
     const toAmt = crossCurrency && toAmount ? parseFloat(toAmount) : undefined
+    if (crossCurrency && (!toAmt || toAmt <= 0)) {
+      setError(`Укажите сумму в ${toAccObj?.currency}`)
+      return
+    }
+    setError('')
 
     store.addTransaction({
       id: 't' + Date.now(),
@@ -119,6 +130,7 @@ export default function TransactionModal({ open, onClose }: Props) {
     setTags([])
     setExchangeRate('')
     setToAmount('')
+    setError('')
     setDate(new Date().toISOString().slice(0, 10))
     setHasRelatedDate(false)
     setAppliedRule(null)
@@ -358,6 +370,12 @@ export default function TransactionModal({ open, onClose }: Props) {
             <div className="flex items-center gap-2 bg-indigo-50 text-indigo-700 text-xs px-3 py-2 rounded-lg">
               <Zap size={13} className="shrink-0" />
               <span>Применено правило: <strong>{appliedRule}</strong></span>
+            </div>
+          )}
+
+          {error && (
+            <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-600 text-sm px-3 py-2.5 rounded-lg">
+              <AlertCircle size={14} className="shrink-0" /> {error}
             </div>
           )}
 

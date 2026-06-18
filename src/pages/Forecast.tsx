@@ -6,7 +6,7 @@ import {
 import { TrendingUp, TrendingDown, Lightbulb, AlertTriangle, Info, CheckCircle2 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
-import { toBase } from '../utils/currency'
+import { toBase, sumAccountsBase } from '../utils/currency'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 const ML: Record<string, string> = {
@@ -119,7 +119,7 @@ export default function Forecast() {
   }))
 
   // ── runway ────────────────────────────────────────────────────────────────
-  const totalBalance = accounts.reduce((s, a) => s + a.balance, 0)
+  const totalBalance = sumAccountsBase(accounts)
   const avgExp = expValues.length ? expValues.reduce((s, v) => s + v, 0) / expValues.length : 1
   const runway = avgExp > 0 ? totalBalance / avgExp : null
 

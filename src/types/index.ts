@@ -7,6 +7,7 @@ export interface Account {
   currency: string
   balance: number
   color: string
+  rate?: number   // курс: 1 единица валюты счёта = N базовой валюты (RUB). Для RUB не задаётся
 }
 
 export type CategoryKind = 1 | 2 | 3           // 1=операционная, 2=инвестиционная, 3=финансовая

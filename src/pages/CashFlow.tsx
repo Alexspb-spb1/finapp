@@ -7,7 +7,7 @@ import {
 } from 'recharts'
 import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
-import { toBase } from '../utils/currency'
+import { toBase, sumAccountsBase } from '../utils/currency'
 import CategoryIcon from '../utils/categoryIcons'
 import type { CategoryKind } from '../types'
 
@@ -97,7 +97,7 @@ export default function CashFlow() {
   )
 
   // Running balance: current balance - sum of future net flows
-  const totalCurrentBalance = accounts.reduce((s, a) => s + a.balance, 0)
+  const totalCurrentBalance = sumAccountsBase(accounts)
   // closing balance for each month in reverse (latest = current balance)
   const closingBalances: Record<string, number> = {}
   let runningBalance = totalCurrentBalance

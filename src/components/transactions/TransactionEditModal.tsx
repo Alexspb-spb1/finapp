@@ -65,12 +65,21 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
       setAmountError('Введите сумму больше 0')
       return
     }
-    setAmountError('')
     const accObj = accounts.find(a => a.id === accountId)
     const toAccObj = accounts.find(a => a.id === toAccountId)
     const rate = exchangeRate ? parseFloat(exchangeRate) : undefined
+    // Валютная операция обязана иметь курс (БАГ № 4)
+    if (accObj && isForeign(accObj) && (!rate || rate <= 0)) {
+      setAmountError(`Укажите курс ${accObj.currency} → RUB`)
+      return
+    }
     const isCross = type === 'transfer' && accObj && toAccObj && accObj.currency !== toAccObj.currency
     const toAmt = isCross && toAmount ? parseFloat(toAmount) : undefined
+    if (isCross && (!toAmt || toAmt <= 0)) {
+      setAmountError(`Укажите сумму в ${toAccObj?.currency}`)
+      return
+    }
+    setAmountError('')
 
     store.updateTransaction(transaction.id, {
       type,
