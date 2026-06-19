@@ -207,24 +207,15 @@ export default function Sidebar({ open, onClose }: Props) {
         `}
         style={{ background: '#0f1c3f' }}
       >
-        {/* Logo */}
-        <div className="px-5 py-5 border-b border-white/10 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 bg-indigo-500 flex items-center justify-center shrink-0">
-              <TrendingUp size={16} className="text-white" />
-            </div>
-            <span className="font-bold text-white text-lg tracking-tight">ФинУчёт</span>
-          </div>
+        {/* Mobile close — логотип теперь в верхней шапке */}
+        <div className="md:hidden flex justify-end px-3 pt-3">
           <button
             onClick={onClose}
-            className="md:hidden p-1.5 text-white/40 hover:text-white transition-colors"
+            className="p-1.5 text-white/40 hover:text-white transition-colors"
           >
             <X size={18} />
           </button>
         </div>
-        <p className="text-[11px] text-white/35 px-5 mt-1.5 mb-1 ml-10 uppercase tracking-widest hidden md:block">
-          управленческий учёт
-        </p>
 
         {/* Navigation */}
         <nav className="flex-1 px-2 py-3 overflow-y-auto">

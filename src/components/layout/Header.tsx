@@ -1,4 +1,4 @@
-import { Bell, Plus, Search, Menu, Wallet } from 'lucide-react'
+import { Bell, Plus, Search, Menu, Wallet, TrendingUp } from 'lucide-react'
 import { useState } from 'react'
 import TransactionModal from '../transactions/TransactionModal'
 import { useStore } from '../../store/useStore'
@@ -33,7 +33,17 @@ export default function Header({ title, onMenuClick }: Props) {
           <Menu size={20} />
         </button>
 
-        <h1 className="text-base font-semibold text-slate-800 flex-1 tracking-tight truncate">{title}</h1>
+        {/* Brand logo */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="w-8 h-8 bg-indigo-600 flex items-center justify-center shrink-0">
+            <TrendingUp size={16} className="text-white" />
+          </div>
+          <span className="font-bold text-slate-800 text-lg tracking-tight hidden sm:inline">ФинУчёт</span>
+        </div>
+
+        {/* Page title */}
+        <div className="hidden md:block h-5 w-px bg-slate-200 shrink-0" />
+        <h1 className="text-base font-semibold text-slate-700 flex-1 tracking-tight truncate">{title}</h1>
 
         {/* Search — desktop only */}
         <div className="hidden md:flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 w-56">

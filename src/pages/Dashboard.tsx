@@ -482,7 +482,7 @@ export default function Dashboard() {
       {/* Sortable widgets grid */}
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={widgetOrder} strategy={rectSortingStrategy}>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
             {enabledSortable.map(id => {
               const def = SORTABLE_WIDGETS.find(w => w.id === id)
               if (!def) return null
