@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors, RefreshCw, Download, Tag } from 'lucide-react'
+import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors, RefreshCw, Download, Tag, Lock } from 'lucide-react'
 import { downloadSheet } from '../utils/exportExcel'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
@@ -646,6 +646,7 @@ export default function Transactions() {
                 const cp   = counterparties.find(c => c.id === t.counterpartyId)
                 const proj = projects.find(p => p.id === t.projectId)
                 const isSel = selected.has(t.id)
+                const locked = store.isPeriodLocked(t.date)   // период закрыт (БАГ №6)
 
                 return (
                   <Fragment key={t.id}>
@@ -669,7 +670,10 @@ export default function Transactions() {
 
                       {/* Date */}
                       <td className="px-4 py-3.5 text-sm text-slate-500 overflow-hidden whitespace-nowrap text-ellipsis">
-                        {formatDate(t.date)}
+                        <span className="inline-flex items-center gap-1.5">
+                          {locked && <Lock size={11} className="text-slate-300 shrink-0" />}
+                          {formatDate(t.date)}
+                        </span>
                       </td>
 
                       {/* Type */}
@@ -738,7 +742,7 @@ export default function Transactions() {
                       {/* Comment — inline editable */}
                       <InlineCommentCell
                         tx={t}
-                        onStart={() => startInline(t.id, 'comment', stripCounterpart(t.comment ?? ''))}
+                        onStart={() => { if (!locked) startInline(t.id, 'comment', stripCounterpart(t.comment ?? '')) }}
                         active={inlineEdit?.id === t.id && inlineEdit?.field === 'comment'}
                         editVal={inlineEdit?.id === t.id && inlineEdit?.field === 'comment' ? inlineEdit.value : ''}
                         onChange={v => setInlineEdit(prev => prev ? { ...prev, value: v } : null)}
@@ -749,7 +753,7 @@ export default function Transactions() {
                       {/* Amount — inline editable */}
                       <InlineAmountCell
                         tx={t}
-                        onStart={() => startInline(t.id, 'amount', String(t.amount))}
+                        onStart={() => { if (!locked) startInline(t.id, 'amount', String(t.amount)) }}
                         active={inlineEdit?.id === t.id && inlineEdit?.field === 'amount'}
                         editVal={inlineEdit?.id === t.id && inlineEdit?.field === 'amount' ? inlineEdit.value : ''}
                         onChange={v => setInlineEdit(prev => prev ? { ...prev, value: v } : null)}
@@ -761,16 +765,19 @@ export default function Transactions() {
                       <td className="px-2 py-3.5 text-center">
                         <button
                           onClick={e => { e.stopPropagation(); setEditTx(t) }}
+                          title={locked ? 'Период закрыт' : 'Изменить'}
                           className="p-1.5 rounded-lg text-slate-200 group-hover/row:text-slate-400 hover:!text-indigo-500 hover:bg-indigo-50 transition-colors">
-                          <Pencil size={13} />
+                          {locked ? <Lock size={13} /> : <Pencil size={13} />}
                         </button>
                       </td>
 
                       {/* Delete */}
                       <td className="px-2 py-3.5 text-center">
                         <button
-                          onClick={e => { e.stopPropagation(); store.deleteTransaction(t.id) }}
-                          className="p-1.5 rounded-lg text-slate-200 group-hover/row:text-slate-400 hover:!text-red-500 hover:bg-red-50 transition-colors">
+                          disabled={locked}
+                          onClick={e => { e.stopPropagation(); if (!locked) store.deleteTransaction(t.id) }}
+                          title={locked ? 'Период закрыт — удаление недоступно' : 'Удалить'}
+                          className="p-1.5 rounded-lg text-slate-200 group-hover/row:text-slate-400 hover:!text-red-500 hover:bg-red-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:!text-slate-200 disabled:hover:bg-transparent">
                           <Trash2 size={13} />
                         </button>
                       </td>

@@ -5,6 +5,7 @@ import type { TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
 import TagInput from '../ui/TagInput'
 import { isForeign, fetchRate } from '../../utils/currency'
+import { formatCurrency } from '../../utils/format'
 
 interface Props {
   open: boolean
@@ -86,6 +87,11 @@ export default function TransactionModal({ open, onClose }: Props) {
   const firstAcc = accounts[0]?.id ?? ''
   const secondAcc = accounts.find(a => a.id !== (accountId || firstAcc))?.id ?? ''
 
+  // Предупреждение о расходе сверх остатка для безналичных счетов (БАГ №5)
+  const curAcc = accounts.find(a => a.id === curAccountId)
+  const numAmount = parseFloat(amount.replace(/\s/g, '').replace(',', '.')) || 0
+  const overspendWarn = (type === 'expense' || type === 'transfer') && !!curAcc && curAcc.type !== 'cash' && numAmount > curAcc.balance
+
   function handleSubmit() {
     const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
     if (!num || num <= 0) { setError('Введите сумму больше 0'); return }
@@ -93,6 +99,11 @@ export default function TransactionModal({ open, onClose }: Props) {
     if (date > today) { setError('Дата в будущем — плановые платежи добавляйте в Платёжный календарь'); return }
     const acc = accountId || firstAcc
     const accObj = accounts.find(a => a.id === acc)
+    // Наличные не могут уйти в минус — жёсткий блок (БАГ №5)
+    if ((type === 'expense' || type === 'transfer') && accObj?.type === 'cash' && num > accObj.balance) {
+      setError(`Недостаточно наличных: остаток ${formatCurrency(accObj.balance, accObj.currency)}`)
+      return
+    }
     const rate = exchangeRate ? parseFloat(exchangeRate) : undefined
     // Валютная операция обязана иметь курс — иначе уйдёт в отчёты как 1:1 (БАГ № 4)
     if (accObj && isForeign(accObj) && (!rate || rate <= 0)) {
@@ -389,6 +400,12 @@ export default function TransactionModal({ open, onClose }: Props) {
           {error && (
             <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-600 text-sm px-3 py-2.5 rounded-lg">
               <AlertCircle size={14} className="shrink-0" /> {error}
+            </div>
+          )}
+
+          {!error && overspendWarn && curAcc && (
+            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-700 text-sm px-3 py-2.5 rounded-lg">
+              <AlertCircle size={14} className="shrink-0" /> Сумма больше остатка ({formatCurrency(curAcc.balance, curAcc.currency)}) — баланс уйдёт в минус
             </div>
           )}
 

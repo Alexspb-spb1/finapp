@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { UserPlus, Trash2, X, AlertCircle, KeyRound, User as UserIcon, Plus, Pencil, Tag, Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-react'
+import { UserPlus, Trash2, X, AlertCircle, KeyRound, User as UserIcon, Plus, Pencil, Tag, Folder, FolderOpen, ChevronRight, ChevronDown, Lock } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { authStore } from '../store/authStore'
 import { useStore } from '../store/useStore'
@@ -69,6 +69,10 @@ export default function Settings() {
   const [catPnlSection, setCatPnlSection] = useState<CategoryPnlSection>('direct')
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [deleteCatId,   setDeleteCatId]  = useState<string | null>(null)
+
+  // Закрытие периода (БАГ №6)
+  const [closingDateInput, setClosingDateInput] = useState(store.closingDate)
+  const [closingSaved,     setClosingSaved]     = useState(false)
 
   const users = company ? authStore.getCompanyUsers(company.id) : []
 
@@ -724,6 +728,43 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      {/* Закрытие периода (БАГ №6) */}
+      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <Lock size={15} className="text-slate-400" />
+          <h3 className="text-sm font-semibold text-slate-700">Закрытие периода</h3>
+        </div>
+        <p className="text-xs text-slate-400 mb-4">
+          Операции с датой на указанный день и раньше нельзя будет изменить или удалить.
+          Защищает проведённые и сданные периоды от случайных правок.
+        </p>
+        <div className="flex items-end gap-3 flex-wrap">
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">Закрыто по дату (включительно)</label>
+            <input type="date" value={closingDateInput}
+              onChange={e => setClosingDateInput(e.target.value)}
+              className="border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
+          </div>
+          <button
+            onClick={() => { store.setClosingDate(closingDateInput); setClosingSaved(true); setTimeout(() => setClosingSaved(false), 2000) }}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors">
+            Сохранить
+          </button>
+          {closingDateInput && (
+            <button onClick={() => { setClosingDateInput(''); store.setClosingDate('') }}
+              className="text-sm text-slate-500 hover:text-red-500 px-3 py-2.5 transition-colors">
+              Снять блокировку
+            </button>
+          )}
+          {closingSaved && <span className="text-sm text-emerald-600 font-medium pb-2.5">✓ Сохранено</span>}
+        </div>
+        {store.closingDate && (
+          <p className="text-xs text-amber-600 mt-3 flex items-center gap-1.5">
+            <Lock size={12} /> Период закрыт по {store.closingDate} — операции до этой даты защищены от изменений.
+          </p>
+        )}
+      </div>
 
       {/* Integrations */}
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">

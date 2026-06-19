@@ -5,6 +5,7 @@ import { useStore } from '../../store/useStore'
 import SplitTransactionModal from './SplitTransactionModal'
 import TagInput from '../ui/TagInput'
 import { isForeign, fetchRate } from '../../utils/currency'
+import { formatCurrency } from '../../utils/format'
 
 interface Props {
   transaction: Transaction | null
@@ -62,7 +63,29 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
   const selectedCp   = counterparties.find(c => c.id === counterpartyId)
   const selectedAcc  = accounts.find(a => a.id === accountId)
 
+  // Доступный остаток счёта с отменой эффекта редактируемой операции (БАГ №5)
+  function availableBalance(accId: string): number {
+    const a = accounts.find(x => x.id === accId)
+    if (!a) return 0
+    let bal = a.balance
+    if (transaction.accountId === accId) {
+      if (transaction.type === 'income') bal -= transaction.amount
+      else bal += transaction.amount // expense / источник перевода — возвращаем
+    }
+    if (transaction.type === 'transfer' && transaction.toAccountId === accId) {
+      bal -= (transaction.toAmount ?? transaction.amount)
+    }
+    return bal
+  }
+  const numAmount = parseFloat(amount.replace(/\s/g, '').replace(',', '.')) || 0
+  const overspendWarn = (type === 'expense' || type === 'transfer') && !!selectedAcc && selectedAcc.type !== 'cash' && numAmount > availableBalance(accountId)
+
   function handleSave() {
+    // Период закрыт — операцию менять нельзя (БАГ №6)
+    if (store.isPeriodLocked(transaction.date)) {
+      setAmountError('Период закрыт — эту операцию нельзя изменить')
+      return
+    }
     const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
     if (!num || num <= 0) {
       setAmountError('Введите сумму больше 0')
@@ -75,6 +98,11 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
     }
     const accObj = accounts.find(a => a.id === accountId)
     const toAccObj = accounts.find(a => a.id === toAccountId)
+    // Наличные не могут уйти в минус — жёсткий блок (БАГ №5)
+    if ((type === 'expense' || type === 'transfer') && accObj?.type === 'cash' && num > availableBalance(accountId)) {
+      setAmountError(`Недостаточно наличных: остаток ${formatCurrency(availableBalance(accountId), accObj.currency)}`)
+      return
+    }
     const rate = exchangeRate ? parseFloat(exchangeRate) : undefined
     // Валютная операция обязана иметь курс (БАГ № 4)
     if (accObj && isForeign(accObj) && (!rate || rate <= 0)) {
@@ -396,6 +424,12 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
               suggestions={store.allTags}
             />
           </div>
+
+          {!amountError && overspendWarn && selectedAcc && (
+            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-700 text-sm px-3 py-2.5 rounded-lg">
+              <AlertCircle size={14} className="shrink-0" /> Сумма больше остатка ({formatCurrency(availableBalance(accountId), selectedAcc.currency)}) — баланс уйдёт в минус
+            </div>
+          )}
 
           {/* Actions */}
           <div className="flex gap-3 pt-1 pb-2">

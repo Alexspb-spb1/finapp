@@ -28,6 +28,7 @@ interface CompanyData {
   budgets:         BudgetItem[]
   recurring:       RecurringTemplate[]
   paymentCalendar: PaymentCalendarItem[]
+  closingDate?:    string   // период закрыт по эту дату включ.: операции <= неё нельзя менять/удалять (БАГ №6)
 }
 
 const EMPTY: CompanyData = {
@@ -97,6 +98,11 @@ function persist() {
 }
 
 function savedAt(d: CompanyData): number { return (d as any)._savedAt ?? 0 }
+
+// Период закрыт: операцию с датой <= closingDate нельзя менять или удалять (БАГ №6)
+function isPeriodLocked(dateStr: string): boolean {
+  return !!state.closingDate && dateStr <= state.closingDate
+}
 
 function advanceDate(dateStr: string, period: RecurringPeriod): string {
   const d = new Date(dateStr)
@@ -189,6 +195,15 @@ export const companyStore = {
   get budgets()        { return state.budgets   ?? [] },
   get recurring()        { return state.recurring        ?? [] },
   get paymentCalendar()  { return state.paymentCalendar  ?? [] },
+  get closingDate()      { return state.closingDate      ?? '' },
+  isPeriodLocked(dateStr: string) { return isPeriodLocked(dateStr) },
+  setClosingDate(date: string) {
+    const next = { ...state }
+    if (date) next.closingDate = date
+    else delete next.closingDate
+    state = next
+    persist()
+  },
   get allTags()        {
     const set = new Set<string>()
     for (const t of state.transactions) for (const tag of (t.tags ?? [])) set.add(tag)
@@ -217,6 +232,7 @@ export const companyStore = {
   deleteTransaction(id: string) {
     const t = state.transactions.find(x => x.id === id)
     if (!t) return
+    if (isPeriodLocked(t.date)) return   // период закрыт (БАГ №6)
     state = {
       ...state,
       transactions: state.transactions.filter(x => x.id !== id),
@@ -234,9 +250,14 @@ export const companyStore = {
   },
 
   deleteTransactions(ids: string[]) {
-    const idSet = new Set(ids)
+    // Из закрытого периода удалять нельзя — отбрасываем такие id (БАГ №6)
+    const removable = ids.filter(id => {
+      const t = state.transactions.find(x => x.id === id)
+      return t && !isPeriodLocked(t.date)
+    })
+    const idSet = new Set(removable)
     let { accounts, transactions } = state
-    for (const id of ids) {
+    for (const id of removable) {
       const t = transactions.find(x => x.id === id)
       if (!t) continue
       accounts = accounts.map(a => {
@@ -257,6 +278,8 @@ export const companyStore = {
   updateTransaction(id: string, changes: Partial<Omit<Transaction, 'id'>>) {
     const old = state.transactions.find(x => x.id === id)
     if (!old) return
+    // Нельзя менять операцию закрытого периода или переносить её в закрытый период (БАГ №6)
+    if (isPeriodLocked(old.date) || (changes.date != null && isPeriodLocked(changes.date))) return
     const updated: Transaction = { ...old, ...changes }
     let accounts = state.accounts.map(a => {
       if (old.type === 'income'  && a.id === old.accountId)   return { ...a, balance: round2(a.balance - old.amount) }
@@ -285,6 +308,7 @@ export const companyStore = {
     for (const { id, changes } of updates) {
       const old = transactions.find(x => x.id === id)
       if (!old) continue
+      if (isPeriodLocked(old.date) || (changes.date != null && isPeriodLocked(changes.date))) continue   // период закрыт (БАГ №6)
       const updated: Transaction = { ...old, ...changes }
       accounts = accounts.map(a => {
         if (old.type === 'income'  && a.id === old.accountId)   return { ...a, balance: round2(a.balance - old.amount) }
@@ -446,6 +470,7 @@ export const companyStore = {
   splitTransaction(originalId: string, parts: SplitPart[]) {
     const original = state.transactions.find(t => t.id === originalId)
     if (!original || parts.length < 2) return
+    if (isPeriodLocked(original.date)) return   // период закрыт (БАГ №6)
 
     const splitId = 'sp' + Date.now()
     const ts = Date.now()

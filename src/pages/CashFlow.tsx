@@ -96,17 +96,29 @@ export default function CashFlow() {
       s + sumKindMonth('income', k, m) - sumKindMonth('expense', k, m), 0)
   )
 
-  // Running balance: current balance - sum of future net flows
+  // Остаток на конец месяца (БАГ №4): считаем кумулятивно от начального капитала
+  // по ВСЕЙ истории, а не отматываем назад от текущего баланса. Иначе при выборе
+  // прошлого года последний месяц показывал бы сегодняшний остаток (с операциями
+  // последующих лет).
   const totalCurrentBalance = sumAccountsBase(accounts)
-  // closing balance for each month in reverse (latest = current balance)
+  // Чистый денежный поток (в базовой валюте) по каждому месяцу всей истории.
+  // Переводы не меняют суммарную кассу — исключаем, как и в таблице.
+  const netByMonthAll: Record<string, number> = {}
+  for (const t of transactions) {
+    if (t.type === 'transfer') continue
+    const m = monthKey(t.date)
+    netByMonthAll[m] = (netByMonthAll[m] ?? 0) + (t.type === 'income' ? toBase(t) : -toBase(t))
+  }
+  const totalAllNet = Object.values(netByMonthAll).reduce((s, v) => s + v, 0)
+  // Начальный капитал = текущий остаток − все чистые потоки за всю историю
+  const initialCapital = totalCurrentBalance - totalAllNet
+  // Кумулятивный остаток по всем месяцам с операциями
+  const allMonthsSorted = [...new Set(transactions.filter(t => t.type !== 'transfer').map(t => monthKey(t.date)))].sort()
   const closingBalances: Record<string, number> = {}
-  let runningBalance = totalCurrentBalance
-  for (const m of [...reversedMonths]) {
-    closingBalances[m] = runningBalance
-    const idx = reversedMonths.indexOf(m)
-    if (idx < reversedMonths.length - 1) {
-      runningBalance -= totalNetPerMonth[months.indexOf(reversedMonths[idx + 1])]
-    }
+  let cum = initialCapital
+  for (const m of allMonthsSorted) {
+    cum += netByMonthAll[m] ?? 0
+    closingBalances[m] = cum
   }
 
   // Chart data — all available months (not just selected year)
