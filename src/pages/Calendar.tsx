@@ -31,11 +31,12 @@ const EMPTY_FORM = {
   description: '',
   categoryId: '',
   counterpartyId: '',
+  accountId: '',
 }
 
 export default function Calendar() {
   const store = useStore()
-  const { categories, counterparties, paymentCalendar } = store
+  const { categories, counterparties, paymentCalendar, accounts } = store
 
   // Month navigation
   const now = new Date()
@@ -73,7 +74,7 @@ export default function Calendar() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
 
   function openAdd() {
-    setForm({ ...EMPTY_FORM, date: monthKey + '-' + String(now.getDate()).padStart(2, '0') })
+    setForm({ ...EMPTY_FORM, date: monthKey + '-' + String(now.getDate()).padStart(2, '0'), accountId: accounts[0]?.id ?? '' })
     setModal({ open: true, editing: null })
   }
 
@@ -85,6 +86,7 @@ export default function Calendar() {
       description: item.description,
       categoryId: item.categoryId,
       counterpartyId: item.counterpartyId ?? '',
+      accountId: item.accountId ?? accounts[0]?.id ?? '',
     })
     setModal({ open: true, editing: item })
   }
@@ -102,6 +104,7 @@ export default function Calendar() {
         description: form.description,
         categoryId: catId,
         counterpartyId: form.counterpartyId || undefined,
+        accountId: form.accountId || accounts[0]?.id || undefined,
       })
     } else {
       store.addCalendarItem({
@@ -112,6 +115,7 @@ export default function Calendar() {
         description: form.description,
         categoryId: catId,
         counterpartyId: form.counterpartyId || undefined,
+        accountId: form.accountId || accounts[0]?.id || undefined,
         status: 'planned',
       })
     }
@@ -301,6 +305,17 @@ export default function Calendar() {
                     onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
                     className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
                 </div>
+              </div>
+
+              {/* Account */}
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1.5">Счёт {form.type === 'income' ? 'зачисления' : 'списания'}</label>
+                <select value={form.accountId}
+                  onChange={e => setForm(f => ({ ...f, accountId: e.target.value }))}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300">
+                  {accounts.length === 0 && <option value="">Нет счетов</option>}
+                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
               </div>
 
               {/* Description */}

@@ -137,5 +137,6 @@ export interface PaymentCalendarItem {
   description: string
   counterpartyId?: string
   categoryId: string
+  accountId?: string    // счёт списания/зачисления при оплате (БАГ №3)
   status: 'planned' | 'paid' | 'overdue'
 }

@@ -509,14 +509,16 @@ export const companyStore = {
   /** Mark item as paid and create a real transaction */
   payCalendarItem(id: string) {
     const item = (state.paymentCalendar ?? []).find(i => i.id === id)
-    if (!item) return
-    const acc = state.accounts[0]
+    if (!item || item.status === 'paid') return   // защита от двойной оплаты (БАГ №1)
+    // Счёт из платежа, иначе первый счёт как запасной вариант (БАГ №3)
+    const acc = (item.accountId ? state.accounts.find(a => a.id === item.accountId) : null) ?? state.accounts[0]
     if (!acc) return
     const tx: Transaction = {
       id: 'tx_cal_' + Date.now(),
       date: new Date().toISOString().slice(0, 10),
       type: item.type,
       amount: item.amount,
+      currency: acc.currency,
       accountId: acc.id,
       categoryId: item.categoryId,
       counterpartyId: item.counterpartyId,

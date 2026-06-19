@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { X, Building2, AlertCircle, Scissors, RefreshCw } from 'lucide-react'
 import type { Transaction, TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
@@ -39,6 +39,9 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
   const [toAmount,       setToAmount]       = useState(String(transaction.toAmount ?? ''))
   const [fetchingRate,   setFetchingRate]   = useState(false)
   const [splitOpen,      setSplitOpen]      = useState(false)
+  const [saving,         setSaving]         = useState(false)
+  const submittingRef = useRef(false)
+  const today = new Date().toISOString().slice(0, 10)
 
   useEffect(() => {
     const acc = accounts.find(a => a.id === accountId)
@@ -65,6 +68,11 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
       setAmountError('Введите сумму больше 0')
       return
     }
+    // Операция — свершившийся факт. Будущие платежи → в Платёжный календарь (БАГ №2)
+    if (date > today) {
+      setAmountError('Дата в будущем — плановые платежи в Платёжном календаре')
+      return
+    }
     const accObj = accounts.find(a => a.id === accountId)
     const toAccObj = accounts.find(a => a.id === toAccountId)
     const rate = exchangeRate ? parseFloat(exchangeRate) : undefined
@@ -80,6 +88,11 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
       return
     }
     setAmountError('')
+
+    // Защита от двойного клика (БАГ №1)
+    if (submittingRef.current) return
+    submittingRef.current = true
+    setSaving(true)
 
     store.updateTransaction(transaction.id, {
       type,
@@ -397,13 +410,13 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
                 <Scissors size={15} />
               </button>
             )}
-            <button type="button" onClick={handleSave}
-              className={`flex-1 py-2.5 rounded-lg text-white text-sm font-medium transition ${
+            <button type="button" onClick={handleSave} disabled={saving}
+              className={`flex-1 py-2.5 rounded-lg text-white text-sm font-medium transition disabled:opacity-60 disabled:cursor-not-allowed ${
                 type === 'income'   ? 'bg-emerald-500 hover:bg-emerald-600'
                 : type === 'expense' ? 'bg-red-500 hover:bg-red-600'
                 : 'bg-indigo-500 hover:bg-indigo-600'
               }`}>
-              Сохранить
+              {saving ? 'Сохранение…' : 'Сохранить'}
             </button>
           </div>
         </div>

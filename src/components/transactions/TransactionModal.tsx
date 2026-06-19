@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { X, Zap, RefreshCw, AlertCircle } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { TransactionType } from '../../types'
@@ -32,6 +32,9 @@ export default function TransactionModal({ open, onClose }: Props) {
   const [exchangeRate, setExchangeRate] = useState('')
   const [toAmount, setToAmount] = useState('')
   const [fetchingRate, setFetchingRate] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const submittingRef = useRef(false)
+  const today = new Date().toISOString().slice(0, 10)
   const [error, setError] = useState('')
 
   // Apply matching enabled rules to current form state
@@ -70,6 +73,9 @@ export default function TransactionModal({ open, onClose }: Props) {
     })
   }, [accountId, accounts])
 
+  // Сброс защиты от двойного сабмита при каждом открытии модалки (БАГ №1)
+  useEffect(() => { if (open) { submittingRef.current = false; setSaving(false) } }, [open])
+
   if (!open) return null
 
   const curAccountId = accountId || (accounts[0]?.id ?? '')
@@ -83,6 +89,8 @@ export default function TransactionModal({ open, onClose }: Props) {
   function handleSubmit() {
     const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
     if (!num || num <= 0) { setError('Введите сумму больше 0'); return }
+    // Операция — свершившийся факт (кассовый метод). Будущие платежи → в Платёжный календарь (БАГ №2)
+    if (date > today) { setError('Дата в будущем — плановые платежи добавляйте в Платёжный календарь'); return }
     const acc = accountId || firstAcc
     const accObj = accounts.find(a => a.id === acc)
     const rate = exchangeRate ? parseFloat(exchangeRate) : undefined
@@ -100,6 +108,11 @@ export default function TransactionModal({ open, onClose }: Props) {
       return
     }
     setError('')
+
+    // Защита от двойного клика: повторный вызов до перемонтирования игнорируется (БАГ №1)
+    if (submittingRef.current) return
+    submittingRef.current = true
+    setSaving(true)
 
     store.addTransaction({
       id: 't' + Date.now(),
@@ -384,13 +397,13 @@ export default function TransactionModal({ open, onClose }: Props) {
               className="flex-1 py-2.5 rounded-lg border border-slate-200 text-sm text-slate-600 font-medium hover:bg-slate-50 transition">
               Отмена
             </button>
-            <button type="button" onClick={handleSubmit}
-              className={`flex-1 py-2.5 rounded-lg text-white text-sm font-medium transition ${
+            <button type="button" onClick={handleSubmit} disabled={saving}
+              className={`flex-1 py-2.5 rounded-lg text-white text-sm font-medium transition disabled:opacity-60 disabled:cursor-not-allowed ${
                 type === 'income' ? 'bg-emerald-500 hover:bg-emerald-600'
                 : type === 'expense' ? 'bg-red-500 hover:bg-red-600'
                 : 'bg-indigo-500 hover:bg-indigo-600'
               }`}>
-              Сохранить
+              {saving ? 'Сохранение…' : 'Сохранить'}
             </button>
           </div>
         </div>
