@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Bank/HAR captures — never commit (may contain session tokens)
+*.har
