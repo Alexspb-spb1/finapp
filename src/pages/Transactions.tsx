@@ -3,6 +3,7 @@ import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, Alert
 import { downloadSheet } from '../utils/exportExcel'
 import { useStore } from '../store/useStore'
 import { formatCurrency, formatDate } from '../utils/format'
+import { parseMoney, MAX_MONEY } from '../utils/currency'
 import type { Transaction, TransactionType } from '../types'
 import TransactionModal from '../components/transactions/TransactionModal'
 import TransactionEditModal from '../components/transactions/TransactionEditModal'
@@ -162,8 +163,8 @@ export default function Transactions() {
     if (!inlineEdit) return
     const { id, field, value } = inlineEdit
     if (field === 'amount') {
-      const num = parseFloat(value.replace(/\s/g, '').replace(',', '.'))
-      if (num > 0) store.updateTransaction(id, { amount: num })
+      const num = parseMoney(value)
+      if (num !== null && num > 0 && num <= MAX_MONEY) store.updateTransaction(id, { amount: num })
     } else {
       store.updateTransaction(id, { comment: value })
     }

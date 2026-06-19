@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Plus, CheckCircle2, Clock, AlertCircle, ChevronLeft, ChevronRight, Trash2, Pencil, X, CreditCard } from 'lucide-react'
 import { formatCurrency } from '../utils/format'
+import { parseMoney, MAX_MONEY } from '../utils/currency'
 import { useStore } from '../store/useStore'
 import CategoryIcon from '../utils/categoryIcons'
 import type { PaymentCalendarItem } from '../types'
@@ -92,8 +93,8 @@ export default function Calendar() {
   }
 
   function saveForm() {
-    const num = parseFloat(form.amount.replace(/\s/g, '').replace(',', '.'))
-    if (!num || num <= 0 || !form.description) return
+    const num = parseMoney(form.amount)
+    if (num === null || num <= 0 || num > MAX_MONEY || !form.description) return
     const filteredCats = categories.filter(c => c.type === form.type && !c.isGroup)
     const catId = form.categoryId || filteredCats[0]?.id || ''
     if (modal.editing) {

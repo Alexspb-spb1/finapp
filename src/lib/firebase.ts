@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
-import { getFirestore } from 'firebase/firestore'
+import { initializeFirestore } from 'firebase/firestore'
 
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
@@ -13,4 +13,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig)
 export const auth = getAuth(app)
-export const db   = getFirestore(app)
+// ignoreUndefinedProperties: операции содержат необязательные поля (relatedDate,
+// toAmount, exchangeRate) со значением undefined. Без этого флага setDoc отклоняет
+// запись целиком, и синхронизация с облаком молча падает (БАГ №7 — целостность).
+export const db   = initializeFirestore(app, { ignoreUndefinedProperties: true })

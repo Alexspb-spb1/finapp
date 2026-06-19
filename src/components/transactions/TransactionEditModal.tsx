@@ -4,7 +4,7 @@ import type { Transaction, TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
 import SplitTransactionModal from './SplitTransactionModal'
 import TagInput from '../ui/TagInput'
-import { isForeign, fetchRate } from '../../utils/currency'
+import { isForeign, fetchRate, parseMoney, MAX_MONEY } from '../../utils/currency'
 import { formatCurrency } from '../../utils/format'
 
 interface Props {
@@ -77,7 +77,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
     }
     return bal
   }
-  const numAmount = parseFloat(amount.replace(/\s/g, '').replace(',', '.')) || 0
+  const numAmount = parseMoney(amount) ?? 0
   const overspendWarn = (type === 'expense' || type === 'transfer') && !!selectedAcc && selectedAcc.type !== 'cash' && numAmount > availableBalance(accountId)
 
   function handleSave() {
@@ -86,9 +86,13 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
       setAmountError('Период закрыт — эту операцию нельзя изменить')
       return
     }
-    const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
-    if (!num || num <= 0) {
-      setAmountError('Введите сумму больше 0')
+    const num = parseMoney(amount)
+    if (num === null || num <= 0) {
+      setAmountError('Введите корректную сумму больше 0')
+      return
+    }
+    if (num > MAX_MONEY) {
+      setAmountError('Сумма слишком большая')
       return
     }
     // Операция — свершившийся факт. Будущие платежи → в Платёжный календарь (БАГ №2)

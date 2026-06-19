@@ -25,6 +25,21 @@ export function round2(x: number): number {
   return Math.round((x + Number.EPSILON) * 100) / 100
 }
 
+/** Верхний предел суммы операции — 1 трлн (БАГ №9) */
+export const MAX_MONEY = 1e12
+
+/**
+ * Строгий парсинг денежного ввода (БАГ №8).
+ * Принимает только корректное неотрицательное число: "1 200,50" → 1200.5.
+ * Возвращает null для "abc", "12abc", "-500", пустой строки.
+ */
+export function parseMoney(input: string): number | null {
+  const clean = input.replace(/\s/g, '').replace(',', '.')
+  if (!/^\d*\.?\d+$/.test(clean)) return null
+  const n = parseFloat(clean)
+  return isFinite(n) ? n : null
+}
+
 /** Convert transaction amount to base currency amount */
 export function toBase(tx: Transaction): number {
   return round2(tx.amount * (tx.exchangeRate ?? 1))

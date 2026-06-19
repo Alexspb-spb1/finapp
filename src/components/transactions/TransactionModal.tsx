@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import type { TransactionType } from '../../types'
 import { useStore } from '../../store/useStore'
 import TagInput from '../ui/TagInput'
-import { isForeign, fetchRate } from '../../utils/currency'
+import { isForeign, fetchRate, parseMoney, MAX_MONEY, currencySymbol } from '../../utils/currency'
 import { formatCurrency } from '../../utils/format'
 
 interface Props {
@@ -89,12 +89,13 @@ export default function TransactionModal({ open, onClose }: Props) {
 
   // Предупреждение о расходе сверх остатка для безналичных счетов (БАГ №5)
   const curAcc = accounts.find(a => a.id === curAccountId)
-  const numAmount = parseFloat(amount.replace(/\s/g, '').replace(',', '.')) || 0
+  const numAmount = parseMoney(amount) ?? 0
   const overspendWarn = (type === 'expense' || type === 'transfer') && !!curAcc && curAcc.type !== 'cash' && numAmount > curAcc.balance
 
   function handleSubmit() {
-    const num = parseFloat(amount.replace(/\s/g, '').replace(',', '.'))
-    if (!num || num <= 0) { setError('Введите сумму больше 0'); return }
+    const num = parseMoney(amount)
+    if (num === null || num <= 0) { setError('Введите корректную сумму больше 0'); return }
+    if (num > MAX_MONEY) { setError('Сумма слишком большая'); return }
     // Операция — свершившийся факт (кассовый метод). Будущие платежи → в Платёжный календарь (БАГ №2)
     if (date > today) { setError('Дата в будущем — плановые платежи добавляйте в Платёжный календарь'); return }
     const acc = accountId || firstAcc
@@ -224,7 +225,7 @@ export default function TransactionModal({ open, onClose }: Props) {
 
         <div className="px-6 py-4 space-y-4">
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">Сумма, ₽</label>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">Сумма, {currencySymbol(curAcc?.currency ?? 'RUB')}</label>
             <input
               type="text" value={amount} onChange={e => setAmount(e.target.value)}
               placeholder="0" required

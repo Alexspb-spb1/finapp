@@ -360,12 +360,21 @@ export const companyStore = {
     persist()
   },
   deleteCounterparty(id: string) {
-    state = { ...state, counterparties: state.counterparties.filter(c => c.id !== id) }
+    // Каскад: убираем ссылку у операций, чтобы не было «висячих» counterpartyId (БАГ №10)
+    state = {
+      ...state,
+      counterparties: state.counterparties.filter(c => c.id !== id),
+      transactions: state.transactions.map(t => t.counterpartyId === id ? { ...t, counterpartyId: undefined } : t),
+    }
     persist()
   },
   deleteCounterparties(ids: string[]) {
     const s = new Set(ids)
-    state = { ...state, counterparties: state.counterparties.filter(c => !s.has(c.id)) }
+    state = {
+      ...state,
+      counterparties: state.counterparties.filter(c => !s.has(c.id)),
+      transactions: state.transactions.map(t => t.counterpartyId && s.has(t.counterpartyId) ? { ...t, counterpartyId: undefined } : t),
+    }
     persist()
   },
   updateCounterparty(id: string, changes: Partial<Omit<Counterparty, 'id'>>) {
@@ -397,7 +406,13 @@ export const companyStore = {
     persist()
   },
   deleteProject(id: string) {
-    state = { ...state, projects: state.projects.filter(p => p.id !== id) }
+    // Каскад: убираем projectId у операций и шаблонов (БАГ №10)
+    state = {
+      ...state,
+      projects: state.projects.filter(p => p.id !== id),
+      transactions: state.transactions.map(t => t.projectId === id ? { ...t, projectId: undefined } : t),
+      recurring: (state.recurring ?? []).map(r => r.projectId === id ? { ...r, projectId: undefined } : r),
+    }
     persist()
   },
 
