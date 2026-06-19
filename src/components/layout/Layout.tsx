@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
+import { Eye } from 'lucide-react'
 import Sidebar from './Sidebar'
 import Header from './Header'
 import { useAuth } from '../../hooks/useAuth'
@@ -25,7 +26,7 @@ const titles: Record<string, string> = {
 
 export default function Layout() {
   const { pathname } = useLocation()
-  const { company } = useAuth()
+  const { company, readOnly } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const isProjectDetail = /^\/projects\/.+/.test(pathname)
@@ -47,6 +48,12 @@ export default function Layout() {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <main className="flex-1 overflow-y-auto p-3 sm:p-6">
+          {readOnly && (
+            <div className="mb-4 flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-2.5">
+              <Eye size={15} className="shrink-0" />
+              Режим только для чтения — у вашей роли «Наблюдатель» нет прав на изменение данных.
+            </div>
+          )}
           <Outlet />
         </main>
       </div>

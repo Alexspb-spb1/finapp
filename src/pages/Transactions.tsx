@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, Fragment } from 'react'
 import { Trash2, Filter, Plus, Maximize2, Minimize2, Pencil, X, Zap, Copy, AlertCircle, CalendarRange, Scissors, RefreshCw, Download, Tag, Lock } from 'lucide-react'
 import { downloadSheet } from '../utils/exportExcel'
 import { useStore } from '../store/useStore'
+import { useAuth } from '../hooks/useAuth'
 import { formatCurrency, formatDate } from '../utils/format'
 import { parseMoney, MAX_MONEY } from '../utils/currency'
 import type { Transaction, TransactionType } from '../types'
@@ -134,6 +135,7 @@ const MIN_WIDTHS     = Object.fromEntries(COLS.map(c => [c.key, c.minW]))     as
 
 export default function Transactions() {
   const store = useStore()
+  const { readOnly } = useAuth()
   const { transactions, accounts, categories, counterparties, projects } = store
 
   const [typeFilter,   setTypeFilter]   = useState<TransactionType | 'all'>('all')
@@ -422,10 +424,12 @@ export default function Transactions() {
           <Download size={16} />
         </button>
 
-        <button onClick={() => setAddOpen(true)}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-          <Plus size={16} /> Добавить
-        </button>
+        {!readOnly && (
+          <button onClick={() => setAddOpen(true)}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+            <Plus size={16} /> Добавить
+          </button>
+        )}
       </div>
 
       {/* Period filter panel */}
@@ -481,7 +485,7 @@ export default function Transactions() {
 
       {/* ── Mobile card list (hidden on md+) ─────────────────────────── */}
       <div className="md:hidden bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        {selected.size > 0 && (
+        {selected.size > 0 && !readOnly && (
           <div className="flex items-center justify-between px-4 py-2.5 bg-indigo-50 border-b border-indigo-100">
             <span className="text-sm font-medium text-indigo-700">Выбрано: <b>{selected.size}</b></span>
             <div className="flex gap-2">
@@ -579,7 +583,7 @@ export default function Transactions() {
       <div className={`hidden md:flex flex-1 min-h-0 bg-white rounded-xl border border-slate-200 shadow-sm flex-col overflow-hidden ${fullscreen ? '!flex' : ''}`}>
 
         {/* Bulk action bar */}
-        {selected.size > 0 && (
+        {selected.size > 0 && !readOnly && (
           <div className="flex items-center justify-between px-5 py-2.5 bg-indigo-50 border-b border-indigo-100 shrink-0">
             <span className="text-sm font-medium text-indigo-700">
               Выбрано: <span className="font-bold">{selected.size}</span>
@@ -647,7 +651,8 @@ export default function Transactions() {
                 const cp   = counterparties.find(c => c.id === t.counterpartyId)
                 const proj = projects.find(p => p.id === t.projectId)
                 const isSel = selected.has(t.id)
-                const locked = store.isPeriodLocked(t.date)   // период закрыт (БАГ №6)
+                const periodLocked = store.isPeriodLocked(t.date)   // период закрыт (БАГ №6)
+                const locked = periodLocked || readOnly             // + режим только для чтения (права доступа)
 
                 return (
                   <Fragment key={t.id}>
@@ -672,7 +677,7 @@ export default function Transactions() {
                       {/* Date */}
                       <td className="px-4 py-3.5 text-sm text-slate-500 overflow-hidden whitespace-nowrap text-ellipsis">
                         <span className="inline-flex items-center gap-1.5">
-                          {locked && <Lock size={11} className="text-slate-300 shrink-0" />}
+                          {periodLocked && <Lock size={11} className="text-slate-300 shrink-0" />}
                           {formatDate(t.date)}
                         </span>
                       </td>

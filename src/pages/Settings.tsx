@@ -32,7 +32,7 @@ const roleColor: Record<User['role'], string> = {
 }
 
 export default function Settings() {
-  const { user, company } = useAuth()
+  const { user, company, readOnly, isAdmin } = useAuth()
   const store = useStore()
 
   const [companyName, setCompanyName] = useState(company?.name ?? '')
@@ -163,7 +163,7 @@ export default function Settings() {
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!company) return
+    if (!company || !isAdmin) return   // реквизиты компании — только админ
     authStore.updateCompany(company.id, { name: companyName, legalType, inn, currency })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
@@ -301,11 +301,17 @@ export default function Settings() {
           </div>
         </div>
         <div className="flex items-center gap-3 mt-5">
-          <button type="submit"
-            className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors">
-            Сохранить
-          </button>
-          {saved && <span className="text-sm text-emerald-600 font-medium">✓ Сохранено</span>}
+          {isAdmin ? (
+            <>
+              <button type="submit"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors">
+                Сохранить
+              </button>
+              {saved && <span className="text-sm text-emerald-600 font-medium">✓ Сохранено</span>}
+            </>
+          ) : (
+            <p className="text-xs text-slate-400">Реквизиты компании может менять только администратор.</p>
+          )}
         </div>
       </form>
 
@@ -365,16 +371,18 @@ export default function Settings() {
             <Tag size={15} className="text-slate-400" />
             <h3 className="text-sm font-semibold text-slate-700">Статьи доходов и расходов</h3>
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => openAddCat(true)}
-              className="flex items-center gap-1.5 text-sm font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 px-3 py-2 rounded-lg transition-colors">
-              <Folder size={14} /> Группа
-            </button>
-            <button onClick={() => openAddCat(false)}
-              className="flex items-center gap-1.5 text-sm font-medium text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-lg transition-colors">
-              <Plus size={14} /> Статья
-            </button>
-          </div>
+          {!readOnly && (
+            <div className="flex gap-2">
+              <button onClick={() => openAddCat(true)}
+                className="flex items-center gap-1.5 text-sm font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 px-3 py-2 rounded-lg transition-colors">
+                <Folder size={14} /> Группа
+              </button>
+              <button onClick={() => openAddCat(false)}
+                className="flex items-center gap-1.5 text-sm font-medium text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-lg transition-colors">
+                <Plus size={14} /> Статья
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Tabs */}
@@ -729,7 +737,8 @@ export default function Settings() {
         </div>
       )}
 
-      {/* Закрытие периода (БАГ №6) */}
+      {/* Закрытие периода (БАГ №6) — только для ролей с правом записи */}
+      {!readOnly && (
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
         <div className="flex items-center gap-2 mb-1">
           <Lock size={15} className="text-slate-400" />
@@ -765,6 +774,7 @@ export default function Settings() {
           </p>
         )}
       </div>
+      )}
 
       {/* Integrations */}
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">

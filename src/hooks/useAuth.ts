@@ -16,6 +16,8 @@ export function useAuth() {
     return () => { unsub(); clearTimeout(timer) }
   }, [])
 
+  const role = authStore.getEffectiveRole()
+
   return {
     user,
     company,
@@ -23,5 +25,10 @@ export function useAuth() {
     loading,
     activeCompanyId: authStore.getActiveCompanyId(),
     allCompanies: authStore.getAllCompanies(),
+    // Права доступа для активной компании
+    role,
+    readOnly: role === 'viewer',
+    canWrite: role !== 'viewer',
+    isAdmin: role === 'admin',
   }
 }

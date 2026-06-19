@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { CreditCard, Banknote, Wallet, Bitcoin, Plus, X, Trash2, Upload, FileText, Loader2, Pencil, RefreshCw, AlertCircle } from 'lucide-react'
 import { useStore } from '../store/useStore'
+import { useAuth } from '../hooks/useAuth'
 import { formatCurrency } from '../utils/format'
 import { parseBankStatement, type ParsedTransaction } from '../utils/bankStatementParser'
 import StatementPreview from '../components/bank/StatementPreview'
@@ -19,6 +20,7 @@ type ModalStep = 'form' | 'preview'
 
 export default function Accounts() {
   const store = useStore()
+  const { readOnly } = useAuth()
   const { accounts, transactions } = store
   const total = sumAccountsBase(accounts)
 
@@ -242,10 +244,12 @@ export default function Accounts() {
             </p>
           </div>
         )}
-        <button onClick={openAdd}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2.5 rounded-xl transition-colors shrink-0">
-          <Plus size={16} /> Добавить счёт
-        </button>
+        {!readOnly && (
+          <button onClick={openAdd}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2.5 rounded-xl transition-colors shrink-0">
+            <Plus size={16} /> Добавить счёт
+          </button>
+        )}
       </div>
 
       {/* Empty state */}
@@ -257,10 +261,12 @@ export default function Accounts() {
             Счёт — это расчётный счёт в банке, касса или карта.<br />
             При добавлении банковского счёта можно загрузить выписку.
           </p>
-          <button onClick={openAdd}
-            className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-5 py-2.5 rounded-xl transition-colors">
-            <Plus size={16} /> Добавить счёт
-          </button>
+          {!readOnly && (
+            <button onClick={openAdd}
+              className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-5 py-2.5 rounded-xl transition-colors">
+              <Plus size={16} /> Добавить счёт
+            </button>
+          )}
         </div>
       )}
 
@@ -274,16 +280,18 @@ export default function Accounts() {
             return (
               <div key={a.id} className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow relative group">
                 {/* Action buttons */}
-                <div className="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                  <button onClick={() => openEdit(a)}
-                    className="p-1.5 rounded-lg text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 transition-all">
-                    <Pencil size={14} />
-                  </button>
-                  <button onClick={() => setDeleteId(a.id)}
-                    className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-all">
-                    <Trash2 size={14} />
-                  </button>
-                </div>
+                {!readOnly && (
+                  <div className="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                    <button onClick={() => openEdit(a)}
+                      className="p-1.5 rounded-lg text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 transition-all">
+                      <Pencil size={14} />
+                    </button>
+                    <button onClick={() => setDeleteId(a.id)}
+                      className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-all">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )}
 
                 <div className="flex items-start justify-between mb-4">
                   <div className="w-11 h-11 icon-circle flex items-center justify-center" style={{ background: a.color + '22' }}>

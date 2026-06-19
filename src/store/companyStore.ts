@@ -115,7 +115,7 @@ function advanceDate(dateStr: string, period: RecurringPeriod): string {
   return d.toISOString().slice(0, 10)
 }
 
-export const companyStore = {
+const companyStoreImpl = {
   // ── Init: load data + subscribe to real-time changes ──────────────────────
   async init(companyId: string) {
     if (currentCompanyId === companyId && unsubSnapshot !== null) return
@@ -597,6 +597,38 @@ export const companyStore = {
     return () => { listeners.delete(fn) }
   },
 }
+
+// ── Права доступа: блокируем любые изменения данных для роли «Наблюдатель» ────
+// Единая точка контроля — даже если UI где-то не скрыл кнопку, запись не пройдёт.
+const WRITE_METHODS = new Set<string>([
+  'addTransaction', 'deleteTransaction', 'deleteTransactions', 'updateTransaction', 'batchUpdateTransactions',
+  'addAccount', 'deleteAccount', 'updateAccount',
+  'addCounterparty', 'deleteCounterparty', 'deleteCounterparties', 'updateCounterparty',
+  'addCategory', 'updateCategory', 'deleteCategory',
+  'addProject', 'updateProject', 'deleteProject',
+  'upsertBudget', 'deleteBudget',
+  'addRecurring', 'updateRecurring', 'deleteRecurring', 'executeRecurring',
+  'splitTransaction',
+  'addCalendarItem', 'updateCalendarItem', 'deleteCalendarItem', 'payCalendarItem',
+  'addRule', 'updateRule', 'deleteRule',
+  'setClosingDate',
+])
+
+export const companyStore: typeof companyStoreImpl = new Proxy(companyStoreImpl, {
+  get(target, prop, recv) {
+    const val = Reflect.get(target, prop, recv)
+    if (typeof val === 'function' && WRITE_METHODS.has(prop as string)) {
+      return (...args: unknown[]) => {
+        if (!authStore.canWrite()) {
+          console.warn('[companyStore] изменение заблокировано: роль только для чтения —', String(prop))
+          return undefined
+        }
+        return (val as (...a: unknown[]) => unknown).apply(target, args)
+      }
+    }
+    return val
+  },
+})
 
 // ── Авто-инициализация при смене пользователя ─────────────────────────────────
 subscribeAuth(() => {

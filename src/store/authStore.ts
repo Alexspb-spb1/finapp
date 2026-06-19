@@ -408,6 +408,21 @@ export const authStore = {
     notify()
   },
 
+  // ── Роль и права для активной компании ────────────────────────────────────
+  // Роль может отличаться между компаниями (multi-company), поэтому берём роль
+  // именно для активной компании.
+  getEffectiveRole(): User['role'] {
+    if (!currentUser) return 'viewer'
+    const activeId = activeCompanyId ?? currentUser.companyId
+    if (activeId === currentUser.companyId) return currentUser.role
+    const membership = currentUser.companies?.find(c => c.companyId === activeId)
+    return membership?.role ?? currentUser.role
+  },
+  // Может ли менять данные: все, кроме «Наблюдателя»
+  canWrite() { return this.getEffectiveRole() !== 'viewer' },
+  // Админ компании: настройки компании и управление пользователями
+  isAdmin() { return this.getEffectiveRole() === 'admin' },
+
   // ── Multi-company: getters ────────────────────────────────────────────────
   getActiveCompanyId() {
     return activeCompanyId ?? currentUser?.companyId ?? null
