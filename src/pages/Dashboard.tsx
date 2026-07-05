@@ -460,7 +460,7 @@ export default function Dashboard() {
       )}
 
       {/* Toolbar */}
-      <div className="flex justify-end">
+      <div className="sticky top-0 z-10 -mx-3 -mt-3 sm:-mx-6 sm:-mt-6 px-3 sm:px-6 pt-3 sm:pt-6 pb-3 bg-slate-50 flex justify-end">
         <button onClick={() => setConfigOpen(v => !v)}
           className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
             configOpen
