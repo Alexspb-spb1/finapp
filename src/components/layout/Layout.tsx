@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import { Eye } from 'lucide-react'
 import Sidebar from './Sidebar'
 import Header from './Header'
+import EnvironmentBanner from './EnvironmentBanner'
 import { useAuth } from '../../hooks/useAuth'
 import { companyStore } from '../../store/companyStore'
 
@@ -47,6 +48,9 @@ export default function Layout() {
     <div className="flex flex-col h-screen overflow-hidden bg-slate-50">
       {/* Хедер — на всю ширину страницы */}
       <Header title={title} onMenuClick={() => setSidebarOpen(v => !v)} />
+
+      {/* Staging-индикатор: только при VITE_APP_ENV=staging, своя полоса потока — не перекрывает хедер/сайдбар */}
+      {import.meta.env.VITE_APP_ENV === 'staging' && <EnvironmentBanner />}
 
       {/* Сайдбар + контент */}
       <div className="flex flex-1 overflow-hidden">

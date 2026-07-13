@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:staging": "node --experimental-strip-types scripts/verify-staging-env.mjs && tsc -b && vite build --mode staging",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "firebase:emulators": "npx --yes firebase-tools emulators:start --project demo-finapp"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
