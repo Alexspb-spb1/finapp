@@ -1,6 +1,6 @@
 # FinApp — статус проекта
 
-_Обновлено: 2026-07-13_
+_Обновлено: 2026-07-13 (после исправления lint-ошибок и обновления CI)_
 
 Документ фиксирует текущее состояние репозитория: что реализовано, какие
 проблемы найдены при анализе и куда двигаться дальше. Актуализируйте его
@@ -87,23 +87,24 @@ Firestore-запись, строгий парсинг сумм, верхний �
 `@eslint/js`, тайпингов vite/node) — это чинится `npm ci`, теперь
 починено.
 
-### 4.2 ESLint — 42 ошибки, 3 предупреждения
+### 4.2 ESLint — ✅ исправлено (0 ошибок, 0 предупреждений)
 
-`npm run lint` не проходит. Категории:
+Было 42 ошибки + 3 предупреждения, теперь `npm run lint` проходит чисто.
+Основные правки:
 
-| Категория | Где | Суть |
+| Категория | Где | Что сделано |
 |---|---|---|
-| **Компонент создаётся внутри render** (`react-hooks/static-components`) | `PnL.tsx` (SectionRows, SummaryRow — 4 использования), `Budget.tsx` (CatSection — 2), `ProjectDetail.tsx` (CustomTooltip — 2) | Вложенные функции-компоненты объявлены внутри тела родительского компонента → пересоздаются и теряют состояние на каждый ре-рендер. Нужно вынести их наружу (передавая нужные данные пропсами). |
-| **setState синхронно в useEffect** (`react-hooks/set-state-in-effect`) | `Layout.tsx`, `Accounts.tsx`, `SplitTransactionModal.tsx`, `TransactionEditModal.tsx`, `TransactionModal.tsx` (x3) | Может провоцировать лишние каскадные ре-рендеры. Не крашит, но следует пересмотреть по возможности. |
-| **Impure-вызов в render** (`react-hooks/purity`) | `TransactionModal.tsx:130` — `Date.now()` при формировании id операции | Id должен генерироваться в обработчике сабмита, а не быть частью «чистого» рендера. |
-| **Переменная используется до объявления** | `Transactions.tsx:183` — `filtered` читается в `useEffect` выше своего `const filtered = ...` | Работает благодаря hoisting/порядку эффектов, но хрупко — при рефакторинге легко словить баг. Стоит переставить объявление `filtered` выше эффекта. |
-| **`any`** (`@typescript-eslint/no-explicit-any`) | `authStore.ts`, `companyStore.ts` (x2), `Dashboard.tsx` (x2), `CashFlow.tsx` (x2), `Forecast.tsx` (x2), `ProjectDetail.tsx` (x2), `MatchmakerModal.tsx`, `TransactionRulesModal.tsx` | Слабая типизация в проблемных местах — стоит завести нормальные типы. |
-| **Пустые блоки** (`no-empty`) | `companyStore.ts` (x2), `Dashboard.tsx` | `catch {}` без обработки — осознанно (best-effort localStorage), но lint ругается; либо добавить комментарий-игнор, либо явный no-op. |
-| **`a ? b() : c()` как statement** (`no-unused-expressions`) | `StatementPreview.tsx`, `Counterparties.tsx`, `Dashboard.tsx`, `Transactions.tsx` | Тернарник вместо `if`; работает, но не по стайлгайду ESLint. |
-| **Незакрытая зависимость useEffect/useCallback** (warning) | `Forecast.tsx`, `Import.tsx`, `SplitTransactionModal.tsx` | Возможны стейл-замыкания при определённых сценариях. |
+| **Компонент создаётся внутри render** (`react-hooks/static-components`) | `PnL.tsx` (SectionRows, SummaryRow), `Budget.tsx` (CatSection), `ProjectDetail.tsx` (CustomTooltip) | Вынесены на уровень модуля, нужные данные (categories, actual/plannedFor, expanded/onToggle и т.д.) передаются пропсами. |
+| **setState синхронно в useEffect** (`react-hooks/set-state-in-effect`) | `Layout.tsx`, `TransactionModal.tsx` (open→submittingRef/saving) | Переведено на рендер-тайм сброс через «previous value» паттерн, где это не требует записи в ref. Там, где сброс — часть легитимного async-запроса курса валют (`Accounts.tsx`, `TransactionModal.tsx`, `TransactionEditModal.tsx`), оставлен точечный `eslint-disable-next-line` с пояснением. |
+| **Impure-вызов в render** (`react-hooks/purity`) | `TransactionModal.tsx` — `Date.now()` | Вынесен в отдельную модульную функцию `genTransactionId()` вне тела компонента. |
+| **Переменная используется до объявления** | `Transactions.tsx` — `filtered` | Объявление `filtered` переставлено выше эффекта, который на неё ссылается. |
+| **`any`** (`@typescript-eslint/no-explicit-any`) | `authStore.ts`, `companyStore.ts`, `Dashboard.tsx`, `CashFlow.tsx`, `Forecast.tsx`, `ProjectDetail.tsx`, `MatchmakerModal.tsx`, `TransactionRulesModal.tsx` | Заменено на конкретные типы (`_savedAt?: number` в `CompanyData`, типизированные Recharts-тултипы, типизированный доступ к полям `Transaction` в движке правил). |
+| **Пустые блоки** (`no-empty`) | `companyStore.ts`, `Dashboard.tsx` | Добавлен поясняющий комментарий внутри `catch {}` (best-effort localStorage). |
+| **`a ? b() : c()` как statement** (`no-unused-expressions`) | `StatementPreview.tsx`, `Counterparties.tsx`, `Dashboard.tsx`, `Transactions.tsx` | Заменено на `if/else`. |
+| **Незакрытая зависимость useEffect/useCallback** (warning) | `Forecast.tsx`, `Import.tsx` | `Import.tsx`: `handleFile` обёрнут в `useCallback` (устранён реальный риск устаревшего замыкания в `onDrop`). `Forecast.tsx`: `cur` мемоизирован, чтобы не сбрасывать кэш `useMemo` каждый рендер. |
 
-Ни одна из ошибок не ломает сборку и рантайм не падает, но линт в CI не
-подключён — эти проблемы будут только копиться.
+CI теперь гоняет `npm run lint` перед сборкой (см. 4.4) — регрессии
+линта больше не проскочат незамеченными в PR.
 
 ### 4.3 npm audit — 3 уязвимости
 
@@ -122,9 +123,10 @@ Firestore-запись, строгий парсинг сумм, верхний �
   предупреждает о превышении 500 КБ. Нет `dynamic import()` / роутового
   код-сплиттинга — все страницы (включая тяжёлые Recharts/xlsx/dnd-kit)
   грузятся одним куском.
-- CI (`deploy.yml`) выполняет только `npm run build` — не гоняет
-  `npm run lint`, тесты (которых нет) отсутствуют вовсе. Ничто не
-  мешает смёрджить код с ошибками линта или регрессией.
+- ✅ CI (`deploy.yml`) теперь гоняет `npm run lint` перед `npm run build`
+  и запускается также на `pull_request` в `main` (без деплоя — джоб
+  `deploy` гейтится условием `push` в `main`). Тестов по-прежнему нет
+  вообще, добавить их в CI пока нечего.
 - `firestore.rules` не хранится в репозитории — не подлежит ревью и
   версионированию вместе с кодом.
 - `.env.local` в среде анализа отсутствует (ожидаемо — ключи не должны
@@ -147,29 +149,26 @@ Firestore-запись, строгий парсинг сумм, верхний �
    клиенте — без серверных правил Firestore это не защита, а
    UI-подсказка. Любой авторизованный пользователь потенциально может
    обратиться к Firestore напрямую в обход клиентских проверок.
-3. **Подключить `npm run lint` (и `tsc --noEmit`) в CI** — сейчас деплой
-   проходит, даже если линт красный.
+3. ~~Подключить `npm run lint` в CI~~ — ✅ сделано.
 
 ### Средний приоритет
-4. Вынести компоненты, создаваемые внутри render (`PnL.tsx`,
-   `Budget.tsx`, `ProjectDetail.tsx`) — иначе они на каждый ре-рендер
-   теряют внутреннее состояние (для `CustomTooltip`/`SectionRows` пока
-   не критично, но это тикающая мина при дальнейшем усложнении).
+4. ~~Вынести компоненты, создаваемые внутри render~~ — ✅ сделано (`PnL.tsx`, `Budget.tsx`, `ProjectDetail.tsx`).
 5. Код-сплиттинг по роутам (`React.lazy` + `Suspense`) — уменьшит
-   первый TTI, особенно на мобильных сетях.
+   первый TTI, особенно на мобильных сетях. Бандл всё ещё один чанк
+   1.88 МБ — эта правка лint не касалась и остаётся открытой.
 6. Обновить `vite` и `@babel/core` (`npm audit fix`) — фиксы есть, риска
-   минимум.
-7. Разобраться с `Date.now()` в рендере `TransactionModal.tsx` и с
-   порядком объявления `filtered` в `Transactions.tsx`.
+   минимум. Ещё не сделано.
+7. ~~Date.now() в рендере / порядок объявления filtered~~ — ✅ сделано.
 
 ### Низкий приоритет / гигиена
-8. Убрать `any` в перечисленных файлах, поставить нормальные типы.
+8. ~~Убрать `any` в перечисленных файлах~~ — ✅ сделано.
 9. Добавить хотя бы базовый набор unit-тестов на денежную логику
    (`currency.ts`, `companyStore.ts` — расчёт остатков, блокировка
    периода, каскадные удаления) — это самое рискованное место в
-   финансовом приложении, а тестов там нет вообще.
+   финансовом приложении, а тестов там нет вообще. Ещё не сделано.
 10. Разбить единый Firestore-документ на компанию, если объём данных
     (число операций) начнёт расти — риск упереться в лимит 1 МиБ/документ.
+    Ещё не сделано.
 
 ---
 
@@ -177,7 +176,7 @@ Firestore-запись, строгий парсинг сумм, верхний �
 
 ```bash
 npm ci               # чистая установка (важно — не npm install при битых node_modules)
-npm run lint          # ESLint (сейчас красный, 42 ошибки)
+npm run lint          # ESLint — должен быть зелёным (0 ошибок)
 npm run build          # tsc -b && vite build — должен быть зелёным
 npm run dev             # dev-сервер, http://localhost:5173/finapp/
 npm audit                # проверка уязвимостей зависимостей
