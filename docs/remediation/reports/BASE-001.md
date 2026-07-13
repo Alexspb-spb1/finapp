@@ -1,183 +1,175 @@
 # BASE-001 — Зафиксировать исходный commit и заморозить функциональные изменения
 
 ## Итоговый статус
-PARTIAL
+READY_FOR_REVIEW
 
 ## Branch / commit
 - branch: `remediation/BASE-001-baseline`
 - base SHA: `3c2ed4c2573252d9e7652b11809fa0a4bb574cbc` (`remediation/main`)
-- result SHA: см. `git rev-parse HEAD` на ветке `remediation/BASE-001-baseline` — это коммит,
-  добавляющий `docs/remediation/BASELINE.md` и этот отчёт поверх base SHA (единственный
-  коммит задачи; итоговый хеш не фиксировался здесь заранее во избежание циклической ссылки
-  «отчёт содержит хеш коммита, которым сам же добавляется»)
+- result SHA: см. `git rev-parse HEAD` на ветке `remediation/BASE-001-baseline` после
+  исправляющего коммита этого цикла (второй коммит задачи, поверх
+  `e3226a8fb3cc6c355bba4bd6a871dca49527254a`)
 
 ## Проверенное исходное состояние
 - Подтверждено `git status --short` (чисто), `git branch --show-current`
-  (`claude/repository-analysis-mkk7mg` в начале сессии), `git rev-parse HEAD`
-  (`b0680bf4dd7a2255a8861b846fdde64d90329c6d`), `git log --oneline --decorate -10`.
-- Ветка `remediation/main` изначально не была получена локально (`git fetch`
-  требовался, чтобы её увидеть) — после `git fetch origin --prune` найдена
-  на remote.
-- `git merge-base --is-ancestor origin/claude/repository-analysis-mkk7mg
-  origin/remediation/main` → **YES**: `remediation/main` действительно
-  основана на аудируемой ветке, как и утверждалось в задаче.
-- `remediation/main` = `claude/repository-analysis-mkk7mg` (`b0680bf`) + 1 коммит
-  `3c2ed4c` («Add files via upload»), которым добавлены `CLAUDE.md`,
-  `REMEDIATION_PLAN.md`, `PROJECT_STATUS.md`. Всё три файла подтверждены
-  `git ls-tree -r --name-only origin/remediation/main`.
-- Ветка `remediation/BASE-001-baseline` создана строго от `remediation/main`,
-  как требует запись `BASE-001` в `REMEDIATION_PLAN.md`.
-- Последний production deployment подтверждён независимо через GitHub
-  Actions REST API (`actions_list` / `actions_get`, read-only), а не
-  предположен — см. `docs/remediation/BASELINE.md`, раздел 5.
+  (`remediation/BASE-001-baseline`), `git rev-parse HEAD`, `git log --oneline -5`
+  в начале этого цикла.
+- Повторно подтверждено: `remediation/main` (`3c2ed4c`) = `claude/repository-analysis-mkk7mg`
+  (`b0680bf`) + 1 коммит «Add files via upload».
+- Последний production deployment подтверждён независимо через GitHub Actions
+  REST API (`actions_list`/`actions_get`) в предыдущем цикле — см.
+  `docs/remediation/BASELINE.md`, раздел 5.
+- Проверка «нет открытых feature-PR в `remediation/main`» (см. критерии
+  приёмки ниже) выполнена доступной заменой: GitHub PR API в этой сессии
+  недоступен (`github` MCP требует OAuth-авторизацию, сессия неинтерактивна —
+  это ограничение инструмента, а не результат проверки). Выполнен
+  `git fetch origin --prune` + `git ls-remote --heads origin`: на remote
+  ровно три ветки (`claude/repository-analysis-mkk7mg`, `main`,
+  `remediation/main`), дополнительных feature-веток нет. Ограничение метода
+  зафиксировано честно: PR из форков этим способом не видны (см.
+  `BASELINE.md`, раздел 7.1).
 
 ## Что изменено
-- Создан `docs/remediation/BASELINE.md` (новый файл) с зафиксированным
-  commit SHA, версиями Node/npm, доступными npm scripts, состоянием
-  Firebase/CI-конфигурации в репозитории, подтверждённым фактом последнего
-  production deployment и явными `OWNER_INPUT_REQUIRED` там, где данные
-  нельзя получить из репозитория.
-- Создан этот отчёт `docs/remediation/reports/BASE-001.md`.
-- Функциональный код приложения **не изменён**.
+- `docs/remediation/BASELINE.md`:
+  - раздел 5 — убрано личное имя/email автора коммита (было не обязательно
+    для `BASE-001`, оставлена только техническая атрибуция committer);
+  - раздел 6 — заменён на фактические данные из `OWNER_INPUT` (Firebase
+    project ID `finapp-prod-10a83`, ответственный за Firebase Console,
+    публичный аварийный контакт), с явной пометкой, что project ID заявлен
+    владельцем и не подтверждён технически этой сессией; приватные
+    телефон/email прямо зафиксированы как хранящиеся вне репозитория;
+  - добавлен раздел 8 — точная процедура возврата предыдущей версии
+    клиентской сборки на основании `.github/workflows/deploy.yml`
+    (два способа отката, known-good/fallback коммиты, способ проверки
+    результата, условия признания rollback неуспешным) — только
+    документация, ничего не выполнялось;
+  - добавлен подраздел 7.1 — фиксация проверки отсутствия открытых
+    feature-PR и её метода/ограничений.
+- `docs/remediation/reports/BASE-001.md` — обновлён под новое состояние
+  (этот файл).
+- Функциональный код приложения по-прежнему **не изменён**.
 
 ## Почему изменения входят в текущий пункт
-Ровно те действия, что перечислены в `REMEDIATION_PLAN.md` для `BASE-001`:
-зафиксировать SHA, создать `docs/remediation/BASELINE.md` с перечисленными
-полями, задокументировать заморозку функциональных изменений до
-прохождения `GATE-0`. Ветка `remediation/main` уже была создана владельцем
-до начала задачи — по условию задачи она не пересоздавалась и не менялась.
+Все правки — прямое продолжение `BASE-001`: уточнение полей, явно
+перечисленных в `REMEDIATION_PLAN.md` для `docs/remediation/BASELINE.md`
+(Firebase project ID, ответственный, аварийные контакты, способ вернуть
+предыдущую сборку), плюс удаление избыточных персональных данных и
+перепроверка критерия приёмки — без выхода за рамки задачи.
 
 ## Затронутые файлы
-- `docs/remediation/BASELINE.md` (новый)
-- `docs/remediation/reports/BASE-001.md` (новый, этот файл)
+- `docs/remediation/BASELINE.md` (изменён)
+- `docs/remediation/reports/BASE-001.md` (изменён, этот файл)
 
 ## Критерии приёмки
-- [x] существует неизменяемая исходная точка — зафиксирована как
-      `remediation/main @ 3c2ed4c2573252d9e7652b11809fa0a4bb574cbc`
-      (проверено `git rev-parse`, не предположено).
+- [x] существует неизменяемая исходная точка — `remediation/main @ 3c2ed4c2573252d9e7652b11809fa0a4bb574cbc`.
 - [x] понятно, из какого commit выполняется аудит и исправление — оба SHA
-      (`claude/repository-analysis-mkk7mg` и `remediation/main`) зафиксированы
-      и связь между ними подтверждена `merge-base --is-ancestor`.
-- [ ] новые feature-PR не смешиваются с remediation — **это организационное
-      правило, а не проверяемое инструментами условие сейчас.** Правило
-      явно зафиксировано в `BASELINE.md` (раздел 7), но я не могу
-      технически гарантировать, что владелец или кто-то ещё не запушит
-      функциональный код напрямую в `remediation/main` в будущем — это
-      вне возможностей текущей задачи (потребовался бы, например, branch
-      protection на GitHub, что не входит в объём `BASE-001` и не было
-      запрошено).
+      зафиксированы, связь подтверждена `merge-base --is-ancestor`.
+- [x] новые feature-PR не смешиваются с remediation — отмечено выполненным
+      как **процессное ограничение**: открытых feature-PR с target
+      `remediation/main` доступными инструментами не обнаружено (см. выше),
+      запрет смешивания зафиксирован в `CLAUDE.md` и `BASELINE.md` §7.
+      Техническая защита веток (branch protection) сознательно не входит в
+      объём `BASE-001` — это отдельный будущий пункт, отсутствие которой не
+      отменяет выполнение текущего процессного критерия.
 
 ## Проверки
 | Команда | Результат | Примечание |
 |---|---|---|
-| `git status --short` | PASS | чисто на каждом шаге, посторонних изменений не было |
-| `git branch --show-current` | PASS | зафиксировано на каждом этапе |
-| `git rev-parse HEAD` | PASS | зафиксировано для всех трёх релевантных веток |
-| `git log --oneline --decorate -10` | PASS | вывод приложен ниже |
-| `git merge-base --is-ancestor origin/claude/repository-analysis-mkk7mg origin/remediation/main` | PASS | подтверждено: YES |
-| `node --version` | PASS | `v22.22.2` (локально в этой сессии) |
-| `npm --version` | PASS | `10.9.7` (локально в этой сессии) |
-| `npm ci` | PASS | 311 packages, 3 известные уязвимости (не в объёме `BASE-001`, будет `BASE-005`) |
+| `npm ci` | PASS | 311 packages; 3 известные уязвимости (не в объёме `BASE-001`, будет `BASE-005`) |
 | `npm run lint` | PASS | 0 ошибок, 0 предупреждений |
-| `npm run typecheck` | NOT AVAILABLE | script отсутствует в `package.json`; появится в `BASE-005`/`TEST-001` |
-| `npm run test:run` | NOT AVAILABLE | script и тестовая инфраструктура отсутствуют; появится в `TEST-001` |
-| `npm run test:rules` | NOT AVAILABLE | script и `firestore.rules` отсутствуют; появится в `BASE-004`/`SEC-011` |
-| `npm run test:e2e` | NOT AVAILABLE | script и Playwright-конфигурация отсутствуют; появится в `TEST-001` |
-| `npm run build` | PASS | `tsc -b && vite build` — успешно, один чанк ~1.88 МБ (известное, не в объёме `BASE-001`) |
-| `git diff --check` | PASS | exit code 0, конфликтов пробелов/маркеров нет |
-| `git status --short` (финально) | PASS | только новые файлы этой задачи |
+| `npm run build` | PASS | `tsc -b && vite build` — успешно |
+| `git diff --check` | PASS | exit code 0 |
+| `git status --short` | PASS | чисто после коммита |
+| `npm run typecheck` / `test:run` / `test:rules` / `test:e2e` | NOT AVAILABLE | скрипты отсутствуют в `package.json` — вне объёма `BASE-001`, появятся в `BASE-005`/`TEST-001`/`SEC-011` |
 
 ## Фактический вывод существенных тестов
 ```text
-$ git merge-base --is-ancestor origin/claude/repository-analysis-mkk7mg origin/remediation/main && echo "YES - ancestor"
-YES - ancestor
-
-$ npm run build (хвост)
-vite v8.0.13 building client environment for production...
-✓ 2367 modules transformed.
-dist/index.html                     0.47 kB │ gzip:   0.29 kB
-dist/assets/index-DfxZYI-H.css     61.74 kB │ gzip:  10.53 kB
-dist/assets/index-3wrtej2p.js   1,879.13 kB │ gzip: 540.35 kB
-✓ built in 1.44s
+$ npm ci
+added 311 packages, and audited 312 packages
+3 vulnerabilities (1 low, 2 high)
 
 $ npm run lint
 > eslint .
 (без вывода — 0 ошибок)
-```
 
-GitHub Actions API (read-only, репозиторий `Alexspb-spb1/finapp`):
-```text
-run 29251907411 — build: success, deploy: success
-branch: main, commit 928940b6f79034b7a8beea6195e87b39609a3954
-created_at: 2026-07-13T12:58:27Z, deploy completed_at: 2026-07-13T12:59:08Z
-html_url: https://github.com/Alexspb-spb1/finapp/actions/runs/29251907411
+$ npm run build
+vite v8.0.13 building client environment for production...
+✓ 2367 modules transformed.
+dist/index.html                     0.47 kB │ gzip:   0.29 kB
+dist/assets/index-*.css            61.74 kB │ gzip:  10.53 kB
+dist/assets/index-*.js           1,879.13 kB │ gzip: 540.35 kB
+✓ built in <2s
+
+$ git diff --check
+(exit code 0, без вывода)
+
+$ git fetch origin --prune && git ls-remote --heads origin
+b0680bf... refs/heads/claude/repository-analysis-mkk7mg
+928940b... refs/heads/main
+3c2ed4c... refs/heads/remediation/main
+(других веток нет)
 ```
 
 ## Security review
-- Секреты, токены, пароли, service account JSON или production-данные в
-  созданные файлы **не записывались** — проверено визуально при
-  составлении `BASELINE.md`: единственное персональное данное — публичный
-  email автора коммита `928940b6f7` (`lesenenok8787@gmail.com`), который
-  уже открыто виден в истории публичного GitHub-репозитория через
-  `git log`/GitHub UI, то есть не является новым раскрытием.
-- Реальный Firebase `projectId` не был и не мог быть получен из доступных
-  этой сессии источников — явно помечен `OWNER_INPUT_REQUIRED`, а не
-  предположен по названию репозитория/проекта.
-- Live-URL приложения указан с пометкой уровня уверенности («определено по
-  конфигурации, не подтверждено HTTP-запросом») — сессия не имеет
-  исходящего доступа в открытый интернет (проверено: `curl` вернул код `000`).
+- Личное имя и email автора коммита `928940b6f7` удалены из
+  `BASELINE.md` и отчёта по прямому указанию владельца — в файлах остаётся
+  только техническая атрибуция (committer `GitHub`/`web-flow`), без ФИО/email.
+- Приватные телефон, личный email, пароли, токены, service account JSON,
+  секреты GitHub Actions — не записывались и не запрашивались; приватные
+  контакты явно задокументированы как хранящиеся вне репозитория, у
+  владельца.
+- Firebase project ID (`finapp-prod-10a83`) записан как **заявленный
+  владельцем** факт, с явной оговоркой, что эта сессия не может независимо
+  подтвердить его техническим путём (нет доступа к Firebase Console/CLI, а
+  значение секрета GitHub Actions по-прежнему нечитаемо из репозитория).
+- Раздел 8 (`BASELINE.md`) документирует rollback-процедуру, но explicitly
+  требует `PRODUCTION_ACTION_APPROVED` перед фактическим выполнением —
+  ничего не запускалось.
 
 ## Данные и миграция
 - нет — `BASE-001` не затрагивает данные Firestore/Auth, миграций не выполнялось.
 
 ## Ручная проверка
-- Не выполнялась и не требовалась: `BASE-001` — документационная задача,
-  не изменяющая поведение приложения. Живое приложение не открывалось и не
-  тестировалось вручную в рамках этой задачи.
+- Не выполнялась и не требовалась: `BASE-001` — документационная задача.
+  Живое приложение не открывалось, deploy/rollback не запускался.
 
 ## Rollback
-- Откатить эту задачу: удалить ветку `remediation/BASE-001-baseline`
-  локально/на remote (она никуда не смёржена и не запушена в рамках этой
-  сессии — push не выполнялся, как и требует протокол).
+- Откатить эту задачу: `git reset` до `3c2ed4c2573252d9e7652b11809fa0a4bb574cbc`
+  на ветке `remediation/BASE-001-baseline`, либо просто удалить ветку — она
+  не смёржена в `remediation/main`/`main`.
+- На remote после push будет существовать только сама ветка
+  `remediation/BASE-001-baseline` — `remediation/main`/`main` не менялись
+  и не будут меняться в рамках этой задачи.
 - Данные не менялись, откатывать в Firebase/Firestore нечего.
 
 ## Известные ограничения
-- Live URL приложения (`https://alexspb-spb1.github.io/finapp/`) указан с
-  высокой, но не стопроцентной уверенностью — не подтверждён прямым HTTP-запросом
-  из-за отсутствия исходящего интернет-доступа в этой рабочей среде.
-  Владелец должен подтвердить его самостоятельно (открыть в браузере).
-- Firebase project ID, ответственный за Firebase Console, аварийные
-  контакты и подтверждённый способ отката production Firestore-данных/Rules
-  **не установлены** — явно помечены `OWNER_INPUT_REQUIRED` в
-  `docs/remediation/BASELINE.md` (раздел 6). Эти пробелы блокируют переход
-  к `BASE-002`–`BASE-004`, но не блокируют сам факт фиксации baseline.
-- Правило «не смешивать remediation с feature-PR» зафиксировано
-  документально, но не обеспечено технически (нет branch protection) —
-  см. критерии приёмки выше.
-- Push и merge не выполнялись согласно протоколу («Разрешено создавать
-  локальную task-ветку… Не выполняй push, если пользователь прямо не
-  попросил»). Ветка существует только локально в этой сессии.
+- Проверка отсутствия открытых feature-PR выполнена без прямого доступа к
+  GitHub PR API (см. раздел «Проверенное исходное состояние») — методом
+  замены (`git ls-remote`), с честно указанным ограничением (PR из форков
+  не были бы видны).
+- Firebase project ID подтверждён только словом владельца, не технически.
+- Способ аварийного отката production **данных**/Firestore Rules всё ещё
+  `OWNER_INPUT_REQUIRED` — покрыт только клиентский rollback сборки
+  (`BASELINE.md` §8). Это ожидаемо: данные/Rules — предмет `BASE-003`/`BASE-004`.
+- Live URL приложения по-прежнему не подтверждён прямым HTTP-запросом
+  (нет исходящего интернет-доступа в этой рабочей среде).
+- В приложении нет видимого индикатора версии/сборки — затрудняет ручную
+  визуальную проверку результата будущего rollback (зафиксировано как
+  находка в `BASELINE.md` §8.4).
 
 ## Дополнительные находки вне scope
-- Коммит `928940b6f79034b7a8beea6195e87b39609a3954` («Add files via
-  upload») запушен **напрямую в `main`** через GitHub web UI (committer
-  `GitHub`/`web-flow`), минуя PR/CI-ревью, и тут же вызвал реальный
-  production deploy (run `29251907411`). Это не входит в объём `BASE-001`,
-  но стоит учитывать в `BASE-006` (CI на PR) и как процессный риск —
-  прямые пуши в `main` в обход ревью продолжают быть возможны.
-- `.nvmrc` отсутствует, локальная версия Node (22.x) расходится с версией
-  CI (20.x) — прямо относится к `BASE-006`, не исправлялось сейчас.
-- `npm audit` при `npm ci` на этой ветке показал те же 3 известные
-  уязвимости (включая high-severity `xlsx`), что уже зафиксированы в
-  `PROJECT_STATUS.md` — подробная фиксация версий/аудита относится к
-  `BASE-005`, здесь только подтверждено, что состояние не изменилось.
+- Коммит `928940b6f7` запушен напрямую в `main` через GitHub web UI, минуя
+  PR/CI-ревью, и тут же вызвал реальный prod-деплой — относится к `BASE-006`.
+- `.nvmrc` отсутствует, локальный Node (22.x) ≠ CI Node (20.x) — относится к `BASE-006`.
+- `npm audit`: те же 3 известные уязвимости, включая high-severity `xlsx`,
+  без изменений — подробная фиксация относится к `BASE-005`.
 
 ## Diff summary
 ```text
- docs/remediation/BASELINE.md | 123 +++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 123 insertions(+)
+ docs/remediation/BASELINE.md         | 182 ++++++++++++++++++++++---
+ docs/remediation/reports/BASE-001.md | 251 +++++++++++++++++------------------
+ 2 files changed, 287 insertions(+), 146 deletions(-)
 ```
-(плюс этот отчёт, добавленный после снятия diff --stat)
 
 ## Следующий разрешённый пункт
 - `BASE-002` — Создать отдельное staging Firebase-окружение.
