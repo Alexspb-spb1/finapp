@@ -6,9 +6,51 @@ READY_FOR_REVIEW
 ## Branch / commit
 - branch: `remediation/BASE-001-baseline`
 - base SHA: `3c2ed4c2573252d9e7652b11809fa0a4bb574cbc` (`remediation/main`)
-- result SHA: см. `git rev-parse HEAD` на ветке `remediation/BASE-001-baseline` после
-  исправляющего коммита этого цикла (второй коммит задачи, поверх
-  `e3226a8fb3cc6c355bba4bd6a871dca49527254a`)
+- task commits, подготовленные к первоначальному ревью (в порядке коммита):
+  1. `e3226a8fb3cc6c355bba4bd6a871dca49527254a` — создание `BASELINE.md` и первой версии отчёта
+  2. `166e3cf83af7d9cd2aab5cf4015bf86a8a0e6822` — внесение `OWNER_INPUT`, удаление лишних персональных данных, rollback-процедура
+- canonical review head **не фиксируется как значение внутри этого файла**:
+  итоговый SHA коммита, который добавит очередную версию самого отчёта,
+  нельзя надёжно встроить в содержимое этого же коммита без самоссылки
+  (хеш коммита вычисляется по его содержимому, включая этот файл — записать
+  в файл SHA коммита, которым сам файл коммитится, невозможно без
+  дополнительного коммита после). Canonical review head фиксируется внешне:
+  актуальный `HEAD` ветки `remediation/BASE-001-baseline` на GitHub
+  (https://github.com/Alexspb-spb1/finapp/tree/remediation/BASE-001-baseline)
+  и в независимом review verdict, который ссылается на конкретный SHA на
+  момент ревью.
+
+## Исправления по независимому ревью
+
+`REVIEW_RESULT: CHANGES REQUIRED` от независимого ревьюера указал на три
+документационных замечания. Каждое перепроверено независимо (не принято на
+слово) перед исправлением — командой `git diff --name-status <base> <commit>`:
+
+1. **`BASELINE.md`, описание коммита `3c2ed4c` (раздел 1):** утверждалось,
+   что коммитом добавлены `CLAUDE.md`, `REMEDIATION_PLAN.md` и
+   `PROJECT_STATUS.md`. Проверено: `git diff --name-status b0680bf 3c2ed4c`
+   → только `A CLAUDE.md`, `A REMEDIATION_PLAN.md`. `PROJECT_STATUS.md`
+   уже существовал в родительской ветке `claude/repository-analysis-mkk7mg`
+   (создан коммитом `0a0ea3e` в предыдущей сессии) — этим коммитом не
+   добавлялся. **Исправлено.**
+2. **`BASELINE.md`, раздел 8.1 (known-good production commit `928940b`):**
+   утверждалось, что коммит добавил ту же тройку документов. Проверено:
+   `git diff --name-status 64343b7727... 928940b6f7...` → только
+   `A CLAUDE.md`. `REMEDIATION_PLAN.md` и `PROJECT_STATUS.md` на `main`
+   вообще отсутствуют. **Исправлено** — вывод «клиентский бандл не
+   изменился» сохранён, но обоснование переписано: коммит менял только
+   корневой `CLAUDE.md`, не подключённый в Vite-сборку.
+3. **`reports/BASE-001.md`, строка `result SHA: см. git rev-parse HEAD`:**
+   нестабильная самоссылка. Заменена на список task commits, подготовленных
+   к ревью (`e3226a8`, `166e3cf`), плюс явное пояснение, почему canonical
+   review head фиксируется внешне (на GitHub и в review verdict), а не как
+   значение внутри этого же файла — см. раздел «Branch / commit» выше.
+
+Дополнительно выполнена проверка всего `BASELINE.md` на другие подобные
+утверждения (`grep` по именам всех трёх файлов) — других мест с ошибочной
+атрибуцией не найдено; оставшиеся упоминания `CLAUDE.md`/`REMEDIATION_PLAN.md`
+в файле — это ссылки на сами файлы правил, а не утверждения о содержимом
+конкретных коммитов.
 
 ## Проверенное исходное состояние
 - Подтверждено `git status --short` (чисто), `git branch --show-current`
@@ -165,11 +207,24 @@ b0680bf... refs/heads/claude/repository-analysis-mkk7mg
   без изменений — подробная фиксация относится к `BASE-005`.
 
 ## Diff summary
+
+Кумулятивно за все циклы `BASE-001` (от `remediation/main` @ `3c2ed4c`, оба файла новые для этой ветки):
 ```text
- docs/remediation/BASELINE.md         | 182 ++++++++++++++++++++++---
- docs/remediation/reports/BASE-001.md | 251 +++++++++++++++++------------------
- 2 files changed, 287 insertions(+), 146 deletions(-)
+ docs/remediation/BASELINE.md         | 274 +++++++++++++++++++++++++++++++++++
+ docs/remediation/reports/BASE-001.md | 227 +++++++++++++++++++++++++++++
+ 2 files changed, 501 insertions(+)
 ```
+
+Только этот исправляющий коммит (реакция на `REVIEW_RESULT: CHANGES REQUIRED`,
+приблизительно — правки самого раздела diff summary естественным образом
+чуть меняют собственный размер при каждой правке, аналогично проблеме
+самоссылки с SHA из замечания №3):
+```text
+ docs/remediation/BASELINE.md         | ~15 lines changed
+ docs/remediation/reports/BASE-001.md | ~65 lines changed
+ 2 files changed
+```
+Точные числа для всего коммита — в `git diff --stat` после `git commit`, см. вывод в чате после push.
 
 ## Следующий разрешённый пункт
 - `BASE-002` — Создать отдельное staging Firebase-окружение.

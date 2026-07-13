@@ -21,7 +21,7 @@
 | `remediation/BASE-001-baseline` (эта задача, создана от `remediation/main`) | `3c2ed4c2573252d9e7652b11809fa0a4bb574cbc` (на момент создания ветки) | `git rev-parse HEAD` |
 
 Проверено: `git merge-base --is-ancestor origin/claude/repository-analysis-mkk7mg origin/remediation/main` → **YES** (ancestor).
-`remediation/main` = `claude/repository-analysis-mkk7mg` (`b0680bf`) + 1 коммит `3c2ed4c` («Add files via upload» — добавлены `CLAUDE.md`, `REMEDIATION_PLAN.md`, `PROJECT_STATUS.md`).
+`remediation/main` = `claude/repository-analysis-mkk7mg` (`b0680bf`) + 1 коммит `3c2ed4c` («Add files via upload» — добавлены `CLAUDE.md`, `REMEDIATION_PLAN.md`). `PROJECT_STATUS.md` этим коммитом не добавлялся — он уже существовал в родительской ветке `claude/repository-analysis-mkk7mg` (создан ранее, коммит `0a0ea3e`). Проверено независимо: `git diff --name-status b0680bf 3c2ed4c` → только `A CLAUDE.md`, `A REMEDIATION_PLAN.md`.
 
 **Исходная точка remediation-плана зафиксирована на `3c2ed4c2573252d9e7652b11809fa0a4bb574cbc` (`remediation/main`).**
 С этого момента и до прохождения этапов 0–4 в эту ветку не должны попадать новые продуктовые фичи — только remediation-задачи по одной за раз, по протоколу из `CLAUDE.md`.
@@ -185,11 +185,14 @@ ROLLBACK_REFERENCE: <описание или ссылка на проверен�
 - **Known-good production commit (текущий, актуальный на момент фиксации baseline):**
   `928940b6f79034b7a8beea6195e87b39609a3954` — деплой подтверждён успешным
   (run `29251907411`, `build`+`deploy` = `success`). Этот коммит добавляет
-  только документацию (`CLAUDE.md`, `REMEDIATION_PLAN.md`,
-  `PROJECT_STATUS.md`) поверх `64343b7727...` — корневые `.md`-файлы не
-  входят в Vite-сборку (`vite.config.ts`/`index.html` их не подключают),
-  поэтому фактический собранный клиентский бандл идентичен предыдущему
-  known-good состоянию.
+  на `main` только один файл — корневой документационный `CLAUDE.md`.
+  Проверено независимо: `git diff --name-status 64343b7727... 928940b6f7...`
+  → только `A CLAUDE.md`. `REMEDIATION_PLAN.md` и `PROJECT_STATUS.md` этим
+  коммитом **не добавлялись** и на `main` вообще отсутствуют. Поскольку
+  `CLAUDE.md` — корневой `.md`-файл, не подключённый в Vite-сборку
+  (`vite.config.ts`/`index.html` на него не ссылаются), фактический
+  собранный клиентский бандл идентичен предыдущему known-good состоянию
+  (`64343b7727...`).
 - **Последний подтверждённый успешный deployment:** тот же —
   run `29251907411`, `2026-07-13T12:58:27Z`–`12:59:08Z`,
   https://github.com/Alexspb-spb1/finapp/actions/runs/29251907411
