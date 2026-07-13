@@ -40,7 +40,7 @@ function parseDate(s: string): string | null {
 
 function parseAmount(s: string): number | null {
   if (!s) return null
-  const cleaned = s.trim().replace(/\s/g,'').replace(',','.').replace(/[^\d.+\-]/g,'')
+  const cleaned = s.trim().replace(/\s/g,'').replace(',','.').replace(/[^\d.+-]/g,'')
   const n = parseFloat(cleaned)
   return isNaN(n) ? null : n
 }

@@ -29,11 +29,15 @@ export default function Layout() {
   const { company, readOnly } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
+  // close sidebar on route change (mobile) — reset during render, avoids an extra effect pass
+  const [prevPathname, setPrevPathname] = useState(pathname)
+  if (pathname !== prevPathname) {
+    setPrevPathname(pathname)
+    setSidebarOpen(false)
+  }
+
   const isProjectDetail = /^\/projects\/.+/.test(pathname)
   const title = isProjectDetail ? 'Проект' : (titles[pathname] ?? 'ФинУчёт')
-
-  // close sidebar on route change (mobile)
-  useEffect(() => { setSidebarOpen(false) }, [pathname])
 
   useEffect(() => {
     if (company?.id) { companyStore.init(company.id) }

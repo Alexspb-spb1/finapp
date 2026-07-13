@@ -50,7 +50,7 @@ export default function Import() {
   const expenseCats = categories.filter(c => c.type === 'expense' && !c.isGroup)
 
   // ── Step 1: file selection ─────────────────────────────────────────────────
-  async function handleFile(f: File) {
+  const handleFile = useCallback(async (f: File) => {
     setError('')
     setFile(f)
     setLoading(true)
@@ -78,14 +78,14 @@ export default function Import() {
       setError('Не удалось прочитать файл. Убедитесь что это .xlsx или .csv')
     }
     setLoading(false)
-  }
+  }, [accounts])
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
     const f = e.dataTransfer.files[0]
     if (f) handleFile(f)
-  }, [accounts])
+  }, [handleFile])
 
   // ── Step 2 → 3: apply mapping, build preview ──────────────────────────────
   function goToStep3() {

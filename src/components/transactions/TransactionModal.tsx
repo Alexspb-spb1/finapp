@@ -12,6 +12,13 @@ interface Props {
   onClose: () => void
 }
 
+// Вне компонента: обращение к Date.now() внутри тела компонента/хука считается
+// нечистым вызовом для React Compiler (react-hooks/purity), хотя реально это
+// вызывается только из обработчика клика, а не при рендере.
+function genTransactionId(): string {
+  return 't' + Date.now()
+}
+
 export default function TransactionModal({ open, onClose }: Props) {
   const store = useStore()
   const navigate = useNavigate()
@@ -66,6 +73,7 @@ export default function TransactionModal({ open, onClose }: Props) {
   // Auto-fetch rate when account changes to foreign currency
   useEffect(() => {
     const acc = accounts.find(a => a.id === (accountId || accounts[0]?.id))
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync reset tied to the same fetch-or-clear decision below, not derivable at render time
     if (!acc || acc.currency === 'RUB') { setExchangeRate(''); return }
     setFetchingRate(true)
     fetchRate(acc.currency, 'RUB').then(r => {
@@ -75,7 +83,13 @@ export default function TransactionModal({ open, onClose }: Props) {
   }, [accountId, accounts])
 
   // Сброс защиты от двойного сабмита при каждом открытии модалки (БАГ №1)
-  useEffect(() => { if (open) { submittingRef.current = false; setSaving(false) } }, [open])
+  // Пишет в ref — это нельзя делать во время рендера, поэтому остаётся эффектом.
+  useEffect(() => {
+    if (!open) return
+    submittingRef.current = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- paired with the ref reset above, both must happen together on open
+    setSaving(false)
+  }, [open])
 
   if (!open) return null
 
@@ -127,7 +141,7 @@ export default function TransactionModal({ open, onClose }: Props) {
     setSaving(true)
 
     store.addTransaction({
-      id: 't' + Date.now(),
+      id: genTransactionId(),
       date,
       relatedDate: (type !== 'transfer' && hasRelatedDate) ? relatedDate : undefined,
       type,

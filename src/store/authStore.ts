@@ -230,9 +230,10 @@ export const authStore = {
     try {
       _registrationInProgress = true
       cred = await createUserWithEmailAndPassword(auth, params.email, params.password)
-    } catch (e: any) {
+    } catch (e) {
       _registrationInProgress = false
-      if (e?.code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
+      const code = (e as { code?: string } | null)?.code
+      if (code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
       return { ok: false, error: 'invalid_credentials' }
     }
 

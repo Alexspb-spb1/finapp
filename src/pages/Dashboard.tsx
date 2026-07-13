@@ -48,7 +48,7 @@ function readLS<T>(key: string, fallback: T): T {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback } catch { return fallback }
 }
 function writeLS(key: string, v: unknown) {
-  try { localStorage.setItem(key, JSON.stringify(v)) } catch {}
+  try { localStorage.setItem(key, JSON.stringify(v)) } catch { /* best-effort persist, ignore */ }
 }
 
 // ── SortableWidget wrapper ────────────────────────────────────────────────────
@@ -80,12 +80,18 @@ function SortableWidget({ id, wide, configMode, children }: {
 }
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
-function ChartTooltip({ active, payload, label }: any) {
+interface ChartTooltipProps {
+  active?: boolean
+  payload?: { name: string; value: number; color: string }[]
+  label?: string
+}
+
+function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
   if (!active || !payload?.length) return null
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
       <p className="font-semibold text-slate-700 mb-1">{label}</p>
-      {payload.map((p: any) => (
+      {payload.map(p => (
         <p key={p.name} style={{ color: p.color }} className="flex justify-between gap-6">
           <span>{p.name}:</span>
           <span className="font-medium">{formatCurrency(p.value)}</span>
@@ -135,7 +141,8 @@ export default function Dashboard() {
   function toggleWidget(id: string) {
     setDisabledWidgets(prev => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       // Persist: enabled = widgetOrder minus disabled
       const enabled = widgetOrder.filter(wid => !next.has(wid))
       writeLS(LS_WIDGETS, enabled)

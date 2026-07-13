@@ -42,12 +42,18 @@ function movAvg3(values: number[]): (number | null)[] {
   return values.map((_, i) => i < 2 ? null : Math.round((values[i] + values[i - 1] + values[i - 2]) / 3))
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+interface ChartTooltipProps {
+  active?: boolean
+  payload?: { name: string; value: number | null; color: string }[]
+  label?: string
+}
+
+const CustomTooltip = ({ active, payload, label }: ChartTooltipProps) => {
   if (!active || !payload?.length) return null
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
       <p className="font-semibold text-slate-700 mb-1">{label}</p>
-      {payload.map((p: any, i: number) => p.value !== null && (
+      {payload.map((p, i) => p.value !== null && (
         <p key={i} style={{ color: p.color }} className="flex justify-between gap-6">
           <span>{p.name}:</span>
           <span className="font-medium">{formatCurrency(p.value)}</span>
@@ -125,7 +131,7 @@ export default function Forecast() {
 
   // ── next month summary ────────────────────────────────────────────────────
   const curMonth  = monthKey(new Date().toISOString())
-  const cur       = monthData[curMonth]  ?? { income: 0, expense: 0 }
+  const cur       = useMemo(() => monthData[curMonth] ?? { income: 0, expense: 0 }, [monthData, curMonth])
   const nextInc   = incForecast[0]  ?? 0
   const nextExp   = expForecast[0]  ?? 0
   const nextProfit = nextInc - nextExp

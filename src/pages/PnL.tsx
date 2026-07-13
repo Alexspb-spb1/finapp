@@ -5,7 +5,7 @@ import { useStore } from '../store/useStore'
 import { formatCurrency, monthKey } from '../utils/format'
 import { toBase } from '../utils/currency'
 import CategoryIcon from '../utils/categoryIcons'
-import type { CategoryPnlSection } from '../types'
+import type { Category, CategoryPnlSection } from '../types'
 
 const MONTH_LABELS: Record<string, string> = {
   '01': 'Янв', '02': 'Фев', '03': 'Мар', '04': 'Апр',
@@ -22,6 +22,100 @@ function PctBadge({ value }: { value: number | null }) {
   if (value === null) return <span className="text-slate-300">—</span>
   const cls = value >= 0 ? 'text-emerald-600' : 'text-red-500'
   return <span className={`text-xs ${cls}`}>{value}%</span>
+}
+
+// Section rows (Выручка / Прямые расходы / Косвенные расходы / Прочие доходы-расходы)
+function SectionRows({ type, section, sectionKey, label, accentClass, valueClass,
+  expanded, onToggle, months, reversedMonths, catsForSection, sumByCategory, sumBySection,
+}: {
+  type: 'income' | 'expense'
+  section: CategoryPnlSection
+  sectionKey: string
+  label: string
+  accentClass: string
+  valueClass: string
+  expanded: Set<string>
+  onToggle: (key: string) => void
+  months: string[]
+  reversedMonths: string[]
+  catsForSection: (type: 'income' | 'expense', section: CategoryPnlSection) => Category[]
+  sumByCategory: (catId: string, month: string) => number
+  sumBySection: (type: 'income' | 'expense', section: CategoryPnlSection | null, month: string) => number
+}) {
+  const cats = catsForSection(type, section)
+  const isOpen = expanded.has(sectionKey)
+  const hasData = months.some(m => cats.some(c => sumByCategory(c.id, m) > 0))
+
+  return (
+    <>
+      <tr className={`border-b border-slate-100 cursor-pointer hover:opacity-80 transition-opacity ${accentClass}`}
+        onClick={() => onToggle(sectionKey)}>
+        <td className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider">
+          <span className="flex items-center gap-1.5">
+            {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            {label}
+          </span>
+        </td>
+        {reversedMonths.map(m => {
+          const v = sumBySection(type, section, m)
+          return (
+            <td key={m} className={`px-4 py-2.5 text-sm font-semibold text-right ${valueClass}`}>
+              {v > 0 ? formatCurrency(v) : '—'}
+            </td>
+          )
+        })}
+      </tr>
+      {isOpen && hasData && cats.map(cat => {
+        const vals = reversedMonths.map(m => sumByCategory(cat.id, m))
+        if (vals.every(v => v === 0)) return null
+        return (
+          <tr key={cat.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+            <td className="px-5 py-2 pl-10 text-sm text-slate-500">
+              <span className="flex items-center gap-2">
+                <CategoryIcon name={cat.icon} size={13} color={cat.color} />
+                {cat.name}
+              </span>
+            </td>
+            {vals.map((v, i) => (
+              <td key={i} className={`px-4 py-2 text-sm text-right ${v > 0 ? valueClass : 'text-slate-300'}`}>
+                {v > 0 ? formatCurrency(v) : '—'}
+              </td>
+            ))}
+          </tr>
+        )
+      })}
+    </>
+  )
+}
+
+// Summary row (Итого / computed)
+function SummaryRow({ label, values, bold = false, highlight = false, showMargin = false, baseValues }: {
+  label: string
+  values: number[]
+  bold?: boolean
+  highlight?: boolean
+  showMargin?: boolean
+  baseValues?: number[]
+}) {
+  return (
+    <tr className={highlight ? 'bg-indigo-50 border-y-2 border-indigo-200' : 'bg-slate-50 border-b border-slate-200'}>
+      <td className={`px-5 py-3 text-sm ${bold ? 'font-bold text-slate-800' : 'font-semibold text-slate-600'}`}>
+        {label}
+      </td>
+      {values.map((v, i) => (
+        <td key={i} className={`px-4 py-3 text-right ${bold ? 'text-sm' : 'text-sm'}`}>
+          <div className={`font-bold ${v >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+            {v !== 0 ? (v > 0 ? '' : '') + formatCurrency(v) : '—'}
+          </div>
+          {showMargin && baseValues && (
+            <div className="mt-0.5">
+              <PctBadge value={pct(v, baseValues[i])} />
+            </div>
+          )}
+        </td>
+      ))}
+    </tr>
+  )
 }
 
 export default function PnL() {
@@ -73,91 +167,6 @@ export default function PnL() {
     return categories.filter(c =>
       !c.isGroup && c.type === type &&
       (c.pnlSection ?? (type === 'income' ? 'direct' : 'indirect')) === section
-    )
-  }
-
-  // Section rows component
-  function SectionRows({ type, section, sectionKey, label, accentClass, valueClass }: {
-    type: 'income' | 'expense'
-    section: CategoryPnlSection
-    sectionKey: string
-    label: string
-    accentClass: string
-    valueClass: string
-  }) {
-    const cats = catsForSection(type, section)
-    const isOpen = expanded.has(sectionKey)
-    const hasData = months.some(m => cats.some(c => sumByCategory(c.id, m) > 0))
-
-    return (
-      <>
-        <tr className={`border-b border-slate-100 cursor-pointer hover:opacity-80 transition-opacity ${accentClass}`}
-          onClick={() => toggle(sectionKey)}>
-          <td className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider">
-            <span className="flex items-center gap-1.5">
-              {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-              {label}
-            </span>
-          </td>
-          {reversedMonths.map(m => {
-            const v = sumBySection(type, section, m)
-            return (
-              <td key={m} className={`px-4 py-2.5 text-sm font-semibold text-right ${valueClass}`}>
-                {v > 0 ? formatCurrency(v) : '—'}
-              </td>
-            )
-          })}
-        </tr>
-        {isOpen && hasData && cats.map(cat => {
-          const vals = reversedMonths.map(m => sumByCategory(cat.id, m))
-          if (vals.every(v => v === 0)) return null
-          return (
-            <tr key={cat.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-              <td className="px-5 py-2 pl-10 text-sm text-slate-500">
-                <span className="flex items-center gap-2">
-                  <CategoryIcon name={cat.icon} size={13} color={cat.color} />
-                  {cat.name}
-                </span>
-              </td>
-              {vals.map((v, i) => (
-                <td key={i} className={`px-4 py-2 text-sm text-right ${v > 0 ? valueClass : 'text-slate-300'}`}>
-                  {v > 0 ? formatCurrency(v) : '—'}
-                </td>
-              ))}
-            </tr>
-          )
-        })}
-      </>
-    )
-  }
-
-  // Summary row (Итого / computed)
-  function SummaryRow({ label, values, bold = false, highlight = false, showMargin = false, baseValues }: {
-    label: string
-    values: number[]
-    bold?: boolean
-    highlight?: boolean
-    showMargin?: boolean
-    baseValues?: number[]
-  }) {
-    return (
-      <tr className={highlight ? 'bg-indigo-50 border-y-2 border-indigo-200' : 'bg-slate-50 border-b border-slate-200'}>
-        <td className={`px-5 py-3 text-sm ${bold ? 'font-bold text-slate-800' : 'font-semibold text-slate-600'}`}>
-          {label}
-        </td>
-        {values.map((v, i) => (
-          <td key={i} className={`px-4 py-3 text-right ${bold ? 'text-sm' : 'text-sm'}`}>
-            <div className={`font-bold ${v >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
-              {v !== 0 ? (v > 0 ? '' : '') + formatCurrency(v) : '—'}
-            </div>
-            {showMargin && baseValues && (
-              <div className="mt-0.5">
-                <PctBadge value={pct(v, baseValues[i])} />
-              </div>
-            )}
-          </td>
-        ))}
-      </tr>
     )
   }
 
@@ -261,6 +270,8 @@ export default function PnL() {
                 label="Выручка"
                 accentClass="bg-emerald-50/60 text-emerald-800"
                 valueClass="text-emerald-700"
+                expanded={expanded} onToggle={toggle} months={months} reversedMonths={reversedMonths}
+                catsForSection={catsForSection} sumByCategory={sumByCategory} sumBySection={sumBySection}
               />
 
               {/* ── 2. Прямые расходы ────────────────────────── */}
@@ -269,6 +280,8 @@ export default function PnL() {
                 label="Прямые расходы (себестоимость)"
                 accentClass="bg-red-50/40 text-red-700"
                 valueClass="text-red-500"
+                expanded={expanded} onToggle={toggle} months={months} reversedMonths={reversedMonths}
+                catsForSection={catsForSection} sumByCategory={sumByCategory} sumBySection={sumBySection}
               />
 
               {/* ── Валовая прибыль ──────────────────────────── */}
@@ -285,6 +298,8 @@ export default function PnL() {
                 label="Косвенные расходы (накладные)"
                 accentClass="bg-orange-50/40 text-orange-700"
                 valueClass="text-orange-600"
+                expanded={expanded} onToggle={toggle} months={months} reversedMonths={reversedMonths}
+                catsForSection={catsForSection} sumByCategory={sumByCategory} sumBySection={sumBySection}
               />
 
               {/* ── EBIT ─────────────────────────────────────── */}
@@ -301,6 +316,8 @@ export default function PnL() {
                 label="Прочие доходы"
                 accentClass="bg-slate-50 text-slate-600"
                 valueClass="text-emerald-600"
+                expanded={expanded} onToggle={toggle} months={months} reversedMonths={reversedMonths}
+                catsForSection={catsForSection} sumByCategory={sumByCategory} sumBySection={sumBySection}
               />
 
               {/* ── 5. Прочие расходы ────────────────────────── */}
@@ -309,6 +326,8 @@ export default function PnL() {
                 label="Прочие расходы"
                 accentClass="bg-slate-50 text-slate-600"
                 valueClass="text-red-500"
+                expanded={expanded} onToggle={toggle} months={months} reversedMonths={reversedMonths}
+                catsForSection={catsForSection} sumByCategory={sumByCategory} sumBySection={sumBySection}
               />
 
               {/* ── Чистая прибыль ───────────────────────────── */}

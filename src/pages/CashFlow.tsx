@@ -29,12 +29,18 @@ const KIND_COLORS: Record<CategoryKind, { inc: string; exp: string; net: string;
   3: { inc: '#a78bfa', exp: '#f472b6', net: '#64748b', bg: 'bg-violet-50/50 text-violet-800', text: 'text-violet-700' },
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+interface ChartTooltipProps {
+  active?: boolean
+  payload?: { name: string; value: number; color: string }[]
+  label?: string
+}
+
+const CustomTooltip = ({ active, payload, label }: ChartTooltipProps) => {
   if (!active || !payload?.length) return null
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
       <p className="font-semibold text-slate-700 mb-1">{label}</p>
-      {payload.map((p: any) => (
+      {payload.map(p => (
         <p key={p.name} style={{ color: p.color }} className="flex justify-between gap-6">
           <span>{p.name}:</span>
           <span className="font-medium">{formatCurrency(p.value)}</span>
