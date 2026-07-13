@@ -1,7 +1,13 @@
 # BASE-001 — Зафиксировать исходный commit и заморозить функциональные изменения
 
 ## Итоговый статус
-READY_FOR_REVIEW
+DONE
+
+## Independent review
+- Result: PASS
+- Reviewed head: `9587a71e0e4a45ddbe6df08cf74a059bc5560a98`
+- Review date: 2026-07-13
+- Scope: независимая проверка фактического diff, документов, критериев приёмки и отсутствия изменений функционального кода.
 
 ## Branch / commit
 - branch: `remediation/BASE-001-baseline`
