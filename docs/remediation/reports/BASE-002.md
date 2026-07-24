@@ -1,19 +1,34 @@
 # BASE-002 — Создать отдельное staging Firebase-окружение
 
 ## Итоговый статус
-READY_FOR_REVIEW
+READY_FOR_REVIEW (после исправления замечаний независимого ревью — см. «Часть 3»)
 
-Реализация выполнена (см. «Часть 2» ниже). `[ ]` в `REMEDIATION_PLAN.md`
-**не менялся** — по протоколу `CLAUDE.md` это разрешено только после
-`REVIEW_RESULT: PASS`.
+`[ ]` в `REMEDIATION_PLAN.md` **не менялся** — по протоколу `CLAUDE.md` это
+разрешено только после `REVIEW_RESULT: PASS`.
 
-Единственный содержательный пробел — реальные Firebase Web SDK config
-значения для `finapp-staging-web` (apiKey/authDomain/storageBucket/
-messagingSenderId/appId) не были предоставлены владельцем (в OWNER_INPUT
-задачи они остались как незаполненные плейсхолдеры). Это не дефект
-реализации: код и guard-скрипт корректно и предсказуемо отказывают в этой
-ситуации, что и является частью требуемого поведения. См.
-`OWNER_ACTION_REQUIRED` в конце файла.
+Первый раунд независимого ревью вернул `CHANGES REQUIRED / BLOCKED` по
+шести замечаниям (недостаточная проверка Auth-изоляции, несовместимость
+`--experimental-strip-types` с Node 20, плавающая версия `firebase-tools`,
+неточные формулировки в отчёте, отсутствие явного статуса по Cloud
+Functions, требование воспроизводимых проверок). Все шесть исправлены —
+подробности, diff и фактический вывод команд в «Часть 3» ниже. Читать
+«Часть 2» нужно **вместе** с «Часть 3» — «Часть 2» описывает реализацию
+до исправлений и в одном месте (изоляция projectId) содержит переоценённое
+утверждение, явно скорректированное в «Часть 3».
+
+Открытые пробелы, требующие действия владельца, остаются (без изменений по
+существу, только уточнена формулировка — см. `OWNER_ACTION_REQUIRED` в
+конце файла и сводную таблицу PASS/FAIL/BLOCKED в «Часть 3»):
+1. реальные Firebase Web SDK config значения для `finapp-staging-web`;
+2. значение `STAGING_FIREBASE_CONFIG_FINGERPRINT` (новое требование ревью —
+   SHA-256 fingerprint утверждённой staging-конфигурации);
+3. судьба случайно созданной Realtime Database в `finapp-staging`;
+4. решение по Blaze/billing и Cloud Functions (статус явно
+   `BLOCKED_OWNER_DECISION` — см. «Часть 3»).
+
+Пока (1) и (2) не получены, реальный `npm run build:staging` и
+end-to-end проверка Auth/Firestore остаются `BLOCKED` — это не дефект,
+а корректное, предсказуемое поведение guard-скрипта.
 
 ---
 
@@ -405,6 +420,14 @@ deny-all правил должен выполнить владелец отде�
 
 ## Cloud Functions — сознательно не создавались
 
+**Статус: `BLOCKED_OWNER_DECISION`.** Не отмечаю этот пункт выполненным —
+`REMEDIATION_PLAN.md` перечисляет Cloud Functions среди сервисов staging-
+окружения (действие 2), и решение по Blaze/billing принадлежит владельцу,
+не этой сессии (см. `CLAUDE.md`, раздел 5 — production/staging cloud-
+операции без явного разрешения запрещены). Ниже — обоснование, почему это
+не блокирует остальные критерии `BASE-002`, но сам пункт остаётся
+`BLOCKED_OWNER_DECISION`, а не выполненным.
+
 Задача явно разрешала не создавать scaffold, если он «создаёт
 несоразмерный diff или не нужен для критериев BASE-002» — этим и
 воспользовался. Обоснование:
@@ -548,15 +571,27 @@ preflight-отчёта (см. «Уточнение к Части 1»).
 
 ## Критерии готовности — сверка
 
+**ВАЖНО (исправлено в «Часть 3» по замечанию независимого ревью №1):**
+строка ниже — «staging build не может использовать production Auth/Firestore
+(доказано негативным тестом C)» — сформулирована **неточно** и оставлена
+здесь только для истории (не редактирую задним числом). Негативный тест C
+доказывал только несовпадение **projectId**. Он НЕ доказывал и не мог
+доказывать изоляцию Firebase **Authentication**, потому что `apiKey`
+идентифицирует Firebase-проект для Auth API независимо от `projectId`, и
+конфигурация с verified staging `projectId`, но `apiKey` от другого (в т.ч.
+production) проекта прошла бы этот тест. Корректная, раздельная
+Firestore/Auth сверка — в «Часть 3», раздел «Критерии готовности — сверка
+(обновлено)».
+
 - [x] staging project ID отличается от production (`finapp-staging` ≠ `finapp-prod-10a83`, зафиксировано в `.firebaserc` и `firebaseEnv.ts`)
-- [x] staging build не может использовать production Auth/Firestore (доказано негативным тестом C)
+- [x] ~~staging build не может использовать production Auth/Firestore (доказано негативным тестом C)~~ — **см. исправление выше и «Часть 3»: доказан только projectId, не полная Auth-конфигурация**
 - [x] emulator development использует только `demo-finapp` (доказано реальным запуском Emulator Suite, раздел D)
 - [x] локальные env-файлы не отслеживаются Git (раздел A)
 - [x] реальные config values отсутствуют в Git и в этом отчёте (не предоставлялись владельцем; в отчёт не копировались)
 - [x] staging визуально отличается от production (баннер, подтверждено в собранном бандле)
 - [x] приложение не использует Realtime Database (раздел E)
 - [x] Firebase deploy не выполнялся (не запускалась ни разу команда `firebase deploy`)
-- [x] Cloud Functions deploy не выполнялся (scaffold не создавался, deploy невозможен физически)
+- [ ] Cloud Functions — **см. «Часть 3»: статус `BLOCKED_OWNER_DECISION`, не отмечаю выполненным**
 - [x] обязательные проверки честно зафиксированы (включая найденную и исправленную проблему с production ID в бандле, и уточнение неверного вывода preflight по сети)
 
 ## Известные ограничения
@@ -586,15 +621,359 @@ preflight-отчёта (см. «Уточнение к Части 1»).
    Settings → General → Your apps → finapp-staging-web → SDK setup and
    configuration → Config. Вставить их в уже подготовленные закомментированные
    строки в `.env.staging.local` (локально, не в Git) и раскомментировать.
-2. **Решить судьбу случайно созданной Realtime Database** в
+2. **Вычислить и предоставить `STAGING_FIREBASE_CONFIG_FINGERPRINT`**
+   (новое, добавлено по замечанию №1 независимого ревью) — после получения
+   (1), вычислить SHA-256 fingerprint утверждённого staging Web SDK config:
+   ```bash
+   node -e "
+   import('./scripts/lib/firebaseConfigFingerprint.mjs').then(({computeFirebaseConfigFingerprint}) => {
+     console.log(computeFirebaseConfigFingerprint({
+       apiKey: '<реальный apiKey finapp-staging-web>',
+       authDomain: '<реальный authDomain>',
+       projectId: 'finapp-staging',
+       storageBucket: '<реальный storageBucket>',
+       messagingSenderId: '<реальный messagingSenderId>',
+       appId: '<реальный appId>',
+     }))
+   })
+   "
+   ```
+   Полученное 64-символьное hex-значение сохранить:
+   - локально — как `STAGING_FIREBASE_CONFIG_FINGERPRINT=<значение>` в
+     `.env.staging.local` (без префикса `VITE_`, не в Git);
+   - в CI — как GitHub Secret с тем же именем, без префикса `VITE_`, в
+     отдельном шаге `env:` (не как build-arg `VITE_*`).
+   Без этого значения `npm run build:staging` завершается `BLOCKED`
+   (проверено — см. «Часть 3»).
+3. **Решить судьбу случайно созданной Realtime Database** в
    `finapp-staging` — удалить через Firebase Console, либо явно
    подтвердить и настроить её собственные deny-all правила, если удаление
    почему-то нежелательно. Приложение её не использует и не будет
    использовать без отдельного решения.
-3. **Решение по Blaze/billing и Cloud Functions** — до этого решения
-   Cloud Functions scaffold сознательно не создавался; когда решение будет
-   принято, потребуется отдельная задача (вне `BASE-002`).
-4. После получения (1) — подтвердить и, если нужно, инициировать
+4. **Решение по Blaze/billing и Cloud Functions** (`BLOCKED_OWNER_DECISION`)
+   — до этого решения Cloud Functions scaffold сознательно не создавался;
+   когда решение будет принято, потребуется отдельная задача (вне
+   `BASE-002`, вероятно `SEC-003`).
+5. После получения (1) и (2) — подтвердить и, если нужно, инициировать
    независимое ревью реального `npm run build:staging` против настоящего
-   staging-проекта (эта сессия проверила логику только на тестовых
-   фиктивных значениях).
+   staging-проекта (эта сессия проверила логику только на синтетических
+   тестовых значениях, включая полный fingerprint-механизм — см. «Часть 3»).
+
+---
+
+# Часть 3 — Исправления по независимому ревью (CHANGES REQUIRED / BLOCKED)
+
+## Branch / commit
+
+- branch: `remediation/BASE-002-staging` (та же ветка, новый коммит поверх `bc1e589`)
+- base SHA (эта итерация): `bc1e589` (последний коммит «Часть 2»)
+- result SHA: см. `git rev-parse HEAD` на ветке после коммита этого исправления
+  (та же самоссылочная оговорка, что и в «Часть 1»/«Часть 2» — итоговый SHA
+  не встраивается в файл, который этот же коммит добавляет)
+
+## Соответствие ветки/PR инструкции
+
+Работа продолжена **в существующей ветке** `remediation/BASE-002-staging` и
+**в существующем Draft PR №2** — новая ветка и новый PR не создавались,
+`git branch --show-current` подтверждён равным `remediation/BASE-002-staging`
+перед началом работы. `BASE-003` не начиналась. PR не мёржился.
+
+## Сводка замечаний ревью и что изменено
+
+### Замечание №1 (КРИТИЧЕСКОЕ) — проверка только projectId не гарантирует изоляцию Auth
+
+**Признано корректным без оговорок.** Прежняя реализация (`resolveFirebaseEnv`)
+проверяла только `VITE_FIREBASE_PROJECT_ID` — конфигурация с верным staging
+`projectId`, но `apiKey` от другого (в т.ч. production) проекта, прошла бы
+эту проверку. Формулировки в «Часть 2», утверждавшие «staging build не может
+использовать production Auth», были **переоценкой** — это исправлено явной
+пометкой в тексте «Часть 2» (не переписывался задним числом, только помечен)
+и корректной сводкой ниже.
+
+**Что сделано:**
+
+- Добавлен `scripts/lib/firebaseConfigFingerprint.mjs` — Node-only модуль
+  (`node:crypto`, не импортируется из `src/`, никогда не бандлится),
+  вычисляющий SHA-256 hex-дайджест детерминированной нормализованной строки
+  из **всех шести** полей конфигурации (`apiKey`, `authDomain`, `projectId`,
+  `storageBucket`, `messagingSenderId`, `appId`) в фиксированном порядке.
+- Добавлен `scripts/lib/stagingPreflight.mjs` — чистая функция
+  `runStagingPreflight(source)`, объединяющая структурную проверку
+  (`resolveFirebaseEnv`, projectId/обязательные поля) и fingerprint-проверку.
+  Используется и реальным CLI (`scripts/verify-staging-env.mjs`), и
+  воспроизводимым self-test (`scripts/test-staging-preflight.mjs`) — один
+  источник правды для обоих.
+- Ожидаемый fingerprint читается из переменной **`STAGING_FIREBASE_CONFIG_FINGERPRINT`**
+  — без префикса `VITE_` (требование ревью соблюдено буквально), поэтому
+  Vite физически не может включить её в `import.meta.env`/клиентский бандл
+  (Vite экспонирует клиенту только `VITE_*`-переменные — это встроенное
+  поведение Vite, не полагающееся на дисциплину разработчика). Источник —
+  `.env.staging.local` (локально, вне Git) либо `process.env` напрямую
+  (для GitHub Secret в CI).
+- **Отсутствие** `STAGING_FIREBASE_CONFIG_FINGERPRINT` → `runStagingPreflight`
+  возвращает `{ ok: false, blocked: true, reason: ... }` — CLI-скрипт
+  завершается кодом `1` с текстом, явно содержащим слово «BLOCKED».
+- **Несовпадение** вычисленного и ожидаемого fingerprint → `{ ok: false }`
+  (не `blocked`, т.к. это не отсутствие данных, а прямое несоответствие) —
+  тоже `FAIL`, сообщение не называет реальные значения полей.
+- Ни один реальный секрет не коммитится: fingerprint — однонаправленный
+  SHA-256 (необратим), но даже он не хранится в Git — только имя переменной
+  окружения в `.env.example` (закомментированная строка-плейсхолдер).
+
+**Воспроизводимые проверки (требование ревью — все выполнены):**
+
+1. Программный self-test `scripts/test-staging-preflight.mjs` — 5 сценариев
+   ровно по списку ревью, вызывает `runStagingPreflight()` напрямую с
+   синтетическими (вымышленными) конфигурациями, без файлов/сети/реальных
+   секретов. Добавлен как `npm run test:staging-preflight`.
+2. Дополнительно каждый сценарий воспроизведён **end-to-end через реальный
+   CLI-вход** `node scripts/verify-staging-env.mjs` с синтетическими
+   значениями через переменные окружения — фактический вывод ниже (раздел
+   «Фактический вывод команд»).
+
+### Замечание №2 — несовместимость с Node.js (`--experimental-strip-types`)
+
+**Исправлено.** `--experimental-strip-types` (Node ≥22.6) полностью удалён.
+Логика вынесена из TypeScript в обычный JavaScript:
+
+- `src/lib/firebaseEnvCore.mjs` — вся прежняя логика `firebaseEnv.ts`
+  (structural validation, projectId allowlist) перенесена сюда как plain JS
+  (без TS-синтаксиса). Импортируется и клиентским кодом (через тонкую
+  TS-обёртку), и Node-скриптами в `scripts/` напрямую — без какого-либо
+  TS-loader'а.
+- `src/lib/firebaseEnvCore.d.mts` — типы для `.mjs`-модуля (стандартное
+  соглашение TypeScript: `.mjs` + соседний `.d.mts`).
+- `src/lib/firebaseEnv.ts` — теперь только тонкий типизированный
+  re-export из `./firebaseEnvCore.mjs` (не содержит логики).
+- `scripts/verify-staging-env.mjs`, `scripts/lib/stagingPreflight.mjs`,
+  `scripts/lib/firebaseConfigFingerprint.mjs`, `scripts/test-staging-preflight.mjs`
+  — все обычный JavaScript (`.mjs`), не требуют флагов Node.
+- `package.json`: `"build:staging": "node scripts/verify-staging-env.mjs && tsc -b && vite build --mode staging"`
+  — без `--experimental-strip-types`.
+- Node-версия GitHub workflow (`deploy.yml`) **не менялась** — как и
+  требовало замечание («её фиксация относится к `BASE-006`»); подтверждено
+  `git diff` не затрагивает `.github/workflows/`.
+- Проверено: `npx tsc -b --pretty false` резолвит типы `.mjs` через
+  `.d.mts` без ошибок (см. «Фактический вывод команд»); эта версия Node в
+  контейнере (`v22.22.2`) технически поддерживала бы
+  `--experimental-strip-types`, но сам факт того, что flag больше нигде не
+  используется, подтверждён `grep -r "experimental-strip-types"` → 0
+  вхождений в отслеживаемых файлах.
+
+### Замечание №3 — закрепить Firebase CLI
+
+**Исправлено.** `firebase-tools` добавлен в `devDependencies` с точной
+(без caret/tilde) версией `15.24.0` (`engines.node: >=20.0.0 || >=22.0.0 ||
+>=24.0.0` — совместимо с Node 20 в CI). `package-lock.json` обновлён через
+`npm install --save-dev --save-exact firebase-tools@15.24.0` (не
+редактировался вручную). `package.json`:
+`"firebase:emulators": "firebase emulators:start --project demo-finapp"`
+— без `npx --yes`; npm-скрипты автоматически добавляют `node_modules/.bin`
+в `PATH`, поэтому `firebase` резолвится в локальный закреплённый бинарник.
+Проверено: `npx --no-install firebase --version` → `15.24.0` (флаг
+`--no-install` запрещает npx скачивать что-либо — резолвится только то, что
+уже установлено локально); `which firebase` на хосте не находит глобального
+бинарника — используется исключительно закреплённая devDependency.
+
+### Замечание №4 — статус и утверждения в отчёте
+
+**Исправлено:**
+
+- Верхний блок «Итоговый статус» переписан — явно указывает, что первый
+  раунд ревью вернул `CHANGES REQUIRED / BLOCKED`, перечисляет все шесть
+  замечаний и текущие открытые пробелы.
+- В «Часть 2» строка «staging build не может использовать production
+  Auth/Firestore (доказано негативным тестом C)» помечена как переоценённая
+  (не отредактирована задним числом — оставлена видимой с перечёркиванием
+  и пояснением) в разделах «Критерии готовности — сверка».
+- Ниже — обновлённая, раздельная Firestore/Auth сверка критериев (см.
+  «Критерии готовности — сверка (обновлено)»).
+- Реальный `npm run build:staging` и Auth/Firestore end-to-end по-прежнему
+  явно `BLOCKED` — не заявляю обратного нигде в отчёте.
+- Cloud Functions — статус `BLOCKED_OWNER_DECISION` (см. замечание №5 ниже
+  и правку в разделе «Cloud Functions — сознательно не создавались»).
+
+### Замечание №5 — Cloud Functions
+
+**Не создавались и не разворачивались** — как и до этого раунда ревью
+(факт не изменился), но теперь статус явно зафиксирован как
+`BLOCKED_OWNER_DECISION` в заголовке соответствующего раздела «Часть 2» и в
+таблице критериев ниже, а не подразумевался как «выполнено, потому что не
+требуется». Решение по Blaze/billing остаётся за владельцем; отдельная
+задача (вероятно, часть `SEC-003`) потребуется после этого решения.
+
+### Замечание №6 — повторные проверки
+
+Выполнены все перечисленные проверки — фактический вывод см. ниже.
+
+## Критерии готовности — сверка (обновлено)
+
+Раздельно, как и требует замечание №4:
+
+| Критерий | Статус | Обоснование |
+|---|---|---|
+| staging/production — разные project ID | **PASS** | `finapp-staging` ≠ `finapp-prod-10a83`, `.firebaserc` + строгий allowlist в `firebaseEnvCore.mjs` |
+| staging Firestore изолирован от production | **PASS** (доказано) | Разные `projectId` + структурная проверка `resolveFirebaseEnv`; Firestore SDK использует `projectId` напрямую для маршрутизации — этого достаточно для Firestore |
+| staging Firebase Authentication изолирован от production | **PASS (структурно), реальный E2E — BLOCKED** | SHA-256 fingerprint всех 6 полей конфигурации (включая `apiKey`, используемый Auth API) проверяется и доказан на синтетических данных (5/5 сценариев); реальная проверка против настоящего `finapp-staging-web` API key невозможна, пока владелец не предоставил (1) реальные SDK-значения и (2) `STAGING_FIREBASE_CONFIG_FINGERPRINT` |
+| emulator development использует только `demo-finapp` | **PASS** | Реальный запуск Emulator Suite, раздел D «Часть 2» (без изменений в этом раунде) |
+| локальные env-файлы не отслеживаются Git | **PASS** | `git ls-files '.env*'` → только `.env.example` |
+| секреты (реальные config values, fingerprint) отсутствуют в Git | **PASS** | Скан diff/staged на `AIzaSy...`, `private_key`, `BEGIN...KEY`, `client_secret`, `service account` → ничего в реальном коде/конфигах (единственное совпадение — сам этот отчёт, цитирующий шаблон скана как документацию; при скане с исключением `docs/remediation/reports/BASE-002.md` — 0 совпадений); `.env.example` содержит только имя переменной без значения |
+| staging визуально отличается от production | **PASS** | Баннер, без изменений в этом раунде |
+| приложение не использует Realtime Database | **PASS** | Без изменений в этом раунде |
+| Firebase deploy | **PASS (не выполнялся)** | Ни разу не запускалась команда `firebase deploy` |
+| Node.js совместимость preflight-скрипта | **PASS** | `--experimental-strip-types` удалён; все `scripts/**/*.mjs` — обычный JS, работают на Node ≥20 |
+| Firebase CLI закреплён | **PASS** | `firebase-tools@15.24.0` (точная версия) в `devDependencies`, `package-lock.json` обновлён |
+| Cloud Functions | **BLOCKED_OWNER_DECISION** | Требует решения владельца по Blaze/billing; scaffold сознательно не создавался |
+| Реальный `npm run build:staging` против настоящего staging-проекта | **BLOCKED** | Ждёт (1) реальных SDK-значений и (2) `STAGING_FIREBASE_CONFIG_FINGERPRINT` от владельца |
+| Реальная сквозная проверка Auth/Firestore staging | **BLOCKED** | Та же причина |
+
+## Фактический вывод команд (эта итерация)
+
+### Обязательные проверки
+
+```text
+$ npm ci
+added 601 packages, and audited 913 packages in ~28s
+14 vulnerabilities (1 low, 10 moderate, 3 high) — npm audit fix доступен,
+не в scope BASE-002 (см. IMP-002 по xlsx отдельно; рост числа уязвимостей —
+целиком за счёт транзитивных зависимостей firebase-tools, ожидаемо для
+такого CLI-пакета)
+
+$ npm run lint
+> eslint .
+(без вывода — 0 ошибок)
+
+$ npx tsc -b --pretty false
+(без вывода — типы .mjs через .d.mts резолвятся корректно)
+
+$ npm run build
+> tsc -b && vite build
+✓ 2370 modules transformed
+dist/assets/index-*.js  1,882.68 kB │ gzip: 541.75 kB
+✓ built in ~1.2s
+
+$ grep -rc "finapp-prod-10a83" dist/assets/*.js   → 0
+$ grep -rc "STAGING_FIREBASE_CONFIG_FINGERPRINT" dist/assets/*.js   → 0
+(dist/ удалён после проверки — не коммитится, покрыт .gitignore)
+
+$ git diff --check origin/remediation/main..HEAD -- .
+(exit 0 — без конфликтов пробелов/окончаний строк)
+
+$ git ls-files '.env*'
+.env.example
+
+$ git diff --cached | grep -E "AIzaSy[A-Za-z0-9_-]{25,}"
+none found
+
+$ git diff --cached | grep -iE "private_key|BEGIN (RSA|PRIVATE) KEY|client_secret|service.?account"
+(1 совпадение — но это сам текст этого отчёта, цитирующий шаблон скана как
+документацию, не секрет; после исключения самого файла отчёта:)
+$ git diff --cached -- . ':!docs/remediation/reports/BASE-002.md' | grep -iE "private_key|BEGIN (RSA|PRIVATE) KEY|client_secret|service.?account"
+none found in actual code/config changes
+```
+
+### Воспроизводимые preflight-сценарии (замечание №1)
+
+```text
+$ npm run test:staging-preflight
+✓ PASS — Валидная синтетическая конфигурация + совпадающий fingerprint
+✓ PASS — staging projectId, но несовпадающий API key (fingerprint не совпадёт)
+✓ PASS — Отсутствующий ожидаемый fingerprint (переменная не задана)
+✓ PASS — production projectId вместо staging
+✓ PASS — Отсутствующее обязательное поле (VITE_FIREBASE_APP_ID)
+
+✓ Все 5 сценариев staging-preflight прошли как ожидалось.
+```
+
+То же самое, независимо, через реальный CLI-вход (`scripts/verify-staging-env.mjs`),
+с синтетическими значениями через переменные окружения (ни один файл не менялся):
+
+```text
+# Позитивный сценарий (валидная синтетическая конфигурация + совпадающий fingerprint)
+$ VITE_APP_ENV=staging VITE_FIREBASE_API_KEY=test-fixture-... \
+  ... STAGING_FIREBASE_CONFIG_FINGERPRINT=<64-hex> node scripts/verify-staging-env.mjs
+✓ build:staging preflight OK — VITE_APP_ENV=staging, projectId=finapp-staging,
+  все обязательные переменные заданы, SHA-256 fingerprint конфигурации
+  совпадает с ожидаемым staging-набором
+exit: 0
+
+# Негативный: отсутствует STAGING_FIREBASE_CONFIG_FINGERPRINT
+✖ build:staging preflight FAILED — BLOCKED
+  Переменная окружения STAGING_FIREBASE_CONFIG_FINGERPRINT не задана — ...
+exit: 1
+
+# Негативный: staging projectId верный, но apiKey от другого проекта → fingerprint mismatch
+✖ build:staging preflight FAILED
+  SHA-256 fingerprint конфигурации Firebase Web SDK ... не совпадает
+  с ожидаемым staging-fingerprint. ... apiKey может принадлежать другому
+  проекту, включая production, даже если projectId указан верно.
+exit: 1
+
+# Негативный: production projectId
+✖ build:staging preflight FAILED
+  Firebase config: staging-окружение (VITE_APP_ENV=staging) допускает
+  только projectId="finapp-staging" — обнаружен другой projectId
+exit: 1
+
+# Негативный: отсутствует обязательное поле VITE_FIREBASE_APP_ID
+✖ build:staging preflight FAILED
+  Firebase config: отсутствуют обязательные переменные окружения: VITE_FIREBASE_APP_ID
+exit: 1
+```
+
+Ни одно из этих значений (fingerprint, тестовый apiKey) не является
+реальным секретом — все синтетические, использовались только внутри
+командной строки этой сессии, не сохранялись в файлы и не коммитились.
+
+### Firebase CLI
+
+```text
+$ npx --no-install firebase --version
+15.24.0
+
+$ which firebase
+(пусто — нет глобального бинарника, используется только локальная devDependency)
+```
+
+## Diff summary (эта итерация, `bc1e589` → HEAD)
+
+```text
+ .env.example                              |    27 +
+ package-lock.json                         | 12250 +++++++++++++++++++++++-----
+ package.json                              |     6 +-
+ scripts/lib/firebaseConfigFingerprint.mjs |    53 +
+ scripts/lib/stagingPreflight.mjs          |    90 +
+ scripts/test-staging-preflight.mjs        |   116 +
+ scripts/verify-staging-env.mjs            |    63 +-
+ src/lib/firebaseEnv.ts                    |   147 +-
+ src/lib/firebaseEnvCore.d.mts             |    45 +
+ src/lib/firebaseEnvCore.mjs               |   131 +
+ 10 files changed, 10537 insertions(+), 2391 deletions(-)
+```
+
+Рост `package-lock.json` целиком объясняется транзитивным деревом
+зависимостей `firebase-tools` (замечание №3) — это единственная причина
+такого большого diff в этом файле; сам пакет не редактировался вручную.
+
+## Известные ограничения (обновлено)
+
+Все ограничения из «Часть 2» остаются в силе (Realtime Database, HMR
+только по коду, production Firestore Rules не получены — `BASE-004`).
+Дополнительно к ним:
+
+- Fingerprint-механизм проверен только на синтетических данных — реальная
+  проверка против настоящего `finapp-staging-web` API key требует (1) и (2)
+  от владельца (см. `OWNER_ACTION_REQUIRED`).
+- `npm audit` теперь показывает 14 уязвимостей (было 7) — рост целиком за
+  счёт добавления `firebase-tools` как devDependency (замечание №3, прямое
+  требование ревью); не в scope `BASE-002` по существу проблемы (dev-only
+  зависимость, не попадает в клиентский bundle), но зафиксировано честно.
+- Self-test (`test:staging-preflight`) — не часть общей тестовой
+  инфраструктуры проекта (`Vitest`/`TEST-001` ещё не выполнена) — отдельный
+  Node-скрипт с ручными assert'ами, сделан целенаправленно узким для этого
+  замечания ревью, не претендует на замену будущей `TEST-001`.
+
+## Следующий разрешённый пункт
+
+Сама `BASE-002` — по-прежнему требует независимого ревью этого раунда
+исправлений. **Не начинаю `BASE-003`.**

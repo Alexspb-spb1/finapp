@@ -3,20 +3,23 @@
 //
 // Читает .env / .env.staging / .env.staging.local (в порядке возрастания
 // приоритета — так же, как это делает Vite для `--mode staging`), затем
-// process.env поверх файлов (чтобы можно было изолированно проверять
-// негативные сценарии через `VAR=value npm run build:staging`, не трогая
-// сами файлы).
+// process.env поверх (VITE_*-переменные и FINGERPRINT_ENV_VAR — чтобы можно
+// было изолированно проверять негативные сценарии и передавать GitHub
+// Secret в CI, не трогая сами файлы).
 //
-// Переиспользует resolveFirebaseEnv из src/lib/firebaseEnv.ts — тот же
-// код, что реально работает в приложении, а не отдельно продублированная
-// копия правил.
+// Вся содержательная логика — в scripts/lib/stagingPreflight.mjs (чистая
+// функция, переиспользуется также в scripts/test-staging-preflight.mjs).
+// Этот файл — только чтение файлов/process.env, вызов проверки и
+// process.exit. Обычный JavaScript (не TypeScript) без каких-либо
+// экспериментальных Node-флагов — совместим с Node 20 (текущий CI) и выше.
 //
-// Никогда не печатает значения переменных — только их имена и причины отказа.
-// При любой ошибке завершается ненулевым кодом ДО запуска tsc/vite build.
+// Никогда не печатает значения переменных или fingerprint — только имена
+// переменных и причины отказа.
 
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { runStagingPreflight, FINGERPRINT_ENV_VAR } from './lib/stagingPreflight.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
@@ -47,41 +50,29 @@ const merged = {
   ...parseEnvFile(path.join(repoRoot, '.env.staging.local')),
 }
 
-// process.env поверх файлов — только для явно переданных VITE_*/… значений,
-// чтобы можно было точечно переопределить одну переменную при негативном тесте
-// (`VITE_FIREBASE_PROJECT_ID=finapp-prod-10a83 npm run build:staging`),
-// не трогая сами .env-файлы.
+// process.env поверх файлов — только для явно переданных VITE_*-значений
+// (точечное переопределение при негативном тесте, не трогая файлы) и для
+// FINGERPRINT_ENV_VAR отдельно (основной канал для GitHub Secret в CI —
+// секрет staging-fingerprint не должен обязательно жить в файле).
 for (const [key, value] of Object.entries(process.env)) {
   if (key.startsWith('VITE_') && value !== undefined) {
     merged[key] = value
   }
 }
+if (process.env[FINGERPRINT_ENV_VAR] !== undefined) {
+  merged[FINGERPRINT_ENV_VAR] = process.env[FINGERPRINT_ENV_VAR]
+}
 
-function fail(reason) {
-  console.error('✖ build:staging preflight FAILED')
-  console.error(`  ${reason}`)
-  console.error('  (значения переменных в этом сообщении не выводятся — см. .env.staging.local вручную)')
+const result = runStagingPreflight(merged)
+
+if (!result.ok) {
+  console.error(`✖ build:staging preflight FAILED${result.blocked ? ' — BLOCKED' : ''}`)
+  console.error(`  ${result.reason}`)
+  console.error('  (значения переменных и fingerprint в этом сообщении не выводятся)')
   process.exit(1)
 }
 
-if (merged.VITE_APP_ENV !== 'staging') {
-  fail(`VITE_APP_ENV должен быть точно "staging" (проверьте .env.staging.local); текущий VITE_APP_ENV ${merged.VITE_APP_ENV === undefined ? 'не задан' : 'задан, но не равен "staging"'}`)
-}
-
-if (merged.VITE_FIREBASE_PROJECT_ID === 'finapp-prod-10a83') {
-  fail('VITE_FIREBASE_PROJECT_ID равен production project ID (finapp-prod-10a83) — staging build не может использовать production Firebase project')
-}
-
-if (merged.VITE_FIREBASE_PROJECT_ID !== 'finapp-staging') {
-  fail(`VITE_FIREBASE_PROJECT_ID должен быть точно "finapp-staging"; ${merged.VITE_FIREBASE_PROJECT_ID === undefined ? 'переменная не задана' : 'задано другое значение'}`)
-}
-
-try {
-  // Единый источник правды с рантаймом приложения (src/lib/firebase.ts).
-  const { resolveFirebaseEnv } = await import(path.join(repoRoot, 'src/lib/firebaseEnv.ts'))
-  resolveFirebaseEnv(merged)
-} catch (err) {
-  fail(err instanceof Error ? err.message : String(err))
-}
-
-console.log('✓ build:staging preflight OK — VITE_APP_ENV=staging, projectId=finapp-staging, все обязательные переменные заданы')
+console.log(
+  '✓ build:staging preflight OK — VITE_APP_ENV=staging, projectId=finapp-staging, ' +
+  'все обязательные переменные заданы, SHA-256 fingerprint конфигурации совпадает с ожидаемым staging-набором'
+)
