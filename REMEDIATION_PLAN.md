@@ -128,7 +128,7 @@ docs/remediation/BASELINE.md
 
 ---
 
-## [ ] BASE-002 — Создать отдельное staging Firebase-окружение
+## [x] BASE-002 — Создать отдельное staging Firebase-окружение
 
 **Ветка:** `remediation/BASE-002-staging`
 

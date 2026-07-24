@@ -1,11 +1,17 @@
 # BASE-002 — Создать отдельное staging Firebase-окружение
 
 ## Итоговый статус
-READY_FOR_FINAL_REVIEW (см. «Часть 5» — реальная staging-проверка выполнена и подтверждена)
 
-`[ ]` в `REMEDIATION_PLAN.md` **не менялся** — по протоколу `CLAUDE.md` это
-разрешено только после `REVIEW_RESULT: PASS`. Владелец не ставит `[x]`
-самостоятельно по этому отчёту — требуется отдельное `REVIEW_RESULT: PASS`.
+```text
+REVIEW_RESULT: PASS
+TASK_ID: BASE-002
+FINAL_STATUS: ACCEPTED
+```
+
+Независимое финальное ревью получено и принято. `[x]` в
+`REMEDIATION_PLAN.md` проставлен по протоколу `CLAUDE.md` (раздел 11,
+«При `PASS`») — только после этого явного `REVIEW_RESULT: PASS`, не
+раньше. Полный протокол финальной реальной проверки — «Часть 5» ниже.
 
 **История ревью:**
 - Раунд 1 → `CHANGES REQUIRED / BLOCKED` (6 замечаний по коду) — исправлено, см. «Часть 3».
@@ -1634,3 +1640,60 @@ providers не включались, Blaze не подключался, Realtime
 Сама `BASE-002` — статус `READY_FOR_FINAL_REVIEW`. Ожидает
 `REVIEW_RESULT: PASS` от независимого ревьюера, прежде чем `[x]` может
 быть проставлен в `REMEDIATION_PLAN.md`. **Не начинаю `BASE-003`.**
+
+---
+
+# Часть 6 — Закрытие после независимого финального ревью
+
+```text
+REVIEW_RESULT: PASS
+TASK_ID: BASE-002
+FINAL_STATUS: ACCEPTED
+```
+
+## Что сделано в этом, финальном, шаге
+
+1. `REMEDIATION_PLAN.md`: `## [ ] BASE-002 ...` → `## [x] BASE-002 ...` —
+   изменена ровно одна строка, ничего больше в файле не тронуто.
+2. Этот отчёт (`docs/remediation/reports/BASE-002.md`) дополнен блоком
+   `REVIEW_RESULT: PASS / TASK_ID: BASE-002 / FINAL_STATUS: ACCEPTED`
+   (см. «Итоговый статус» в начале файла и здесь).
+3. Код, зависимости, `package.json`/`package-lock.json`, Firebase-конфигурация
+   (`.firebaserc`, `firebase.json`, `firestore.rules`, `firestore.indexes.json`,
+   `src/lib/firebaseEnv*`, `scripts/**`) — **не изменялись**.
+4. `.env.staging.local`, production Firebase, Firestore Rules, Realtime
+   Database, второе веб-приложение — **не затрагивались**.
+5. Cloud Functions — статус остаётся **`DEFERRED_TO_SEC-003_BY_OWNER`**,
+   без изменений.
+6. `BASE-003` — не начиналась.
+
+## Обязательные проверки этого шага
+
+```text
+$ git diff --check
+(exit 0 — чисто)
+
+$ git status --short
+ M REMEDIATION_PLAN.md
+ M docs/remediation/reports/BASE-002.md
+```
+
+Оба файла — ожидаемые изменения этого шага (чек-бокс плана + сам отчёт),
+других изменений нет.
+
+## Diff summary (этот коммит)
+
+```text
+ REMEDIATION_PLAN.md                  |  2 +-
+ docs/remediation/reports/BASE-002.md | (добавлен блок REVIEW_RESULT + «Часть 6»)
+```
+
+## PR
+
+- PR №2 переведён из Draft в Ready for review (после push этого коммита).
+- PR не объединялся.
+
+## Следующий разрешённый пункт
+
+`BASE-003` — по `REMEDIATION_PLAN.md`, следующий невыполненный пункт после
+`BASE-002`. **Не начинаю.**
