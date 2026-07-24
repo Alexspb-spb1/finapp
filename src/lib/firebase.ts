@@ -1,19 +1,32 @@
 import { initializeApp } from 'firebase/app'
-import { getAuth } from 'firebase/auth'
-import { initializeFirestore } from 'firebase/firestore'
+import { getAuth, connectAuthEmulator } from 'firebase/auth'
+import { initializeFirestore, connectFirestoreEmulator } from 'firebase/firestore'
+import { resolveFirebaseEnv } from './firebaseEnv'
 
-const firebaseConfig = {
-  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
-}
+// Бросает понятную ошибку (без значений переменных) при отсутствующей
+// обязательной конфигурации или недопустимой комбинации
+// VITE_APP_ENV / VITE_USE_FIREBASE_EMULATORS / VITE_FIREBASE_PROJECT_ID.
+// См. src/lib/firebaseEnv.ts.
+const resolved = resolveFirebaseEnv(import.meta.env)
 
-const app = initializeApp(firebaseConfig)
+const app = initializeApp(resolved.config)
 export const auth = getAuth(app)
 // ignoreUndefinedProperties: операции содержат необязательные поля (relatedDate,
 // toAmount, exchangeRate) со значением undefined. Без этого флага setDoc отклоняет
 // запись целиком, и синхронизация с облаком молча падает (БАГ №7 — целостность).
 export const db   = initializeFirestore(app, { ignoreUndefinedProperties: true })
+
+// Подключение к Emulator Suite — только при VITE_USE_FIREBASE_EMULATORS=true,
+// и только один раз. Флаг живёт на globalThis (а не в модульной переменной),
+// потому что Vite HMR может заново выполнить тело этого модуля при его
+// изменении в dev-режиме, а connectAuthEmulator/connectFirestoreEmulator
+// нельзя безопасно вызывать повторно на уже использованных auth/db.
+declare global {
+  var __FINAPP_EMULATORS_CONNECTED__: boolean | undefined
+}
+
+if (resolved.useEmulators && !globalThis.__FINAPP_EMULATORS_CONNECTED__) {
+  globalThis.__FINAPP_EMULATORS_CONNECTED__ = true
+  connectAuthEmulator(auth, `http://${resolved.authEmulatorHost}`, { disableWarnings: true })
+  connectFirestoreEmulator(db, resolved.firestoreEmulatorHost, resolved.firestoreEmulatorPort)
+}
