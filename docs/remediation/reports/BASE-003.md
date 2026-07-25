@@ -2,30 +2,29 @@
 
 ```text
 TASK_ID: BASE-003
-PHASE: ACCESS SETUP AND RESTORE PROJECT CREATION (после PRE-FLIGHT)
+PHASE: RESTORE TEST VERIFIED — remaining gaps documented
 ```
 
-## Итоговый статус (актуальный, после решения владельца)
+## Итоговый статус (актуальный)
 
-**`READY_FOR_BILLING_AND_STORAGE_DECISION`** — см. «Часть 4» ниже. Разделы
-«Часть 1»–«Часть 3» описывают предыдущие заблокированные раунды и
-оставлены без изменений, для истории.
+**`BASE_003_RESTORE_DOCUMENTED_REMAINING_GAPS_FOUND`** — см. «Часть 5»
+ниже. Все прежние блокеры (`BLOCKED_MULTIPLE`, `BLOCKED_PERMISSIONS`,
+`BLOCKED_RESTORE_TARGET_OWNER_DECISION`, `BLOCKED_AUTHENTICATION`) —
+**сняты**: Firestore managed export и managed import выполнены и
+объективно подтверждены (`operationState: SUCCESSFUL`, 14/14 документов с
+обеих сторон, counts до/после совпали — раздел 10 «Часть 5»).
 
-```text
-OWNER_DECISION: APPROVED
-RESTORE_TARGET_OPTION: A
-RESTORE_TARGET_TYPE: SEPARATE_TEMP_PROJECT
-```
+`BASE-003` при этом **ещё не завершена**: часть требований
+`REMEDIATION_PLAN.md` остаётся `NOT_VERIFIED` или
+`OWNER_APPROVAL_REQUIRED` (Firestore Rules, indexes, Auth export,
+production bundle, открытие тестовой компании, контрольные суммы
+остатков, lifecycle retention, полноценный production disaster recovery)
+— полная таблица со статусами и evidence приведена в «Часть 5», раздел 10.
+`REMEDIATION_PLAN.md` не изменялся — `[ ] BASE-003` не отмечена `[x]`.
 
-Владелец одобрил Вариант A (отдельный временный restore-проект) и
-подтвердил, что `finapp-staging` использовать/изменять нельзя. Прежний
-блокер `BLOCKED_RESTORE_TARGET_OWNER_DECISION` **снят** этим решением —
-цель восстановления определена. Однако создать сам проект не удалось: новый
-блокер `BLOCKED_AUTHENTICATION` (раздел «Часть 2», п. 3) — интерактивная
-OAuth-авторизация не может быть завершена в этой изолированной сессии.
-`BLOCKED_PERMISSIONS` из «Часть 1» частично снят (gcloud CLI теперь
-установлен), но фактический доступ по-прежнему отсутствует по новой,
-более точной причине — см. ниже.
+Разделы «Часть 1»–«Часть 4» ниже описывают историю предыдущих раундов
+(включая уже неактуальные промежуточные блокеры) и оставлены без
+изменений, для истории.
 
 ---
 
