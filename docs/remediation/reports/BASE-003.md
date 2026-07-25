@@ -1342,12 +1342,6 @@ progressDocuments: completedWork=14, estimatedWork=14
 - **Контрольные суммы операций и остатков** (раздел 6.3 дизайна манифеста,
   «Часть 1») — **не вычислялись**. Требует отдельного разрешения и
   отдельного дизайна (сериализация проекции без раскрытия сумм).
-- **Firestore Rules** — не считывались и не сохранялись в этом или
-  предыдущих раундах `BASE-003`.
-- **Firestore indexes** — ранее подтверждена только доступность API
-  (`firestore indexes composite list` не вернул ошибку прав), составных
-  индексов не найдено; содержимое `firestore.indexes.json` не сохранялось
-  как артефакт бэкапа.
 - **Firebase Auth export** — не выполнялся ни разу за весь `BASE-003`.
 - **Production bundle** — не пересобирался и не сохранялся как отдельный
   backup-артефакт в рамках `BASE-003` (существующая GitHub Pages
@@ -1360,14 +1354,18 @@ progressDocuments: completedWork=14, estimatedWork=14
   restore-проекта, а реального disaster recovery для самого
   `finapp-prod-10a83`) — не описан; runbook явно указывает, что это
   отдельная, более осторожная процедура.
+- **Анализ содержимого/безопасности Firestore Rules и классификация риска
+  A/B/C** — сознательно не выполнялись в этом раунде (см. «Часть 6» ниже:
+  Rules и indexes только сохранены как backup-артефакт, их текст не
+  анализировался). Это прямо остаётся задачей `BASE-004`.
 
 ## 10. Таблица требований `BASE-003` (`REMEDIATION_PLAN.md`) — честная сверка
 
 | Requirement | Evidence | Status | Remaining action |
 |---|---|---|---|
 | Экспортировать Firestore production | `gcloud firestore operations describe`: `operationState: SUCCESSFUL`, `progressDocuments: 14/14`, 3 collection groups, ненулевые output-файлы (раздел 4) | **DONE** | нет |
-| Сохранить опубликованные Firestore Rules | — | **NOT_VERIFIED** | отдельное разрешение на чтение и сохранение `firestore.rules` |
-| Сохранить Firestore indexes | Только доступность API подтверждена, содержимое не сохранено | **NOT_VERIFIED** | сохранить `firestore.indexes.json` как артефакт вне Git |
+| Сохранить опубликованные Firestore Rules | Получен активный release `cloud.firestore` и точный текст его ruleset через Firebase Rules Management API (не локальный `firestore.rules`); сохранён как `deployed-firestore.rules` в bucket, SHA-256 проверен на скачанной копии (раздел «Часть 6») | **DONE** | нет (анализ содержимого/риска — задача `BASE-004`) |
+| Сохранить Firestore indexes | Получены через `firebase firestore:indexes --project=finapp-prod-10a83` напрямую с production (не локальный пустой `firestore.indexes.json`); 0 composite indexes, 0 field overrides — подтверждено живым запросом, сохранено как `firestore-indexes.json` в bucket, SHA-256 проверен (раздел «Часть 6») | **DONE** | нет |
 | Экспортировать Auth metadata пользователей | — | **NOT_VERIFIED** | `firebase auth:export` — требует отдельного `PRODUCTION_ACTION_APPROVED` (CLAUDE.md, раздел 5) |
 | Сохранить production bundle/артефакт | — | **NOT_VERIFIED** | пересборка на known-good commit + checksum, вне Git |
 | Хранить резервные копии вне репозитория, с ограниченным доступом | Export лежит в GCS bucket с PAP `enforced`, UBLA `true`, project-level IAM не расширялся (раздел 2–3) | **DONE** (для Firestore export) | lifecycle retention пока не применён — `OWNER_APPROVAL_REQUIRED` |
@@ -1389,11 +1387,81 @@ progressDocuments: completedWork=14, estimatedWork=14
 восстановление данных Firestore** — выполнено и подтверждено объективными
 данными (operation status API + count-агрегация с обеих сторон). Это
 покрывает главный критерий приёмки `BASE-003` («восстановление фактически
-проверено, а не только описано»). Однако **не все** перечисленные в
-`REMEDIATION_PLAN.md` действия выполнены: Rules, indexes, Auth export,
-production bundle, checksum остатков и открытие тестовой компании —
+проверено, а не только описано»). Firestore Rules и indexes также
+подтверждены и сохранены как backup-артефакты (раздел «Часть 6»). Однако
+**не все** перечисленные в `REMEDIATION_PLAN.md` действия выполнены: Auth
+export, production bundle, checksum остатков и открытие тестовой компании —
 остаются `NOT_VERIFIED`, каждый требует отдельного разрешения владельца
 согласно `CLAUDE.md`.
 
 **`REMEDIATION_PLAN.md` не изменён — `[ ] BASE-003` сохранена, не
 проставлен `[x]`.** `BASE-004` не начата.
+
+---
+
+# Часть 6 — Backup опубликованных Firestore Rules и фактической конфигурации indexes
+
+```text
+PRODUCTION_READ_AND_BACKUP_ARTIFACT_APPROVAL: APPROVED
+```
+
+## 1. Метод получения (документированный, не подобранный перебором)
+
+- **Rules**: Firebase Rules Management API (`firebaserules.googleapis.com`)
+  — официальный REST API, тот же, что использует Console/CLI внутри себя.
+  Сначала `GET .../releases/cloud.firestore` — получен точный
+  `rulesetName` активного release; затем `GET` этого конкретного
+  ruleset — получен его исходный текст. Новый ruleset **не создавался и не
+  выпускался**, `firebase deploy` не вызывался.
+- **Indexes**: документированная команда `firebase firestore:indexes
+  --project=finapp-prod-10a83` (см. `firebase firestore:indexes --help`) —
+  выполнен прямой read-only запрос к production, не использован локальный
+  пустой `firestore.indexes.json`.
+
+## 2. Результат
+
+| Артефакт | Источник | Размер | SHA-256 (скачанной копии, проверено — совпадает) |
+|---|---|---|---|
+| `deployed-firestore.rules` | активный release `cloud.firestore`, ruleset `c9e2fc3f…` (сокращённый идентификатор, полный project number не публикуется) | 6701 bytes | `da74280ce9fd2e36ef4710e6f2e2750593568f1d8a07195c2a1fdaf6ae487a1d` |
+| `firestore-indexes.json` | прямой запрос к production `(default)` | 51 bytes | `62bbf508a85e9eb651184f58e159d2946a24c19bab8f2f7dd2ed012e7f3a2226` |
+| `manifest.json` | сформирован локально из безопасных метаданных выше | 1334 bytes | — (сам manifest, хэш не самоссылочный) |
+
+- Composite indexes: **0**
+- Field overrides: **0**
+(оба значения получены живым запросом к production, а не предположены по
+пустому локальному файлу)
+
+## 3. Место хранения
+
+```text
+gs://finapp-restore-20260725-4rxl-backup/configuration/20260725T154119Z/
+```
+
+Новый уникальный prefix, существующие объекты (Firestore export) не
+перезаписаны и не тронуты. Bucket не создавался заново. IAM, billing, API,
+lifecycle, storage class, PAP (`enforced`), UBLA (`true`) — не менялись.
+
+## 4. Проверка
+
+- В bucket по этому prefix — ровно 3 объекта, все ненулевого размера
+  (подтверждено `gcloud storage ls -l`).
+- Скачаны верификационные копии `deployed-firestore.rules` и
+  `firestore-indexes.json`, локально пересчитан SHA-256 — совпадает с
+  зафиксированным в manifest для обоих файлов.
+- Локальные временные копии (включая верификационные) — удалены сразу
+  после проверки. В bucket ничего не удалялось.
+
+## 5. Явно не выполнялось в этом раунде
+
+- Содержимое Rules **не анализировалось** и риск (A/B/C) **не
+  классифицировался** — это прямо остаётся задачей `BASE-004`.
+- Полный текст Rules и indexes **не выводился** ни в терминальный отчёт,
+  ни в этот документ, ни в чат — только метаданные (размер, хэш,
+  количество).
+- Email, UID, project number, billing account ID, access tokens,
+  credentials, содержимое Firestore-документов, финансовые данные — в
+  `manifest.json` и в этом отчёте отсутствуют.
+
+## Итог раунда
+
+**`BASE_003_RULES_AND_INDEXES_BACKED_UP`**
