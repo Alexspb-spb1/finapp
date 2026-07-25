@@ -7,9 +7,9 @@ PHASE: ACCESS SETUP AND RESTORE PROJECT CREATION (после PRE-FLIGHT)
 
 ## Итоговый статус (актуальный, после решения владельца)
 
-**`BLOCKED_AUTHENTICATION`** — см. «Часть 2» ниже. Раздел ниже («Часть 1»)
-описывает исходный `PRE-FLIGHT`-раунд и оставлен без изменений, для
-истории.
+**`READY_FOR_BILLING_AND_STORAGE_DECISION`** — см. «Часть 4» ниже. Разделы
+«Часть 1»–«Часть 3» описывают предыдущие заблокированные раунды и
+оставлены без изменений, для истории.
 
 ```text
 OWNER_DECISION: APPROVED
@@ -996,3 +996,211 @@ $ npx firebase-tools login:list
 
 `BASE-003` остаётся в фазе `ACCESS SETUP AND RESTORE PROJECT CREATION`,
 статус `BLOCKED_AUTHENTICATION`. **Не начинаю `BASE-004`.**
+
+---
+
+# Часть 4 — Авторизация завершена владельцем, read-only проверка и создание restore-проекта
+
+```text
+OWNER_DECISION: APPROVED
+RESTORE_TARGET_OPTION: A
+RESTORE_TARGET_TYPE: SEPARATE_TEMP_PROJECT
+```
+
+## Итоговый статус этого раунда
+
+**`READY_FOR_BILLING_AND_STORAGE_DECISION`**
+
+Этот раунд выполнялся действительно локально, на машине владельца
+(Windows), с инструментами Bash/PowerShell этой среды. В отличие от
+«Часть 2»/«Часть 3», `gcloud version` сразу показал уже установленный
+Google Cloud SDK 577.0.0 — установка не требовалась. Владелец лично
+завершил оба браузерных OAuth-входа (`gcloud auth login` и
+`npx firebase-tools login --reauth`).
+
+## 1. Git (подтверждено перед началом раунда)
+
+```text
+$ git remote -v
+origin  https://github.com/Alexspb-spb1/finapp.git (fetch/push)
+
+$ git branch --show-current
+remediation/BASE-003-backup-restore
+
+$ git rev-parse HEAD
+ace715beceb30b8c467e6019f8d21016fc24ba8f   # совпадает с ожидаемым
+
+$ git status --short
+(пусто)
+
+PR №3: state=OPEN, isDraft=true, baseRefName=remediation/main,
+headRefName=remediation/BASE-003-backup-restore — подтверждено через `gh pr view`.
+```
+
+## 2. Авторизация
+
+```text
+$ gcloud version
+Google Cloud SDK 577.0.0 (+ bq, core, gcloud-crc32c, gsutil) — PASS, установка не потребовалась.
+
+$ gcloud auth login
+(владелец завершил вход в открывшемся браузере)
+$ gcloud auth list --format="value(account)" | подсчёт строк
+AUTHORIZED_ACCOUNTS_COUNT: 1
+
+$ npx firebase-tools login:list
+Logged in as <email не выводится в отчёт> — подтверждена активная сессия.
+```
+
+```text
+GCLOUD_AUTH: PASS
+FIREBASE_AUTH: PASS
+```
+
+Email, токены, refresh/access tokens, cookies — нигде не выводились и не
+сохранялись в этом отчёте. Service account/JSON-ключ — не создавался.
+`gcloud auth application-default login` — не вызывался.
+
+## 3. Read-only проверка production (`finapp-prod-10a83`)
+
+Project ID передавался явно в каждой команде, `gcloud config set project`
+не выполнялся — production не становился project по умолчанию.
+
+| Проверка | Результат |
+|---|---|
+| Проект существует и доступен | **PASS** |
+| Lifecycle state | `ACTIVE` |
+| Тип parent resource | `none` (No organization — в `gcloud projects describe --format=json` поле `parent` отсутствует; `gcloud organizations list` для этого аккаунта пуст) |
+| Firestore существует | **PASS** |
+| Системное имя базы данных | `projects/finapp-prod-10a83/databases/(default)` |
+| Режим базы | `FIRESTORE_NATIVE` |
+| Location | `eur3` |
+| Billing enabled | `false` |
+| Количество Cloud Storage buckets | `0` |
+| Locations buckets | н/п (buckets отсутствуют) |
+| Requester Pays | н/п (buckets отсутствуют) |
+| Незавершённые Firestore export/import operations | `0` |
+| Доступность Firestore indexes | **PASS** (запрос `firestore indexes composite list` выполнен без ошибок доступа; составных индексов не найдено) |
+| Видит ли проект Firebase CLI | **PASS** (`npx firebase-tools projects:list` показывает `finapp-prod-10a83` / `finapp-prod`) |
+| Достаточно ли прав для будущего managed export | **PASS** (у текущего аккаунта есть IAM role binding на проекте; конкретная роль и члены не публикуются согласно ограничениям задачи) |
+| Firestore service agent существует | **PASS** (подтверждено через `gcloud projects get-iam-policy` — среди bindings присутствует принципал `gcp-sa-firestore`; сами members/JSON не публиковались) |
+
+Не читалось и не выводилось: документы Firestore, пользователи/email/UID,
+финансовые данные, содержимое Rules, IAM members, billing account ID, имена
+и URI buckets, токены/ключи/credentials. Ни один API не включался, IAM/
+billing не менялись, bucket не создавался, export/import не запускался,
+Auth не экспортировался, Rules/indexes/Firestore/Authentication не
+менялись.
+
+## 4. Parent restore-проекта
+
+Production находится в `No organization` (раздел 3 выше). Текущий
+аккаунт — обычный личный Google-аккаунт без видимой Cloud Identity/
+Workspace организации (`gcloud organizations list` → пусто). Это прямо
+соответствует условию задачи: «Если production находится в `No
+organization` и текущий аккаунт может создавать проекты без parent,
+разрешено создать проект без parent» — restore-проект создан **без
+parent**, тем же типом окружения, что и production. IAM не менялся ради
+получения прав — использовались уже имеющиеся у аккаунта.
+
+## 5. Создание restore-проекта
+
+```text
+$ gcloud projects create finapp-restore-20260725-4rxl --name="Finapp Temporary Restore"
+Create in progress ... .done.
+$ gcloud projects describe finapp-restore-20260725-4rxl --format="value(lifecycleState)"
+ACTIVE
+
+$ npx firebase-tools projects:addfirebase finapp-restore-20260725-4rxl
+=== Your Firebase project is ready! ===
+```
+
+- Project ID: `finapp-restore-20260725-4rxl` (28 символов, ≤ 30) — не
+  совпадает ни с `finapp-prod-10a83`, ни с `finapp-staging`.
+- Дата создания: `2026-07-25` (UTC, `[DateTime]::UtcNow`).
+- Display name: `Finapp Temporary Restore`.
+- Parent: none (No organization) — см. раздел 4.
+- `--set-as-default` не использовался, `.firebaserc` alias не создавался,
+  billing не подключался.
+
+### Read-only проверка сразу после создания
+
+```text
+billingEnabled: false
+Firestore databases list: ERROR SERVICE_DISABLED (Cloud Firestore API не включён) — подтверждает, что база не создана
+Cloud Storage buckets list: (пусто) — 0 buckets
+```
+
+```text
+PROJECT_STATE: ACTIVE
+FIREBASE_ENABLED: PASS
+BILLING_LINKED_BY_TASK: NO
+FIRESTORE_CREATED: NO
+BACKUP_BUCKET_CREATED: NO
+AUTH_CONFIGURED: NO
+REALTIME_DATABASE_CREATED: NO
+FIREBASE_APPS_CREATED: NO
+EXPORT_PERFORMED: NO
+IMPORT_PERFORMED: NO
+```
+
+Ни один запрещённый ресурс не появился. `finapp-staging` не
+использовался и не изменялся в этом раунде.
+
+## 6. Проверки перед завершением (обязательные из `CLAUDE.md`, раздел 8)
+
+`BASE-003` — документационная/операционная задача этого раунда (доступ +
+создание restore-проекта), кодовые изменения отсутствуют. Применимые из
+списка `CLAUDE.md`:
+
+| Команда | Результат | Примечание |
+|---|---|---|
+| `git diff --check` | PASS | пробельных ошибок нет |
+| `git status --short` | см. ниже | изменены только два разрешённых документа |
+| `npm ci` / `lint` / `typecheck` / `test:run` / `test:rules` / `test:e2e` / `build` | NOT APPLICABLE | этот раунд не меняет `src/`, `scripts/`, `package.json` — код не затронут |
+
+## 7. Git-гигиена (этот раунд)
+
+```text
+$ git status --short
+ M docs/remediation/reports/BASE-003.md
+ M docs/runbooks/BACKUP_AND_RESTORE.md
+
+$ git diff --check
+(exit 0)
+
+$ git diff --check -- REMEDIATION_PLAN.md
+(exit 0, файл не менялся)
+```
+
+- Изменены **только два документа**. Код (`src/`, `scripts/`) и зависимости
+  (`package.json`, `package-lock.json`) — не изменялись.
+- Секретов, токенов, credentials, backup-файлов, Auth export, production
+  bundle — в diff нет и не может быть (ничего подобного не создавалось и не
+  скачивалось в этом раунде).
+- `REMEDIATION_PLAN.md` не менялся — `[ ] BASE-003` сохранена как есть.
+- `BASE-004` не начиналась.
+
+## Restore project — итоговое состояние
+
+| Параметр | Значение |
+|---|---|
+| Restore project ID | `finapp-restore-20260725-4rxl` |
+| Дата создания UTC | `2026-07-25` |
+| Parent type | `none` (No organization) |
+| Production Firestore location | `eur3` |
+| Firebase enabled | PASS |
+| Billing linked by this task | NO |
+| Firestore created | NO |
+| Backup bucket created | NO |
+| Auth configured | NO |
+| Export performed | NO |
+| Import performed | NO |
+
+## Следующий разрешённый пункт
+
+`BASE-003` переходит в состояние `READY_FOR_BILLING_AND_STORAGE_DECISION`.
+Следующие подэтапы (подключение billing к restore-проекту, создание
+Firestore/bucket, фактический export/import и проверка восстановления)
+требуют отдельного явного решения владельца по каждому пункту — не
+выполняются автоматически. **`BASE-004` не начата и не начинается.**
