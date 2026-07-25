@@ -1204,3 +1204,197 @@ $ git diff --check -- REMEDIATION_PLAN.md
 Firestore/bucket, фактический export/import и проверка восстановления)
 требуют отдельного явного решения владельца по каждому пункту — не
 выполняются автоматически. **`BASE-004` не начата и не начинается.**
+
+---
+
+# Часть 5 — Billing, bucket, export, import и верификация восстановления
+
+```text
+OWNER_BILLING_APPROVAL: APPROVED
+IAM_CHANGE_APPROVAL: APPROVED
+EXPORT_RETRY_APPROVAL: APPROVED
+IMPORT_IAM_AND_RESTORE_APPROVAL: APPROVED
+APPROVED_MAX_SCOPE: BILLING_BUCKET_EXPORT_RESTORE_TEST
+```
+
+Каждый следующий шаг выполнялся только после отдельного явного разрешения
+владельца в этом точном формате — ни один cloud-ресурс не создавался и не
+изменялся авансом.
+
+## 1. Billing
+
+Billing account (единственный доступный, отображается только частично)
+привязан к обоим проектам после явного разрешения:
+
+- `finapp-prod-10a83` → `billingEnabled: true`
+- `finapp-restore-20260725-4rxl` → `billingEnabled: true`
+
+## 2. Backup bucket
+
+```text
+gs://finapp-restore-20260725-4rxl-backup
+location: EU (multi-region; GCS не поддерживает "eur3" как --location
+  напрямую — использована официально совместимая multi-region EU,
+  физически включающая регионы Firestore eur3)
+uniform_bucket_level_access: true
+public_access_prevention: enforced
+default_storage_class: STANDARD
+```
+
+Создан в restore-проекте (изоляция от production, упрощённая последующая
+очистка).
+
+## 3. IAM на bucket — итерации и текущее состояние
+
+Первая попытка export (`roles/storage.objectAdmin` production Firestore
+service agent на bucket) завершилась `PERMISSION_DENIED`. Read-only
+диагностика подтвердила через `appEngineIntegrationMode: DISABLED` на
+production database, что import/export действительно выполняются от имени
+**Cloud Firestore service agent** (не legacy App Engine default SA) — то
+есть identity была выбрана верно с самого начала, а причиной отказа была
+недостаточная роль. После отдельного разрешения роль на bucket заменена на
+`roles/storage.admin` — export прошёл успешно. Аналогично для import:
+restore Firestore service agent получил `roles/storage.admin` только на
+этот bucket, после успешной верификации восстановления временный доступ
+удалён.
+
+**Итоговое состояние IAM на bucket** (после раунда): только
+`roles/storage.admin` у production Firestore service agent — необходим,
+если потребуется повторный export в будущем. У restore service agent
+доступа к bucket больше нет. Project-level IAM не менялся ни разу за весь
+раунд. Owner/Editor роли никому не выдавались. Публичный доступ — по
+прежнему запрещён (Public Access Prevention: `enforced`, Uniform
+bucket-level access: `true`).
+
+## 4. Firestore managed export (production → bucket)
+
+Первая попытка (`output prefix 20260725T130601Z/`) завершилась технически
+`SUCCESSFUL`, но с **пустым** результатом (0 байт данных) — параметр
+`--collection-ids` был передан некорректно через PowerShell и превратился
+в одну строку с пробелами вместо трёх отдельных ID. Этот export
+зафиксирован как невалидный и **не использовался** для restore. Он не
+удалён — очистка не выполнялась.
+
+Повторная попытка (`output prefix 20260725T142444Z-retry/`), с
+collection-ids, переданными как один неделимый аргумент переменной:
+
+```text
+operationState: SUCCESSFUL
+collectionIds: ["users", "companies", "company_data"]
+progressDocuments: completedWork=14, estimatedWork=14
+progressBytes: completedWork=247325
+```
+
+Объекты в bucket (только имена/размеры, без содержимого):
+7 объектов, 249 720 bytes — все три `kind_*` директории содержат
+ненулевые `output-N` файлы.
+
+## 5. Read-only сверка counts до export (production)
+
+Через `runAggregationQuery` (count-агрегация, без чтения содержимого
+документов):
+
+| Коллекция | Count |
+|---|---|
+| `users` | 6 |
+| `companies` | 4 |
+| `company_data` | 4 |
+| **TOTAL** | **14** |
+
+Совпадает точно с `progressDocuments.completedWork: 14` из метаданных
+export.
+
+## 6. Restore Firestore database
+
+Создан в restore-проекте: Native mode, location `eur3` (совпадает с
+production), `appEngineIntegrationMode: DISABLED`. До import все три
+коллекции подтверждены пустыми (0/0/0) — `BLOCKED_RESTORE_TARGET_NOT_EMPTY`
+не наступил.
+
+## 7. Firestore managed import (bucket → restore-проект)
+
+Единственная попытка, источник — только подтверждённый непустой export
+(`20260725T142444Z-retry/`):
+
+```text
+operationState: SUCCESSFUL
+progressDocuments: completedWork=14, estimatedWork=14
+```
+
+## 8. Read-only сверка после restore
+
+| Коллекция | Production | Restore до import | Restore после import |
+|---|---|---|---|
+| `users` | 6 | 0 | 6 |
+| `companies` | 4 | 0 | 4 |
+| `company_data` | 4 | 0 | 4 |
+| **TOTAL** | **14** | **0** | **14** |
+
+Полное совпадение. Через `listCollectionIds` подтверждено: в restore-базе
+ровно три корневые коллекции (`users`, `companies`, `company_data`) —
+лишних не появилось.
+
+## 9. Что не проверялось и не выполнялось в этом раунде (честно, не скрыто)
+
+- **Открытие одной согласованной тестовой компании** для подтверждения,
+  что документ реально открывается и валиден по схеме — **не
+  выполнялось**. Явно запрещено рамками этого раунда (запрет на чтение
+  содержимого документов).
+- **Контрольные суммы операций и остатков** (раздел 6.3 дизайна манифеста,
+  «Часть 1») — **не вычислялись**. Требует отдельного разрешения и
+  отдельного дизайна (сериализация проекции без раскрытия сумм).
+- **Firestore Rules** — не считывались и не сохранялись в этом или
+  предыдущих раундах `BASE-003`.
+- **Firestore indexes** — ранее подтверждена только доступность API
+  (`firestore indexes composite list` не вернул ошибку прав), составных
+  индексов не найдено; содержимое `firestore.indexes.json` не сохранялось
+  как артефакт бэкапа.
+- **Firebase Auth export** — не выполнялся ни разу за весь `BASE-003`.
+- **Production bundle** — не пересобирался и не сохранялся как отдельный
+  backup-артефакт в рамках `BASE-003` (существующая GitHub Pages
+  rollback-процедура описана отдельно в `docs/remediation/BASELINE.md`, но
+  это не то же самое, что зафиксированный backup-артефакт бандла с
+  checksum, требуемый `BASE-003`).
+- **Lifecycle-правило удаления backup** — только предложено в runbook, не
+  применено к bucket.
+- **Полный аварийный порядок восстановления production** (не тестового
+  restore-проекта, а реального disaster recovery для самого
+  `finapp-prod-10a83`) — не описан; runbook явно указывает, что это
+  отдельная, более осторожная процедура.
+
+## 10. Таблица требований `BASE-003` (`REMEDIATION_PLAN.md`) — честная сверка
+
+| Requirement | Evidence | Status | Remaining action |
+|---|---|---|---|
+| Экспортировать Firestore production | `gcloud firestore operations describe`: `operationState: SUCCESSFUL`, `progressDocuments: 14/14`, 3 collection groups, ненулевые output-файлы (раздел 4) | **DONE** | нет |
+| Сохранить опубликованные Firestore Rules | — | **NOT_VERIFIED** | отдельное разрешение на чтение и сохранение `firestore.rules` |
+| Сохранить Firestore indexes | Только доступность API подтверждена, содержимое не сохранено | **NOT_VERIFIED** | сохранить `firestore.indexes.json` как артефакт вне Git |
+| Экспортировать Auth metadata пользователей | — | **NOT_VERIFIED** | `firebase auth:export` — требует отдельного `PRODUCTION_ACTION_APPROVED` (CLAUDE.md, раздел 5) |
+| Сохранить production bundle/артефакт | — | **NOT_VERIFIED** | пересборка на known-good commit + checksum, вне Git |
+| Хранить резервные копии вне репозитория, с ограниченным доступом | Export лежит в GCS bucket с PAP `enforced`, UBLA `true`, project-level IAM не расширялся (раздел 2–3) | **DONE** (для Firestore export) | lifecycle retention пока не применён — `OWNER_APPROVAL_REQUIRED` |
+| Восстановить копию в staging/отдельном тестовом проекте | Restore выполнен в `finapp-restore-20260725-4rxl` (не staging), import `SUCCESSFUL` (раздел 7) | **DONE** | нет |
+| Проверить количество компаний | production `companies`=4, restore после import `companies`=4 (раздел 8) | **DONE** | нет |
+| Проверить количество пользователей | production `users`=6, restore `users`=6 | **DONE** | нет |
+| Проверить количество документов `company_data` | production `company_data`=4, restore `company_data`=4 | **DONE** | нет |
+| Проверить возможность открыть восстановленную компанию | — | **NOT_VERIFIED** | требует отдельного разрешения на чтение содержимого ровно одной заранее согласованной тестовой компании |
+| Проверить совпадение контрольных сумм операций и остатков | — | **NOT_VERIFIED** | требует отдельного разрешения и реализации дизайна из раздела 6.3 «Часть 1» (сериализация без раскрытия сумм) |
+| Создать `docs/runbooks/BACKUP_AND_RESTORE.md` | Файл существует и обновлён этим и предыдущими раундами | **DONE** | нет |
+| Резервная копия существует (критерий приёмки) | Export `20260725T142444Z-retry/` — непустой, 249 720 bytes | **DONE** | нет |
+| Восстановление фактически проверено (критерий приёмки) | Import `SUCCESSFUL`, counts 6/4/4 совпали | **DONE** (на уровне количеств документов) | открытие тестовой компании и checksum остатков — отдельно, см. выше |
+| Место хранения и права доступа документированы (критерий приёмки) | Раздел 2–3 этого отчёта + runbook | **DONE** | добавить lifecycle retention после отдельного разрешения |
+| Известен порядок аварийного возврата (критерий приёмки) | Runbook, раздел 6 — описывает откат самой операции backup/restore (для тестового restore-проекта), но explicit заявляет, что **не** описывает реальный production disaster recovery | **OWNER_APPROVAL_REQUIRED** | нужно решение: считается ли текущий runbook достаточным для критерия приёмки, или требуется отдельный полноценный production emergency restore процесс |
+
+## 11. Итог раунда
+
+Ядро задачи — **фактический экспорт и фактически проверенное
+восстановление данных Firestore** — выполнено и подтверждено объективными
+данными (operation status API + count-агрегация с обеих сторон). Это
+покрывает главный критерий приёмки `BASE-003` («восстановление фактически
+проверено, а не только описано»). Однако **не все** перечисленные в
+`REMEDIATION_PLAN.md` действия выполнены: Rules, indexes, Auth export,
+production bundle, checksum остатков и открытие тестовой компании —
+остаются `NOT_VERIFIED`, каждый требует отдельного разрешения владельца
+согласно `CLAUDE.md`.
+
+**`REMEDIATION_PLAN.md` не изменён — `[ ] BASE-003` сохранена, не
+проставлен `[x]`.** `BASE-004` не начата.

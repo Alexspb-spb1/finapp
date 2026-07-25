@@ -2,9 +2,11 @@
 
 ```text
 TASK_ID: BASE-003
-PHASE: ACCESS SETUP AND RESTORE PROJECT CREATION
-STATUS: READY_FOR_BILLING_AND_STORAGE_DECISION — restore-проект создан,
-        фактический export/import ещё не выполнялся
+PHASE: RESTORE TEST VERIFIED — remaining gaps documented
+STATUS: Firestore export/import подтверждён (14/14 документов), но
+        Rules/indexes/Auth export/production bundle/checksums/тестовая
+        компания — ещё NOT_VERIFIED. Полный список — см.
+        docs/remediation/reports/BASE-003.md, «Часть 5», раздел 10.
 ```
 
 ## Решение владельца (зафиксировано)
@@ -36,6 +38,26 @@ RESTORE_TARGET_TYPE: SEPARATE_TEMP_PROJECT
 в раунде «Часть 4» задача действительно выполнялась локально на машине
 владельца, оба CLI (`gcloud`, `firebase-tools`) авторизованы владельцем
 через реальный локальный браузер.
+
+**Firestore managed export/import выполнены и верифицированы** (раунд
+«Часть 5», `docs/remediation/reports/BASE-003.md`):
+
+| Проверка | Результат |
+|---|---|
+| Export production → bucket | `SUCCESSFUL`, 14/14 документов |
+| Собранные коллекции | `users`, `companies`, `company_data` |
+| Production counts | `users`=6, `companies`=4, `company_data`=4 |
+| Restore-база до import | 0/0/0 (подтверждено пустой) |
+| Import bucket → restore-проект | `SUCCESSFUL`, 14/14 документов |
+| Restore counts после import | `users`=6, `companies`=4, `company_data`=4 — совпадает |
+| Лишние корневые коллекции | не обнаружены |
+| Временный IAM restore service agent на bucket | выдан на время import, удалён после верификации |
+
+**Ещё не выполнено** (см. полную таблицу в отчёте, раздел 10): сохранение
+опубликованных Rules, сохранение indexes, Auth export, production bundle,
+открытие одной тестовой компании, контрольные суммы остатков, lifecycle
+retention на bucket, полноценный production disaster recovery процесс.
+Каждое требует отдельного разрешения владельца.
 
 Этот документ по-прежнему описывает **порядок**, который должен
 использоваться, когда `BASE-003` перейдёт к фактическому исполнению
