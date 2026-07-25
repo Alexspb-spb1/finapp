@@ -53,7 +53,12 @@ export interface Transaction {
   toAmount?: number     // для кросс-валютных переводов: сумма в валюте счёта-получателя
   accountId: string
   toAccountId?: string
-  categoryId: string
+  // Раньше было обязательным полем, хотя приложение всегда поддерживало
+  // некатегоризированные операции ("Без статьи" — см. uncategorizedCount в
+  // Dashboard.tsx/Transactions.tsx, !t.categoryId уже проверялось по всему
+  // коду). Несоответствие типа реальности маскировало баг в Balance.tsx,
+  // где такие операции молча выпадали из расчёта капитала.
+  categoryId?: string
   counterpartyId?: string
   projectId?: string
   comment: string
@@ -139,4 +144,16 @@ export interface PaymentCalendarItem {
   categoryId: string
   accountId?: string    // счёт списания/зачисления при оплате (БАГ №3)
   status: 'planned' | 'paid' | 'overdue'
+}
+
+// Журнал изменений закрытия периода — кто и когда открывал/закрывал период.
+// Раньше это действие не оставляло никакого следа (баг антифрод-аудита №4).
+export interface AuditEntry {
+  id: string
+  at: string             // ISO timestamp
+  userId: string
+  userName: string
+  action: 'closing_date_changed'
+  from: string           // предыдущее значение closingDate ('' = не было закрыто)
+  to: string              // новое значение closingDate
 }

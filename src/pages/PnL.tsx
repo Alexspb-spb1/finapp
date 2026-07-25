@@ -103,7 +103,7 @@ export default function PnL() {
             const v = sumBySection(type, section, m)
             return (
               <td key={m} className={`px-4 py-2.5 text-sm font-semibold text-right ${valueClass}`}>
-                {v > 0 ? formatCurrency(v) : '—'}
+                {v !== 0 ? formatCurrency(v) : '—'}
               </td>
             )
           })}
@@ -120,8 +120,8 @@ export default function PnL() {
                 </span>
               </td>
               {vals.map((v, i) => (
-                <td key={i} className={`px-4 py-2 text-sm text-right ${v > 0 ? valueClass : 'text-slate-300'}`}>
-                  {v > 0 ? formatCurrency(v) : '—'}
+                <td key={i} className={`px-4 py-2 text-sm text-right ${v !== 0 ? valueClass : 'text-slate-300'}`}>
+                  {v !== 0 ? formatCurrency(v) : '—'}
                 </td>
               ))}
             </tr>

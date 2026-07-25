@@ -66,8 +66,11 @@ export default function CashFlow() {
     })
   }
 
-  // Get kind for a category (default 1 = operational)
-  function catKind(catId: string): CategoryKind {
+  // Get kind for a category (default 1 = operational).
+  // catId может быть undefined — некатегоризированные операции ("Без статьи")
+  // и операции с удалённой категорией по-прежнему должны попадать в отчёт,
+  // а не молча пропадать, поэтому явно принимаем string | undefined.
+  function catKind(catId: string | undefined): CategoryKind {
     const cat = categories.find(c => c.id === catId)
     return (cat?.kind ?? 1) as CategoryKind
   }
@@ -273,7 +276,7 @@ export default function CashFlow() {
                       </td>
                       {kindIncomes.map((v, i) => (
                         <td key={i} className={`px-4 py-2.5 text-sm font-semibold text-right text-emerald-700`}>
-                          {v > 0 ? formatCurrency(v) : '—'}
+                          {v !== 0 ? formatCurrency(v) : '—'}
                         </td>
                       ))}
                     </tr>
@@ -289,8 +292,8 @@ export default function CashFlow() {
                             </span>
                           </td>
                           {vals.map((v, i) => (
-                            <td key={i} className={`px-4 py-2 text-sm text-right ${v > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>
-                              {v > 0 ? formatCurrency(v) : '—'}
+                            <td key={i} className={`px-4 py-2 text-sm text-right ${v !== 0 ? 'text-emerald-600' : 'text-slate-300'}`}>
+                              {v !== 0 ? formatCurrency(v) : '—'}
                             </td>
                           ))}
                         </tr>
@@ -309,7 +312,7 @@ export default function CashFlow() {
                       </td>
                       {kindExpenses.map((v, i) => (
                         <td key={i} className="px-4 py-2.5 text-sm font-semibold text-right text-red-600">
-                          {v > 0 ? formatCurrency(v) : '—'}
+                          {v !== 0 ? formatCurrency(v) : '—'}
                         </td>
                       ))}
                     </tr>
@@ -325,8 +328,8 @@ export default function CashFlow() {
                             </span>
                           </td>
                           {vals.map((v, i) => (
-                            <td key={i} className={`px-4 py-2 text-sm text-right ${v > 0 ? 'text-red-500' : 'text-slate-300'}`}>
-                              {v > 0 ? formatCurrency(v) : '—'}
+                            <td key={i} className={`px-4 py-2 text-sm text-right ${v !== 0 ? 'text-red-500' : 'text-slate-300'}`}>
+                              {v !== 0 ? formatCurrency(v) : '—'}
                             </td>
                           ))}
                         </tr>

@@ -42,6 +42,7 @@ export default function Users() {
   const [form,      setForm]      = useState<FormState>(emptyForm())
   const [formError, setFormError] = useState('')
   const [saved,     setSaved]     = useState(false)
+  const [resetSent, setResetSent] = useState(false)
 
   const allUsers = company ? authStore.getCompanyUsers(company.id) : []
   const users = allUsers.filter(u =>
@@ -60,7 +61,17 @@ export default function Users() {
   function openEdit(u: User) {
     setForm({ name: u.name, email: u.email, password: '', role: u.role })
     setFormError('')
+    setResetSent(false)
     setModal({ mode: 'edit', target: u })
+  }
+
+  // ── Send password reset email (admin resetting someone else's password) ──
+  // Прямая установка чужого пароля из клиента невозможна безопасно без
+  // Admin SDK — единственный корректный путь это письмо со ссылкой сброса.
+  async function handleSendReset(email: string) {
+    const res = await authStore.resetPassword(email)
+    if (res.ok) { setResetSent(true); setTimeout(() => setResetSent(false), 4000) }
+    else setFormError('Не удалось отправить письмо — пользователь не найден')
   }
 
   // ── Submit form ─────────────────────────────────────────────────
@@ -272,23 +283,38 @@ export default function Users() {
               </div>
 
               {/* Password */}
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1.5">
-                  Пароль
-                  {modal.mode === 'edit' && (
-                    <span className="font-normal text-slate-400 ml-1">(оставьте пустым, чтобы не менять)</span>
-                  )}
-                </label>
-                <input
-                  type="password"
-                  value={form.password}
-                  onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                  required={modal.mode === 'add'}
-                  placeholder={modal.mode === 'add' ? 'Минимум 6 символов' : '••••••••'}
-                  minLength={modal.mode === 'add' || form.password ? 6 : undefined}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
-                />
-              </div>
+              {(modal.mode === 'add' || modal.target?.id === me?.id) ? (
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                    Пароль
+                    {modal.mode === 'edit' && (
+                      <span className="font-normal text-slate-400 ml-1">(оставьте пустым, чтобы не менять)</span>
+                    )}
+                  </label>
+                  <input
+                    type="password"
+                    value={form.password}
+                    onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                    required={modal.mode === 'add'}
+                    placeholder={modal.mode === 'add' ? 'Минимум 6 символов' : '••••••••'}
+                    minLength={modal.mode === 'add' || form.password ? 6 : undefined}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
+                  />
+                </div>
+              ) : (
+                // Пароль другого пользователя нельзя задать напрямую из клиента —
+                // только письмо со ссылкой сброса на его email (см. handleSendReset)
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1.5">Пароль</label>
+                  <button
+                    type="button"
+                    onClick={() => handleSendReset(modal.target!.email)}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-indigo-600 hover:bg-indigo-50 transition-colors text-left"
+                  >
+                    {resetSent ? '✓ Письмо отправлено' : 'Отправить письмо для сброса пароля'}
+                  </button>
+                </div>
+              )}
 
               {/* Role */}
               <div>

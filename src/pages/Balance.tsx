@@ -4,6 +4,7 @@ import { useStore } from '../store/useStore'
 import { formatCurrency } from '../utils/format'
 import { toBase, accountToBase, sumAccountsBase } from '../utils/currency'
 import CategoryIcon from '../utils/categoryIcons'
+import type { Transaction } from '../types'
 
 // ── Mini bar (визуализация доли) ──────────────────────────────────────────────
 function ShareBar({ value, total, color }: { value: number; total: number; color: string }) {
@@ -93,20 +94,29 @@ export default function Balance() {
 
   // ── Equity: нераспределённая прибыль (операционная + инвестиционная)
   // kind=1,2 — operational & investment transactions. Все суммы — в базовой валюте (toBase)
-  const operationalCats = useMemo(() => {
-    const ids = new Set(categories.filter(c => (c.kind ?? 1) !== 3).map(c => c.id))
-    return ids
-  }, [categories])
+  //
+  // Раньше членство проверялось через Set категорий с kind!=3 — операции без
+  // категории (categoryId не задан, "Без статьи") или с категорией, которая
+  // была позже удалена, молча выпадали из расчёта: Set.has(undefined/orphan)
+  // → false. При этом initialCapital ниже реверсирует ВСЕ операции без
+  // исключений — из-за рассинхрона "Активы" и "Капитал" расходились ровно на
+  // сумму таких операций. Используем ту же логику по умолчанию kind=1, что
+  // и financialIncome/financialExpense ниже — категория не найдена → как
+  // операционная, а не как выпавшая из расчёта.
+  function isFinancialKind(t: Transaction): boolean {
+    const cat = categories.find(c => c.id === t.categoryId)
+    return (cat?.kind ?? 1) === 3
+  }
 
   const cumulativeProfit = useMemo(() => {
     let profit = 0
     for (const t of transactions) {
       if (t.type === 'transfer') continue
-      if (!operationalCats.has(t.categoryId)) continue
+      if (isFinancialKind(t)) continue
       profit += t.type === 'income' ? toBase(t) : -toBase(t)
     }
     return profit
-  }, [transactions, operationalCats])
+  }, [transactions, categories])
 
   // ── Financial flows (kind=3): займы, кредиты, взносы владельца
   const financialIncome = useMemo(() => {
@@ -236,7 +246,7 @@ export default function Balance() {
               value={(() => {
                 let s = 0
                 for (const t of transactions) {
-                  if (t.type === 'income' && operationalCats.has(t.categoryId)) s += toBase(t)
+                  if (t.type === 'income' && !isFinancialKind(t)) s += toBase(t)
                 }
                 return s
               })()}
@@ -247,7 +257,7 @@ export default function Balance() {
               value={-(() => {
                 let s = 0
                 for (const t of transactions) {
-                  if (t.type === 'expense' && operationalCats.has(t.categoryId)) s += toBase(t)
+                  if (t.type === 'expense' && !isFinancialKind(t)) s += toBase(t)
                 }
                 return s
               })()}

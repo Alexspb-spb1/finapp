@@ -2,7 +2,7 @@ import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore'
 import { db, auth } from '../lib/firebase'
 import { subscribeAuth, authStore } from './authStore'
 import { round2 } from '../utils/currency'
-import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart, RecurringTemplate, RecurringPeriod, PaymentCalendarItem } from '../types'
+import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart, RecurringTemplate, RecurringPeriod, PaymentCalendarItem, AuditEntry } from '../types'
 
 const DEFAULT_CATEGORIES: Category[] = [
   { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',     color: '#22c55e' },
@@ -28,13 +28,14 @@ interface CompanyData {
   budgets:         BudgetItem[]
   recurring:       RecurringTemplate[]
   paymentCalendar: PaymentCalendarItem[]
-  closingDate?:    string   // период закрыт по эту дату включ.: операции <= неё нельзя менять/удалять (БАГ №6)
+  closingDate?:    string       // период закрыт по эту дату включ.: операции <= неё нельзя менять/удалять (БАГ №6)
+  auditLog?:       AuditEntry[] // журнал чувствительных действий (пока только смена closingDate)
 }
 
 const EMPTY: CompanyData = {
   accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
   transactions: [], projects: [], rules: [], budgets: [], recurring: [],
-  paymentCalendar: [],
+  paymentCalendar: [], auditLog: [],
 }
 
 // ── Pub/sub ──────────────────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ let unsubSnapshot: (() => void) | null = null
     if (!saved.budgets)         saved.budgets         = []
     if (!saved.recurring)       saved.recurring       = []
     if (!saved.paymentCalendar) saved.paymentCalendar = []
+    if (!saved.auditLog)       saved.auditLog       = []
     if (!saved.categories)      saved.categories      = DEFAULT_CATEGORIES
     state            = saved
     currentCompanyId = lastId   // ← чтобы persist() работал сразу
@@ -133,6 +135,7 @@ const companyStoreImpl = {
         if (!lsData.budgets)         lsData.budgets         = []
         if (!lsData.recurring)       lsData.recurring       = []
         if (!lsData.paymentCalendar) lsData.paymentCalendar = []
+        if (!lsData.auditLog)       lsData.auditLog       = []
         if (!lsData.categories)      lsData.categories      = DEFAULT_CATEGORIES
         state = lsData
         notify()
@@ -150,6 +153,7 @@ const companyStoreImpl = {
         if (!fresh.budgets)         fresh.budgets         = []
         if (!fresh.recurring)       fresh.recurring       = []
         if (!fresh.paymentCalendar) fresh.paymentCalendar = []
+        if (!fresh.auditLog)       fresh.auditLog       = []
         if (!fresh.categories)      fresh.categories      = DEFAULT_CATEGORIES
         if (savedAt(fresh) >= savedAt(state)) {
           state = fresh
@@ -173,6 +177,7 @@ const companyStoreImpl = {
           if (!fresh.budgets)         fresh.budgets         = []
           if (!fresh.recurring)       fresh.recurring       = []
           if (!fresh.paymentCalendar) fresh.paymentCalendar = []
+        if (!fresh.auditLog)       fresh.auditLog       = []
           if (!fresh.categories)      fresh.categories      = DEFAULT_CATEGORIES
           // Принимаем только если Firestore новее текущего состояния
           if (savedAt(fresh) >= savedAt(state)) {
@@ -196,9 +201,31 @@ const companyStoreImpl = {
   get recurring()        { return state.recurring        ?? [] },
   get paymentCalendar()  { return state.paymentCalendar  ?? [] },
   get closingDate()      { return state.closingDate      ?? '' },
+  get auditLog()         { return state.auditLog         ?? [] },
   isPeriodLocked(dateStr: string) { return isPeriodLocked(dateStr) },
   setClosingDate(date: string) {
-    const next = { ...state }
+    // Закрытие/открытие периода — только для админа компании, не для любой
+    // роли с правом записи (иначе бухгалтер мог сам открывать закрытые
+    // периоды без утверждения администратором).
+    if (!authStore.isAdmin()) {
+      console.warn('[companyStore] setClosingDate отклонён: требуется роль admin')
+      return
+    }
+    const prevDate = state.closingDate ?? ''
+    if (prevDate === date) return   // без изменений — не засоряем лог
+
+    const user = authStore.getCurrentUser()
+    const entry: AuditEntry = {
+      id: 'al' + Date.now(),
+      at: new Date().toISOString(),
+      userId: user?.id ?? 'unknown',
+      userName: user?.name ?? 'unknown',
+      action: 'closing_date_changed',
+      from: prevDate,
+      to: date,
+    }
+
+    const next = { ...state, auditLog: [entry, ...(state.auditLog ?? [])] }
     if (date) next.closingDate = date
     else delete next.closingDate
     state = next
@@ -392,7 +419,15 @@ const companyStoreImpl = {
     persist()
   },
   deleteCategory(id: string) {
-    state = { ...state, categories: state.categories.filter(c => c.id !== id) }
+    // Каскад: убираем ссылку у операций — иначе они остаются с categoryId
+    // на несуществующую категорию и молча выпадают из отчётов (ОПиУ, ДДС,
+    // Баланс), которые ищут категорию по id и пропускают операцию, если она
+    // не находится (аналогично БАГ №10 для контрагентов/проектов).
+    state = {
+      ...state,
+      categories: state.categories.filter(c => c.id !== id),
+      transactions: state.transactions.map(t => t.categoryId === id ? { ...t, categoryId: undefined } : t),
+    }
     persist()
   },
 

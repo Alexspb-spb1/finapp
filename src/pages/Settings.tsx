@@ -737,8 +737,10 @@ export default function Settings() {
         </div>
       )}
 
-      {/* Закрытие периода (БАГ №6) — только для ролей с правом записи */}
-      {!readOnly && (
+      {/* Закрытие периода (БАГ №6) — только для админа. Раньше было доступно
+          любой роли с правом записи (в т.ч. "бухгалтер"), что позволяло
+          единолично открывать закрытые периоды без утверждения. */}
+      {isAdmin && (
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
         <div className="flex items-center gap-2 mb-1">
           <Lock size={15} className="text-slate-400" />
@@ -772,6 +774,22 @@ export default function Settings() {
           <p className="text-xs text-amber-600 mt-3 flex items-center gap-1.5">
             <Lock size={12} /> Период закрыт по {store.closingDate} — операции до этой даты защищены от изменений.
           </p>
+        )}
+        {store.auditLog.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <p className="text-xs font-medium text-slate-500 mb-2">История изменений</p>
+            <ul className="space-y-1.5">
+              {store.auditLog.slice(0, 10).map(e => (
+                <li key={e.id} className="text-xs text-slate-500">
+                  <span className="text-slate-400">{new Date(e.at).toLocaleString('ru-RU')}</span>
+                  {' — '}
+                  <span className="font-medium text-slate-600">{e.userName}</span>
+                  {' изменил(а) дату закрытия: '}
+                  <span className="text-slate-600">{e.from || '(не было)'} → {e.to || '(снято)'}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
       )}

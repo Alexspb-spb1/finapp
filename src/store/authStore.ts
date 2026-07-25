@@ -4,6 +4,7 @@ import {
   signOut,
   onAuthStateChanged,
   sendPasswordResetEmail,
+  sendEmailVerification,
 } from 'firebase/auth'
 import {
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
@@ -230,6 +231,11 @@ export const authStore = {
     try {
       _registrationInProgress = true
       cred = await createUserWithEmailAndPassword(auth, params.email, params.password)
+      // Регистрация без подтверждения email позволяла завести аккаунт на
+      // чужой адрес без владения им. Письмо не блокирует использование
+      // приложения — только помечает адрес как неподтверждённый.
+      sendEmailVerification(cred.user).catch(err =>
+        console.warn('[register] sendEmailVerification failed:', err))
     } catch (e: any) {
       _registrationInProgress = false
       if (e?.code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
@@ -238,7 +244,11 @@ export const authStore = {
 
     const uid = cred.user.uid
     const now = new Date().toISOString()
-    const companyId = 'co_' + Date.now()
+    // crypto.randomUUID() вместо Date.now() — ID компании раньше был
+    // временной меткой в миллисекундах, то есть перечисляемым/угадываемым.
+    // В сочетании с открытыми Firestore-правилами это позволяло бы читать
+    // чужие финансовые данные простым перебором.
+    const companyId = 'co_' + crypto.randomUUID()
 
     const company: Company = {
       id: companyId, name: params.companyName, legalType: params.legalType,
@@ -377,8 +387,14 @@ export const authStore = {
         await updateDoc(doc(db, 'users', userId), updates)
       }
 
-      // If changing own password — use Firebase Auth REST API
-      if (data.password && auth.currentUser?.uid === userId) {
+      // Смена пароля возможна только для собственного аккаунта — прямая
+      // установка чужого пароля из клиента небезопасна и невозможна без
+      // Admin SDK. Для сброса пароля другому пользователю используйте
+      // authStore.resetPassword(email) (письмо со ссылкой сброса).
+      if (data.password) {
+        if (auth.currentUser?.uid !== userId) {
+          return { ok: false, error: 'invalid_credentials' }
+        }
         const idToken = await auth.currentUser.getIdToken()
         await fetch(
           `https://identitytoolkit.googleapis.com/v1/accounts:update?key=${import.meta.env.VITE_FIREBASE_API_KEY}`,
@@ -453,7 +469,11 @@ export const authStore = {
   async createCompany(params: { name: string; legalType: 'ooo' | 'ip'; inn?: string }) {
     if (!currentUser) return
     const now = new Date().toISOString()
-    const companyId = 'co_' + Date.now()
+    // crypto.randomUUID() вместо Date.now() — ID компании раньше был
+    // временной меткой в миллисекундах, то есть перечисляемым/угадываемым.
+    // В сочетании с открытыми Firestore-правилами это позволяло бы читать
+    // чужие финансовые данные простым перебором.
+    const companyId = 'co_' + crypto.randomUUID()
 
     const company: Company = {
       id: companyId, name: params.name, legalType: params.legalType,
