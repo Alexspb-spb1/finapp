@@ -1342,7 +1342,6 @@ progressDocuments: completedWork=14, estimatedWork=14
 - **Контрольные суммы операций и остатков** (раздел 6.3 дизайна манифеста,
   «Часть 1») — **не вычислялись**. Требует отдельного разрешения и
   отдельного дизайна (сериализация проекции без раскрытия сумм).
-- **Firebase Auth export** — не выполнялся ни разу за весь `BASE-003`.
 - **Production bundle** — не пересобирался и не сохранялся как отдельный
   backup-артефакт в рамках `BASE-003` (существующая GitHub Pages
   rollback-процедура описана отдельно в `docs/remediation/BASELINE.md`, но
@@ -1366,7 +1365,7 @@ progressDocuments: completedWork=14, estimatedWork=14
 | Экспортировать Firestore production | `gcloud firestore operations describe`: `operationState: SUCCESSFUL`, `progressDocuments: 14/14`, 3 collection groups, ненулевые output-файлы (раздел 4) | **DONE** | нет |
 | Сохранить опубликованные Firestore Rules | Получен активный release `cloud.firestore` и точный текст его ruleset через Firebase Rules Management API (не локальный `firestore.rules`); сохранён как `deployed-firestore.rules` в bucket, SHA-256 проверен на скачанной копии (раздел «Часть 6») | **DONE** | нет (анализ содержимого/риска — задача `BASE-004`) |
 | Сохранить Firestore indexes | Получены через `firebase firestore:indexes --project=finapp-prod-10a83` напрямую с production (не локальный пустой `firestore.indexes.json`); 0 composite indexes, 0 field overrides — подтверждено живым запросом, сохранено как `firestore-indexes.json` в bucket, SHA-256 проверен (раздел «Часть 6») | **DONE** | нет |
-| Экспортировать Auth metadata пользователей | — | **NOT_VERIFIED** | `firebase auth:export` — требует отдельного `PRODUCTION_ACTION_APPROVED` (CLAUDE.md, раздел 5) |
+| Экспортировать Auth metadata пользователей | `firebase auth:export` (документированная команда), CLI подтвердил фактическое количество (6 аккаунтов), export сохранён в bucket, SHA-256 проверен на скачанной копии (раздел «Часть 7») | **DONE** | нет |
 | Сохранить production bundle/артефакт | — | **NOT_VERIFIED** | пересборка на known-good commit + checksum, вне Git |
 | Хранить резервные копии вне репозитория, с ограниченным доступом | Export лежит в GCS bucket с PAP `enforced`, UBLA `true`, project-level IAM не расширялся (раздел 2–3) | **DONE** (для Firestore export) | lifecycle retention пока не применён — `OWNER_APPROVAL_REQUIRED` |
 | Восстановить копию в staging/отдельном тестовом проекте | Restore выполнен в `finapp-restore-20260725-4rxl` (не staging), import `SUCCESSFUL` (раздел 7) | **DONE** | нет |
@@ -1388,9 +1387,10 @@ progressDocuments: completedWork=14, estimatedWork=14
 данными (operation status API + count-агрегация с обеих сторон). Это
 покрывает главный критерий приёмки `BASE-003` («восстановление фактически
 проверено, а не только описано»). Firestore Rules и indexes также
-подтверждены и сохранены как backup-артефакты (раздел «Часть 6»). Однако
-**не все** перечисленные в `REMEDIATION_PLAN.md` действия выполнены: Auth
-export, production bundle, checksum остатков и открытие тестовой компании —
+подтверждены и сохранены как backup-артефакты (раздел «Часть 6»), Auth
+metadata — защищённо экспортирована и проверена (раздел «Часть 7»). Однако
+**не все** перечисленные в `REMEDIATION_PLAN.md` действия выполнены:
+production bundle, checksum остатков и открытие тестовой компании —
 остаются `NOT_VERIFIED`, каждый требует отдельного разрешения владельца
 согласно `CLAUDE.md`.
 
@@ -1465,3 +1465,78 @@ lifecycle, storage class, PAP (`enforced`), UBLA (`true`) — не меняли�
 ## Итог раунда
 
 **`BASE_003_RULES_AND_INDEXES_BACKED_UP`**
+
+---
+
+# Часть 7 — Backup Firebase Auth metadata (защищённый экспорт)
+
+```text
+FIREBASE_AUTH_METADATA_EXPORT: APPROVED
+```
+
+Разрешение владельца распространялось только на read-only экспорт Auth
+metadata — не на изменение, import или удаление пользователей. Ни один из
+этих запрещённых действий не выполнялся.
+
+## 1. Метод (документированный, не подобранный перебором)
+
+`firebase auth:export <file> --format=json --project=finapp-prod-10a83` —
+официальная команда `firebase-tools`, подтверждена через
+`firebase auth:export --help` перед использованием.
+
+## 2. Результат
+
+- Фактическое количество экспортированных аккаунтов: **6** — определено
+  из собственного итогового сообщения CLI («Exported 6 account(s)
+  successfully»), не предположено заранее и не получено чтением полей.
+- Формат: JSON, валидность структуры подтверждена без вывода содержимого.
+
+| Объект | Размер | SHA-256 (скачанной копии, проверено — совпадает) |
+|---|---|---|
+| `firebase-auth-export.json` | 2061 bytes | `b3ea114e483bf5c6064ef6db22826c49db0a1c8a6ca119cfdfcdb67bfc2c93db` |
+| `manifest.json` | 1037 bytes | — (сам manifest) |
+
+## 3. Место хранения
+
+```text
+gs://finapp-restore-20260725-4rxl-backup/auth/20260728T164920Z/
+```
+
+Новый уникальный prefix, ровно 2 объекта, существующие объекты (Firestore
+export, Rules/indexes backup) не тронуты и не перезаписаны. Bucket не
+создавался заново. IAM, billing, API, lifecycle, storage class, PAP
+(`enforced`), UBLA (`true`) — не менялись.
+
+## 4. Локальная защита и проверка
+
+- Экспорт выполнен во временный каталог вне репозитория, вне Downloads/
+  Desktop/общего temp, с правами доступа, ограниченными только текущим
+  пользователем ОС (`icacls /inheritance:r` + `/grant:r <user>:F`).
+- Ровно 2 объекта в bucket, размеры совпали с локальными (подтверждено
+  `gcloud storage ls -l`).
+- Скачана отдельная верификационная копия во второй аналогично защищённый
+  временный каталог; SHA-256 пересчитан локально — совпадает с manifest.
+- Все локальные копии (исходный export, manifest, верификационная копия,
+  оба временных каталога) — удалены сразу после успешной проверки.
+  Подтверждено: каталоги отсутствуют, `git status` их не видит (они и не
+  создавались внутри репозитория).
+
+## 5. Что не раскрывалось
+
+Email, UID, телефоны, displayName, provider IDs, password hashes, salts,
+custom claims, содержимое export — нигде не выводились: ни в терминальном
+резюме, ни в этом отчёте, ни в Git diff, ни в PR, ни в чате. `manifest.json`
+содержит только: timestamp, тип источника, метод, количество (6), размер,
+SHA-256, статус проверки — без единого персонального поля.
+
+## 6. Подтверждение отсутствия изменений
+
+- Firebase Auth users — не менялись, не удалялись, не создавались.
+- `auth:import` — не запускался.
+- Auth providers/настройки — не менялись.
+- IAM, API, billing, lifecycle, bucket settings — не менялись.
+- Production Firestore — не затрагивался этим раундом.
+
+## Итог раунда
+
+**`BASE_003_AUTH_METADATA_BACKED_UP`**
