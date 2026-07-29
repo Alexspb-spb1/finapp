@@ -7,19 +7,40 @@ PHASE: RESTORE TEST VERIFIED — remaining gaps documented
 
 ## Итоговый статус (актуальный)
 
-**`BASE_003_RESTORE_DOCUMENTED_REMAINING_GAPS_FOUND`** — см. «Часть 5»
-ниже. Все прежние блокеры (`BLOCKED_MULTIPLE`, `BLOCKED_PERMISSIONS`,
-`BLOCKED_RESTORE_TARGET_OWNER_DECISION`, `BLOCKED_AUTHENTICATION`) —
-**сняты**: Firestore managed export и managed import выполнены и
-объективно подтверждены (`operationState: SUCCESSFUL`, 14/14 документов с
-обеих сторон, counts до/после совпали — раздел 10 «Часть 5»).
+**`BASE_003_RESTORE_DATA_VERIFIED_WITH_DATASET_COVERAGE_LIMITATION`** — см.
+«Часть 9» (последний раунд) и полную таблицу требований в разделе 10
+«Часть 5» ниже. Все прежние блокеры (`BLOCKED_MULTIPLE`,
+`BLOCKED_PERMISSIONS`, `BLOCKED_RESTORE_TARGET_OWNER_DECISION`,
+`BLOCKED_AUTHENTICATION`) — **сняты**.
 
-`BASE-003` при этом **ещё не завершена**: часть требований
-`REMEDIATION_PLAN.md` остаётся `NOT_VERIFIED` или
-`OWNER_APPROVAL_REQUIRED` (Firestore Rules, indexes, Auth export,
-production bundle, открытие тестовой компании, контрольные суммы
-остатков, lifecycle retention, полноценный production disaster recovery)
-— полная таблица со статусами и evidence приведена в «Часть 5», раздел 10.
+Подтверждены как **DONE**:
+
+- Firestore managed export и managed import (`operationState: SUCCESSFUL`,
+  14/14 документов с обеих сторон, counts до/после совпали);
+- опубликованные Firestore Rules — сохранены и проверены («Часть 6»);
+- production Firestore indexes — сохранены и проверены («Часть 6»);
+- Firebase Auth metadata export — защищённо выполнен и проверен
+  («Часть 7»);
+- production bundle — воспроизводимо пересобран и проверен («Часть 8»);
+- открытие/чтение восстановленных данных обеих непустых ИП-компаний
+  датасета — подтверждено data-layer verification («Часть 9»);
+- контрольные суммы компании, счетов, операций и входных данных остатков
+  — совпали (MATCH) между production и restore для обеих компаний
+  («Часть 9»).
+
+**Ограничение покрытия исходного датасета** (не ошибка восстановления,
+зафиксировано явно): в восстановленном наборе отсутствуют компании формы
+ООО — все 4 компании имеют форму ИП; единственный фактически существующий
+тип счёта — `bank`. Проверены обе компании датасета, реально содержащие
+финансовые данные.
+
+`BASE-003` остаётся незавершённой только по двум пунктам, требующим
+отдельного управленческого решения владельца:
+
+- `OWNER_APPROVAL_REQUIRED` — lifecycle retention для backup bucket;
+- `OWNER_APPROVAL_REQUIRED` — полноценный production disaster recovery
+  process (за пределами уже выполненной проверки тестового restore).
+
 `REMEDIATION_PLAN.md` не изменялся — `[ ] BASE-003` не отмечена `[x]`.
 
 Разделы «Часть 1»–«Часть 4» ниже описывают историю предыдущих раундов

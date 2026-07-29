@@ -2,11 +2,17 @@
 
 ```text
 TASK_ID: BASE-003
-PHASE: RESTORE TEST VERIFIED — remaining gaps documented
-STATUS: Firestore export/import подтверждён (14/14 документов), но
-        Rules/indexes/Auth export/production bundle/checksums/тестовая
-        компания — ещё NOT_VERIFIED. Полный список — см.
-        docs/remediation/reports/BASE-003.md, «Часть 5», раздел 10.
+PHASE: RESTORE DATA VERIFIED — two owner decisions remaining
+STATUS: DONE — Firestore export/import (14/14), Firestore Rules,
+        Firestore indexes, Auth metadata export, production bundle,
+        data-layer verification и контрольные суммы двух непустых
+        ИП-компаний датасета (5 счетов, 455 операций, тип bank).
+        Ограничение покрытия: ООО в датасете нет, второй тип счёта
+        отсутствует — свойство исходных данных, не дефект восстановления.
+        OWNER_APPROVAL_REQUIRED — только: lifecycle retention backup
+        bucket; полноценный production disaster recovery process.
+        Полный список evidence — см.
+        docs/remediation/reports/BASE-003.md, раздел 10 и «Часть 9».
 ```
 
 ## Решение владельца (зафиксировано)
