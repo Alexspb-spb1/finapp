@@ -170,7 +170,14 @@ firebase.json
 
 ---
 
-## [ ] BASE-003 — Сделать резервную копию production и проверить восстановление
+## [x] BASE-003 — Сделать резервную копию production и проверить восстановление
+
+> Independent review: PASS (commit `2bcd6171194ee96ead28d03dcef8a7823f93d18e`).
+> Полная evidence — `docs/remediation/reports/BASE-003.md`. Незакрытыми
+> остаются два отдельных управленческих решения владельца (не блокируют
+> отметку `[x]` по критериям этой задачи, требуют отдельного разрешения
+> перед выполнением): lifecycle retention для backup bucket; полноценный
+> production disaster recovery process.
 
 **Ветка:** документационная задача, отдельный кодовый PR не обязателен.
 
