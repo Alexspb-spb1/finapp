@@ -1342,11 +1342,6 @@ progressDocuments: completedWork=14, estimatedWork=14
 - **Контрольные суммы операций и остатков** (раздел 6.3 дизайна манифеста,
   «Часть 1») — **не вычислялись**. Требует отдельного разрешения и
   отдельного дизайна (сериализация проекции без раскрытия сумм).
-- **Production bundle** — не пересобирался и не сохранялся как отдельный
-  backup-артефакт в рамках `BASE-003` (существующая GitHub Pages
-  rollback-процедура описана отдельно в `docs/remediation/BASELINE.md`, но
-  это не то же самое, что зафиксированный backup-артефакт бандла с
-  checksum, требуемый `BASE-003`).
 - **Lifecycle-правило удаления backup** — только предложено в runbook, не
   применено к bucket.
 - **Полный аварийный порядок восстановления production** (не тестового
@@ -1366,7 +1361,7 @@ progressDocuments: completedWork=14, estimatedWork=14
 | Сохранить опубликованные Firestore Rules | Получен активный release `cloud.firestore` и точный текст его ruleset через Firebase Rules Management API (не локальный `firestore.rules`); сохранён как `deployed-firestore.rules` в bucket, SHA-256 проверен на скачанной копии (раздел «Часть 6») | **DONE** | нет (анализ содержимого/риска — задача `BASE-004`) |
 | Сохранить Firestore indexes | Получены через `firebase firestore:indexes --project=finapp-prod-10a83` напрямую с production (не локальный пустой `firestore.indexes.json`); 0 composite indexes, 0 field overrides — подтверждено живым запросом, сохранено как `firestore-indexes.json` в bucket, SHA-256 проверен (раздел «Часть 6») | **DONE** | нет |
 | Экспортировать Auth metadata пользователей | `firebase auth:export` (документированная команда), CLI подтвердил фактическое количество (6 аккаунтов), export сохранён в bucket, SHA-256 проверен на скачанной копии (раздел «Часть 7») | **DONE** | нет |
-| Сохранить production bundle/артефакт | — | **NOT_VERIFIED** | пересборка на known-good commit + checksum, вне Git |
+| Сохранить production bundle/артефакт | Оригинальный GitHub Pages artifact истёк; воспроизводимая пересборка на доказанном production source commit с точным lockfile и подтверждённой production Firebase web-конфигурацией, загружена в bucket, SHA-256 проверен (раздел «Часть 8») | **DONE** | нет |
 | Хранить резервные копии вне репозитория, с ограниченным доступом | Export лежит в GCS bucket с PAP `enforced`, UBLA `true`, project-level IAM не расширялся (раздел 2–3) | **DONE** (для Firestore export) | lifecycle retention пока не применён — `OWNER_APPROVAL_REQUIRED` |
 | Восстановить копию в staging/отдельном тестовом проекте | Restore выполнен в `finapp-restore-20260725-4rxl` (не staging), import `SUCCESSFUL` (раздел 7) | **DONE** | нет |
 | Проверить количество компаний | production `companies`=4, restore после import `companies`=4 (раздел 8) | **DONE** | нет |
@@ -1388,9 +1383,10 @@ progressDocuments: completedWork=14, estimatedWork=14
 покрывает главный критерий приёмки `BASE-003` («восстановление фактически
 проверено, а не только описано»). Firestore Rules и indexes также
 подтверждены и сохранены как backup-артефакты (раздел «Часть 6»), Auth
-metadata — защищённо экспортирована и проверена (раздел «Часть 7»). Однако
-**не все** перечисленные в `REMEDIATION_PLAN.md` действия выполнены:
-production bundle, checksum остатков и открытие тестовой компании —
+metadata — защищённо экспортирована и проверена (раздел «Часть 7»),
+production bundle воспроизводимо пересобран и проверен (раздел «Часть 8»).
+Однако **не все** перечисленные в `REMEDIATION_PLAN.md` действия
+выполнены: открытие тестовой компании и контрольные суммы остатков —
 остаются `NOT_VERIFIED`, каждый требует отдельного разрешения владельца
 согласно `CLAUDE.md`.
 
@@ -1540,3 +1536,111 @@ SHA-256, статус проверки — без единого персона�
 ## Итог раунда
 
 **`BASE_003_AUTH_METADATA_BACKED_UP`**
+
+---
+
+# Часть 8 — Backup production bundle (воспроизводимая пересборка)
+
+```text
+PRODUCTION_BUNDLE_RETRIEVAL_OR_REBUILD: APPROVED
+CLOSED_BACKUP_BUCKET_UPLOAD: APPROVED
+```
+
+## 1. Вариант A (оригинальный artifact) — недоступен
+
+Определён последний **успешный** production deploy read-only способом
+через GitHub Actions API: workflow «Deploy to GitHub Pages», run ID —
+`29251907411`, `conclusion: success`, source commit
+`928940b6f79034b7a8beea6195e87b39609a3954`, время публикации
+`2026-07-13T12:59:09Z`. Более поздняя попытка деплоя (commit `72d71c2…`,
+2026-07-25) **провалилась** — production фактически не обновлялась, что
+независимо подтверждает: последний живой production build — именно
+`928940b`.
+
+Оригинальный GitHub Pages deployment artifact для run `29251907411`
+проверен через GitHub Actions Artifacts API: `expired: true` (истёк
+2026-07-14). Скачивание невозможно официальным способом. Вариант A
+задокументированно недоступен.
+
+## 2. Вариант B (воспроизводимая пересборка) — выполнен
+
+- Source commit: доказанный `928940b6f79034b7a8beea6195e87b39609a3954`
+  (тот же, что в успешном production deploy run).
+- Изолированный `git worktree` вне текущего рабочего дерева, detached
+  HEAD на этом commit — репозиторий и текущая ветка не затронуты.
+- `npm ci` — точный `package-lock.json` этого commit, frozen install.
+- Production web-конфигурация: получена официальным документированным
+  способом `firebase apps:sdkconfig WEB <appId> --project=finapp-prod-10a83`
+  (это публичный идентификатор Firebase-приложения, а не GitHub Secret) —
+  записана напрямую в файл окружения сборки, ни разу не выведена в
+  терминал, чат или отчёт.
+- Build tool: `tsc -b && vite build` (точный npm script этого commit),
+  `vite v8.0.13`.
+- Node/npm: фактически использованные версии — Node `v24.16.0`, npm
+  `11.13.0`. **Честно зафиксировано расхождение**: production CI
+  использовал Node 20 (`.github/workflows/deploy.yml` этого commit); Node
+  20 и `nvm` недоступны в этой локальной среде — используется уже
+  задокументированное ранее (`BASE-006` finding) известное несоответствие
+  версий, не скрыто и не подделано.
+- `firebase deploy`, preview deployment, Firebase Hosting upload — **не
+  выполнялись**.
+
+## 3. Результат сборки и проверка
+
+- Сборка успешна, 5 файлов в `dist/` (`index.html`, один JS chunk, один CSS
+  chunk, `favicon.svg`, `icons.svg`).
+- `index.html` ссылается на существующие ассеты, все referenced-файлы
+  присутствуют.
+- Абсолютных локальных путей в bundle — 0 найдено.
+- Source maps — отсутствуют (0 файлов `*.map`), соответствует конфигурации
+  vite этого commit (sourcemap не включён).
+- Скан на `.env`/RSA/private_key/client_secret — 0 файлов `.env`
+  внутри bundle; единственное совпадение по паттерну — публичный Firebase
+  Web API key внутри JS-бандла, что ожидаемо для любого Firebase
+  web-клиента и не считается секретом по условиям задачи.
+- Backup-артефактов предыдущих раундов (Auth export, Firestore export,
+  Rules backup, manifest) в bundle — не обнаружено (свежая изолированная
+  сборка).
+
+## 4. Артефакты и место хранения
+
+| Объект | Размер | SHA-256 (скачанной копии, проверено — совпадает) |
+|---|---|---|
+| `production-bundle.zip` | 548 445 bytes | `1eaa8979f7b3f73f82e64fad9c1b52f4b70acda83e1e71fd7188f4a8a081f0f6` |
+| `manifest.json` | 2147 bytes | — (сам manifest) |
+
+Файлов внутри архива: **5**. Суммарный распакованный размер:
+**1 955 034 bytes**.
+
+```text
+gs://finapp-restore-20260725-4rxl-backup/bundles/20260729T070830Z/
+```
+
+Новый уникальный prefix, ровно 2 объекта, существующие backup-объекты
+(Firestore export, Rules/indexes, Auth export) не тронуты. Bucket не
+создавался заново. IAM, billing, API, lifecycle, storage class, PAP
+(`enforced`), UBLA (`true`) — не менялись.
+
+## 5. Проверка загрузки и локальная очистка
+
+Скачана верификационная копия ZIP во второй временный каталог, SHA-256
+пересчитан — совпадает; архив открыт и распакован, количество файлов
+совпало (5). После успешной проверки удалены: временный `git worktree`,
+файл production web-конфигурации, файл переменных окружения сборки,
+исходный `dist/`, ZIP, manifest, верификационная копия и все временные
+каталоги, созданные этим раундом. Основная рабочая копия репозитория
+осталась чистой (`git status --short` — пусто), HEAD не изменился.
+
+## 6. Подтверждение отсутствия изменений
+
+- Deployment (Firebase Hosting, GitHub Pages, любой другой) — **не
+  выполнялся**.
+- Production Firestore, Auth, Rules, indexes — не затрагивались этим
+  раундом.
+- IAM, billing, API, bucket settings, lifecycle — не менялись.
+- Production web-конфигурация — не изменялась, только прочитана read-only
+  официальным способом.
+
+## Итог раунда
+
+**`BASE_003_PRODUCTION_BUNDLE_BACKED_UP`**
