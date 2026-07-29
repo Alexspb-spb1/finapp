@@ -1,13 +1,14 @@
 # BASE-004A — Emergency Firestore Rules remediation (local preparation only)
 
 ## Итоговый статус
-READY_FOR_REVIEW
+READY_FOR_REVIEW_AFTER_CHANGES_REQUIRED
 
-Rules, полный набор тестов (39 `it()`-проверок, покрывающих все 21
-обязательный сценарий + 4 позитивных app-flow сценария) и документация
-подготовлены. Firestore Emulator Suite реально запущен (после установки
-portable JDK 21 строго для этой сессии) — **39/39 PASS, 0 failed, 0
-skipped**. Все остальные проверки — зелёные.
+После независимого ревью закрыты два дополнительных дефекта: массовое
+межкорпоративное чтение через `allow list` и перенос роли основной компании
+на дополнительные memberships. Полный набор расширен до 55
+`it()`-проверок. Firestore Emulator Suite реально запущен с portable
+Temurin JDK 21 только для текущего процесса — **55/55 PASS, 0 failed,
+0 skipped**.
 
 ## Branch / commit
 - branch: `remediation/BASE-004A-rules-emergency-fix`
@@ -35,12 +36,14 @@ skipped**. Все остальные проверки — зелёные.
   запрет клиентского изменения `role`/`companyId`/`companies`/`email`,
   запрет `delete` для `users`, membership-gated `company_data`
   create/update/read, tenant-изоляция `companies`). В процессе прогона
-  эмулятора исправлены 2 реальные ошибки в самих Rules (не в тестах,
-  security-модель не ослаблена) — см. «Известные ограничения /
-  исправления» ниже и раздел 6 плана.
+  После независимого ревью `allow list` закрыт/ограничен реальным query
+  constraint, а роль вычисляется отдельно для каждой компании по точной
+  паре `{companyId, role}`. Конфликтующие/неизвестные/повреждённые
+  memberships обрабатываются fail-closed.
 - `tests/rules/firestore.rules.test.ts` — эмуляторные тесты Firestore
-  Rules, 39 проверок (21 обязательный сценарий + 4 позитивных app-flow),
-  только синтетические данные.
+  Rules, 55 проверок: исходная матрица, позитивные app-flow, реальные
+  `getDocs(query(...))`, per-company roles и malformed memberships; только
+  синтетические данные.
 - `tests/rules/tsconfig.json` — изолированный tsconfig для typecheck тестов
   (не участвует в `npm run build`).
 - `package.json` / `package-lock.json` — добавлены devDependencies
@@ -83,19 +86,21 @@ production deploy/rollback (п.6). Не затронут ни один файл 
 - [x] Закрыт межкорпоративный доступ (`isMemberOf` привязан к пути запроса, не к заявленным полям)
 - [x] Ограничено создание/изменение `company_data` (membership + role-gated + allowlist для `closingDate`)
 - [x] Написаны автоматические тесты Firestore Rules (21 обязательный сценарий + позитивные)
-- [x] Emulator Suite реально запущен, 39/39 тестов PASS, 0 failed, 0 skipped
+- [x] Emulator Suite реально запущен, 55/55 тестов PASS, 0 failed, 0 skipped
 - [x] Подготовлен production deployment checklist и rollback-план (без выполнения)
 - [x] Production deploy НЕ выполнялся
 
 ## Проверки
 | Команда | Результат | Примечание |
 |---|---|---|
-| `npm ci` / `npm install` | PASS | `@firebase/rules-unit-testing@^4.0.1` конфликтовал по peer dep с `firebase@^12`; обновлено до `^5.0.1` (peer `firebase@^12.0.0`) — конфликт снят без `--force`/`--legacy-peer-deps` |
+| `npm ci` | PASS | Чистая установка 924 packages; без `--force`/`--legacy-peer-deps` |
 | `npm run lint` | PASS | 0 ошибок, 0 предупреждений |
 | `npx tsc -b` (приложение) | PASS | Тесты (`tests/`) не входят в `tsconfig.app.json`/`tsconfig.node.json` — не влияют на build |
 | `npx tsc --noEmit -p tests/rules/tsconfig.json` | PASS | Тестовый файл Rules типизирован корректно отдельным строгим tsconfig |
+| `npm run typecheck` | NOT AVAILABLE | Скрипт отсутствует; эквивалентный `npx tsc -b` выполнен отдельно |
+| `npm run test:run` | NOT AVAILABLE | Скрипт отсутствует в `package.json` |
 | `npm run build` | PASS | Без изменений в `src/**`; существовавшее до задачи предупреждение о размере чанка (>500kB) — не связано с этой задачей |
-| `npm run test:rules` (Firestore Emulator, Java 21) | **PASS — 39/39, 0 failed, 0 skipped** | См. полный вывод ниже |
+| `npm run test:rules` (Firestore Emulator, Java 21) | **PASS — 55/55, 0 failed, 0 skipped** | См. полный вывод ниже |
 | синтаксис Rules | PASS | Подтверждён самим фактом успешной загрузки правил эмулятором (`initializeTestEnvironment`) |
 | `git diff --check` | PASS | Только предупреждение `LF will be replaced by CRLF` (некритично, авто-конвертация Git) |
 | `git status --short` | PASS | Ровно ожидаемый список файлов |
@@ -115,7 +120,7 @@ $ npx firebase --version
 15.24.0
 
 $ node --version
-v24.16.0
+v24.14.0
 
 $ npm ls @firebase/rules-unit-testing vitest
 @firebase/rules-unit-testing@5.0.1
@@ -131,8 +136,8 @@ i  Running script: vitest run tests/rules
  RUN  v4.1.10 finapp
 
  Test Files  1 passed (1)
-      Tests  39 passed (39)
-   Duration  7.73s
+      Tests  55 passed (55)
+   Duration  5.43s
 
 + Script exited successfully (code 0)
 i  emulators: Shutting down emulators.
@@ -163,7 +168,13 @@ $ npm run build
   auth-полей. Исправлено удалением `id` из запрещённого списка (id и так
   жёстко привязан к uid отдельной проверкой, подделать невозможно).
 
-Третий прогон: 39 passed, 0 failed, 0 skipped — финальный результат.
+Третий исторический прогон: 39 passed, 0 failed, 0 skipped.
+
+Независимый review затем воспроизвёл два незакрытых дефекта: реальные
+collection query для всех трёх коллекций и перенос `admin` основной
+компании на дополнительную membership. Расширенный baseline на старых
+Rules: 42 passed / 13 failed. После corrective patch: 55 passed,
+0 failed, 0 skipped.
 ```
 
 ## Security review
@@ -180,6 +191,14 @@ $ npm run build
 - Privileged-поля (`role`/`companyId`/`companies`) проверяются исключительно
   через `diff().affectedKeys()` на **до сих пор существующем** документе —
   не через заявленные клиентом значения. Подтверждено тестами 6–10, 21.
+- `allow list` больше не разрешён просто по факту наличия профиля:
+  `users` query должен быть ограничен основной компанией вызывающего,
+  `companies` и `company_data` list запрещены. Это подтверждено настоящими
+  `getDocs(query(...))`, а не одиночными `getDoc`.
+- Для дополнительных компаний роль берётся из точной пары
+  `{companyId, role}`, а не из основной `user.role`. Конфликтующие роли,
+  неизвестная/отсутствующая роль, `null` и список длиннее 10 элементов
+  fail-closed; валидная десятая membership проверена позитивным тестом.
 - Оба исправления, найденные эмулятором (см. выше), сделаны исключительно
   в сторону строгости/корректности Rules — ни в одном месте security-модель
   не ослаблена ради зелёного теста; тестовые ожидания не менялись.
@@ -220,10 +239,9 @@ Production rollback — не применимо (deploy не выполнялс�
 2. Полный список breaking changes (план, раздел 5) построен статическим
    чтением `src/store/authStore.ts`, не подтверждён живым прогоном
    приложения в браузере.
-3. `companies[]` membership проверяется bounded-перебором до 10 элементов
-   (Firestore Rules не поддерживает произвольные циклы/лямбды) —
-   практический предел, не ожидается проблемой для текущего UI, но
-   зафиксирован явно в коде и здесь.
+3. `companies[]` ограничен 10 элементами. Проверка использует точные
+   `{companyId, role}`, без индексного перебора; список длиннее лимита
+   обрабатывается fail-closed.
 
 ## Дополнительные находки вне scope
 - `src/store/authStore.ts` содержит несколько мест, где Firestore-запись
@@ -241,7 +259,7 @@ Production rollback — не применимо (deploy не выполнялс�
  firestore.rules   | заменена deny-all заглушка на содержательные Rules (~180 строк)
  package.json      | +2 devDependencies, +1 npm script
  package-lock.json | автоматическое обновление lockfile
- tests/rules/firestore.rules.test.ts | новый файл (39 проверок)
+ tests/rules/firestore.rules.test.ts | новый файл (55 проверок)
  tests/rules/tsconfig.json           | новый файл
  docs/remediation/BASE-004A_EMERGENCY_RULES_PLAN.md | новый файл
  docs/remediation/reports/BASE-004A.md               | новый файл (этот отчёт)

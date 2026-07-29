@@ -54,58 +54,73 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(callerUid())).data;
     }
 
-    function callerRole() {
-      return callerProfile().role;
+    function isKnownRole(role) {
+      return role in ['viewer', 'accountant', 'admin'];
     }
 
-    // companies[] в схеме приложения — список ОБЪЕКТОВ {companyId, role}
-    // (см. src/types/auth.ts), поэтому прямой оператор `in` по списку строк
-    // не применим. Firestore Rules (CEL-подмножество) не поддерживает
-    // произвольные лямбды/`.filter()`/`.map()` со стрелочными функциями —
-    // единственный доступный способ проверить "есть ли элемент с таким
-    // companyId" — явный bounded-перебор по индексам. Ограничение в 10
-    // компаний на пользователя — практический разумный предел (UI
-    // приложения не предполагает членство в десятках компаний); при
-    // необходимости большего лимита потребуется server-controlled members
-    // подколлекция (см. архитектурный долг в плане BASE-004A).
-    function companyIdAt(memberships, i, companyId) {
-      return memberships.size() > i && memberships[i].companyId == companyId;
+    // companies[] хранит точные объекты {companyId, role}. Сравнение
+    // полного объекта не обращается к потенциально отсутствующим полям,
+    // поэтому null, неполные/расширенные maps и неизвестные роли безопасно
+    // игнорируются. Лимит в 10 memberships сохраняет emergency-модель
+    // предсказуемой; больший список обрабатывается fail-closed.
+    function exactMembership(companyId, role) {
+      return {'companyId': companyId, 'role': role};
     }
 
-    function companyIdInMemberships(memberships, companyId) {
-      return companyIdAt(memberships, 0, companyId) ||
-             companyIdAt(memberships, 1, companyId) ||
-             companyIdAt(memberships, 2, companyId) ||
-             companyIdAt(memberships, 3, companyId) ||
-             companyIdAt(memberships, 4, companyId) ||
-             companyIdAt(memberships, 5, companyId) ||
-             companyIdAt(memberships, 6, companyId) ||
-             companyIdAt(memberships, 7, companyId) ||
-             companyIdAt(memberships, 8, companyId) ||
-             companyIdAt(memberships, 9, companyId);
-    }
-
-    // Компания считается «своей» ТОЛЬКО если это companyId ИЛИ элемент
-    // companies[] в СОБСТВЕННОМ (уже существующем, ранее проверенном)
-    // документе вызывающего пользователя — то есть значение, которое сам
-    // вызывающий изменить через Rules больше не может (см. правила ниже).
-    function isMemberOf(companyId) {
-      return callerHasProfile() &&
+    // Эта функция вызывается только после callerHasProfile(). Все проверки
+    // трёх известных ролей выполняются за один get профиля и без индексного
+    // перебора, чтобы не превышать лимит Rules в 1000 выражений даже при
+    // десяти memberships.
+    function existingProfileRoleIn(companyId, roles) {
+      let profile = callerProfile();
+      let memberships = profile.get('companies', []);
+      let hasViewer = memberships is list &&
+        exactMembership(companyId, 'viewer') in memberships;
+      let hasAccountant = memberships is list &&
+        exactMembership(companyId, 'accountant') in memberships;
+      let hasAdmin = memberships is list &&
+        exactMembership(companyId, 'admin') in memberships;
+      let additionalRoleIsUnambiguous =
+        (hasViewer && !hasAccountant && !hasAdmin) ||
+        (!hasViewer && hasAccountant && !hasAdmin) ||
+        (!hasViewer && !hasAccountant && hasAdmin);
+      let primaryRoleHasNoConflict =
+        (!hasViewer || profile.role == 'viewer') &&
+        (!hasAccountant || profile.role == 'accountant') &&
+        (!hasAdmin || profile.role == 'admin');
+      return
+        (!(memberships is list) || memberships.size() <= 10) &&
         (
-          callerProfile().companyId == companyId ||
           (
-            callerProfile().companies is list &&
-            companyIdInMemberships(callerProfile().companies, companyId)
+            profile.companyId == companyId &&
+            isKnownRole(profile.role) &&
+            profile.role in roles &&
+            primaryRoleHasNoConflict
+          ) ||
+          (
+            profile.companyId != companyId &&
+            additionalRoleIsUnambiguous &&
+            (
+              (hasViewer && 'viewer' in roles) ||
+              (hasAccountant && 'accountant' in roles) ||
+              (hasAdmin && 'admin' in roles)
+            )
           )
         );
     }
 
-    function isAdminOf(companyId) {
-      return isMemberOf(companyId) && callerRole() == 'admin';
+    // Роль вычисляется отдельно для КАЖДОЙ компании. Роль основной компании
+    // никогда не переносится на дополнительную membership.
+    function roleForCompanyIn(companyId, roles) {
+      return callerHasProfile() && existingProfileRoleIn(companyId, roles);
     }
 
-    function roleForCompanyIn(companyId, roles) {
-      return isMemberOf(companyId) && callerRole() in roles;
+    function isMemberOf(companyId) {
+      return roleForCompanyIn(companyId, ['viewer', 'accountant', 'admin']);
+    }
+
+    function isAdminOf(companyId) {
+      return roleForCompanyIn(companyId, ['admin']);
     }
 
     // ── users/{userId} ───────────────────────────────────────────────────
@@ -147,7 +162,11 @@ service cloud.firestore {
       allow get: if isSignedIn() && callerUid() == userId ||
         (callerHasProfile() && resource.data.companyId == callerProfile().companyId);
 
-      allow list: if callerHasProfile();
+      // Firestore Rules не фильтруют результаты запроса. Поэтому list
+      // разрешён только когда сам query доказывает companyId вызывающего
+      // пользователя (реальный Users-page flow использует where companyId).
+      allow list: if callerHasProfile() &&
+        resource.data.companyId == callerProfile().companyId;
 
       // Создание СВОЕГО профиля разрешено, но БЕЗ единого поля, влияющего
       // на авторизацию — role/companyId/companies должны отсутствовать в
@@ -186,7 +205,9 @@ service cloud.firestore {
       allow get: if isMemberOf(companyId) ||
         (isSignedIn() && resource.data.ownerId == callerUid());
 
-      allow list: if callerHasProfile();
+      // Приложение загружает известные компании адресными get. Collection
+      // query нельзя безопасно доказать через legacy companies[] — запрещён.
+      allow list: if false;
 
       // Создание новой компании разрешено любому авторизованному
       // пользователю — не расширяет доступ к ЧУЖИМ данным (новая компания
@@ -219,20 +240,20 @@ service cloud.firestore {
       }
 
       allow get: if isMemberOf(companyId);
-      allow list: if callerHasProfile();
+      // company_data — один документ на компанию, приложение читает его get.
+      // Любой list/query мог бы перечислить чужие финансовые документы.
+      allow list: if false;
 
       // Создание — только подтверждённому участнику компании (закрывает
       // HIGH-риск BASE-004: раньше create не проверял membership вообще).
       // viewer не пишет — минимум accountant/admin.
       allow create: if roleForCompanyIn(companyId, ['accountant', 'admin']);
 
+      allow update: if roleForCompanyIn(companyId, ['admin']);
       allow update: if
-        roleForCompanyIn(companyId, ['accountant', 'admin']) &&
-        (
-          callerRole() == 'admin' ||
-          !request.resource.data.diff(resource.data).affectedKeys()
-            .hasAny(adminOnlyFields())
-        );
+        roleForCompanyIn(companyId, ['accountant']) &&
+        !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(adminOnlyFields());
 
       allow delete: if false;
     }
