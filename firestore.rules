@@ -1,14 +1,244 @@
 rules_version = '2';
 
-// STAGING / EMULATOR BASELINE ONLY.
-// Это НЕ копия и НЕ подтверждение фактических production Firestore Rules —
-// те до сих пор не получены и не проверены (см. BASE-004, ещё не выполнена).
-// Единственная цель этого файла — дать Firestore Emulator Suite стартовать
-// локально (BASE-002) с безопасным deny-all по умолчанию.
-// Этот файл НЕ разворачивался (`firebase deploy`) ни в staging, ни в production.
-// Полноценная ролевая модель — предмет SEC-011.
+// ФинУчёт — Firestore Rules: EMERGENCY REMEDIATION (BASE-004A).
+//
+// Контекст: независимый аудит BASE-004 подтвердил CRITICAL/SECURITY_RISK_C —
+// фактически развёрнутые production Rules позволяли любому авторизованному
+// пользователю самостоятельно менять поля users/{uid}, отвечающие за
+// авторизацию (role, companyId, companies[]), без каких-либо ограничений.
+// Это давало полную межарендную эскалацию privileged-доступа (чтение и
+// запись company_data/companies ЛЮБОЙ компании). Подробности и полная
+// матрица субъект→операция — docs/remediation/SECURITY_BASELINE.md.
+//
+// Это ЭКСТРЕННЫЙ (emergency) патч, а не финальная архитектура. Приложение —
+// чистый SPA без бэкенда/Cloud Functions/custom claims, поэтому members/roles
+// проверяются исключительно по документу users/{uid}. Единственный
+// защищённый вариант в этой ситуации — ЗАПРЕТИТЬ клиенту менять поля,
+// отвечающие за авторизацию (role/companyId/companies), а не пытаться
+// «доказать» их через недоказуемые эвристики. Целевая архитектура
+// (server-controlled members subcollection + callable Cloud Functions вместо
+// прямой клиентской записи привилегированных полей) — задокументирована как
+// архитектурный долг в docs/remediation/BASE-004A_EMERGENCY_RULES_PLAN.md и
+// НЕ реализована в этом патче.
+//
+// Известное следствие (breaking change, задокументировано в плане):
+// регистрация нового аккаунта/компании, приглашение сотрудника, смена роли
+// участника, создание доп. компании (multi-company) и удаление сотрудника —
+// все эти клиентские операции писали companyId/role/companies напрямую в
+// users/{uid} и теперь будут отклонены Rules, пока не появится серверный
+// (Cloud Functions) путь для этих операций.
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ── Общие помощники ───────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function callerUid() {
+      return request.auth.uid;
+    }
+
+    function callerHasProfile() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(callerUid()));
+    }
+
+    // Профиль вызывающего пользователя. Вызывать ТОЛЬКО после
+    // callerHasProfile() — иначе get() на несуществующий документ приводит
+    // к отказу вычисления (fail-closed), что и является желаемым поведением
+    // при отсутствии users/{uid} (CLAUDE.md §6.2).
+    function callerProfile() {
+      return get(/databases/$(database)/documents/users/$(callerUid())).data;
+    }
+
+    function callerRole() {
+      return callerProfile().role;
+    }
+
+    // companies[] в схеме приложения — список ОБЪЕКТОВ {companyId, role}
+    // (см. src/types/auth.ts), поэтому прямой оператор `in` по списку строк
+    // не применим. Firestore Rules (CEL-подмножество) не поддерживает
+    // произвольные лямбды/`.filter()`/`.map()` со стрелочными функциями —
+    // единственный доступный способ проверить "есть ли элемент с таким
+    // companyId" — явный bounded-перебор по индексам. Ограничение в 10
+    // компаний на пользователя — практический разумный предел (UI
+    // приложения не предполагает членство в десятках компаний); при
+    // необходимости большего лимита потребуется server-controlled members
+    // подколлекция (см. архитектурный долг в плане BASE-004A).
+    function companyIdAt(memberships, i, companyId) {
+      return memberships.size() > i && memberships[i].companyId == companyId;
+    }
+
+    function companyIdInMemberships(memberships, companyId) {
+      return companyIdAt(memberships, 0, companyId) ||
+             companyIdAt(memberships, 1, companyId) ||
+             companyIdAt(memberships, 2, companyId) ||
+             companyIdAt(memberships, 3, companyId) ||
+             companyIdAt(memberships, 4, companyId) ||
+             companyIdAt(memberships, 5, companyId) ||
+             companyIdAt(memberships, 6, companyId) ||
+             companyIdAt(memberships, 7, companyId) ||
+             companyIdAt(memberships, 8, companyId) ||
+             companyIdAt(memberships, 9, companyId);
+    }
+
+    // Компания считается «своей» ТОЛЬКО если это companyId ИЛИ элемент
+    // companies[] в СОБСТВЕННОМ (уже существующем, ранее проверенном)
+    // документе вызывающего пользователя — то есть значение, которое сам
+    // вызывающий изменить через Rules больше не может (см. правила ниже).
+    function isMemberOf(companyId) {
+      return callerHasProfile() &&
+        (
+          callerProfile().companyId == companyId ||
+          (
+            callerProfile().companies is list &&
+            companyIdInMemberships(callerProfile().companies, companyId)
+          )
+        );
+    }
+
+    function isAdminOf(companyId) {
+      return isMemberOf(companyId) && callerRole() == 'admin';
+    }
+
+    function roleForCompanyIn(companyId, roles) {
+      return isMemberOf(companyId) && callerRole() in roles;
+    }
+
+    // ── users/{userId} ───────────────────────────────────────────────────
+    //
+    // КРИТИЧЕСКОЕ ограничение (закрывает BASE-004 CRITICAL): поля, влияющие
+    // на авторизацию, НЕЛЬЗЯ менять клиенту ни при create, ни при update —
+    // ни на своём документе, ни тем более на чужом. Единственный способ
+    // назначить/сменить role, companyId, companies — доверенная серверная
+    // операция (Cloud Function), которой сегодня не существует (архитектурный
+    // долг, см. план). Это сознательное emergency-ограничение: лучше временно
+    // не давать клиенту менять членство вообще, чем пытаться доказать
+    // безопасность неатомарной клиентской эвристики.
+
+    match /users/{userId} {
+
+      // Поля профиля, которые пользователь МОЖЕТ менять сам — не влияют на
+      // авторизацию и не участвуют ни в одной проверке isMemberOf/isAdminOf.
+      function selfEditableFields() {
+        return ['name', 'avatar'];
+      }
+
+      // Поля, которые категорически нельзя трогать клиенту ни при create,
+      // ни при update — ни на своём документе, ни на чужом.
+      // `id` НЕ входит в этот список: он обязателен на create и отдельно
+      // жёстко проверяется ниже (`request.resource.data.id == userId`) —
+      // клиент физически не может присвоить чужой `id`, поэтому поле не
+      // авторизационно-опасно само по себе.
+      function authSensitiveFields() {
+        return ['role', 'companyId', 'companies', 'email',
+                'owner', 'isOwner', 'admin', 'isAdmin', 'createdAt'];
+      }
+
+      // Разрешено читать: свой профиль, либо профиль коллеги той же
+      // компании (нужно для списка пользователей на странице «Пользователи»).
+      // resource.data.companyId — это УЖЕ СУЩЕСТВУЮЩЕЕ поле целевого
+      // документа (не то, что пишет вызывающий), и оно, в свою очередь,
+      // тоже защищено этими же Rules от постороннего изменения — поэтому
+      // сравнение с callerProfile().companyId доверенное.
+      allow get: if isSignedIn() && callerUid() == userId ||
+        (callerHasProfile() && resource.data.companyId == callerProfile().companyId);
+
+      allow list: if callerHasProfile();
+
+      // Создание СВОЕГО профиля разрешено, но БЕЗ единого поля, влияющего
+      // на авторизацию — role/companyId/companies должны отсутствовать в
+      // создаваемом документе. Реальное назначение компании/роли —
+      // отдельная доверенная операция (см. план, breaking change #1).
+      allow create: if isSignedIn() && callerUid() == userId &&
+        request.resource.data.id == userId &&
+        !request.resource.data.keys().hasAny(authSensitiveFields());
+
+      // Обновление СВОЕГО профиля — только явный allowlist полей, никогда
+      // не auth-поля. Никаких self-update role/companyId/companies.
+      allow update: if isSignedIn() && callerUid() == userId &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(selfEditableFields());
+
+      // Управление ДРУГИМИ пользователями (смена роли, добавление в
+      // компанию, удаление сотрудника admin'ом) через клиентские Rules
+      // НЕ реализовано в этом emergency-патче — безопасная модель для
+      // этого сценария недоказуема без атомарной серверной проверки
+      // (требование плана п.7: «либо отсутствовать в клиентских Rules,
+      // если безопасную модель невозможно доказать»). Управление
+      // участниками — только вручную (Firebase Console / Admin SDK) до
+      // реализации Cloud Functions.
+      allow update: if false; // чужой документ — запрещено
+      allow delete: if false; // удаление запрещено (в т.ч. защита от delete+recreate обхода)
+    }
+
+    // ── companies/{companyId} ────────────────────────────────────────────
+
+    match /companies/{companyId} {
+
+      function companyEditableFields() {
+        return ['name', 'legalType', 'inn', 'currency'];
+      }
+
+      allow get: if isMemberOf(companyId) ||
+        (isSignedIn() && resource.data.ownerId == callerUid());
+
+      allow list: if callerHasProfile();
+
+      // Создание новой компании разрешено любому авторизованному
+      // пользователю — не расширяет доступ к ЧУЖИМ данным (новая компания
+      // изначально ничья, кроме создателя). Владелец фиксируется как сам
+      // вызывающий и далее НЕ может быть переопределён (см. update ниже).
+      allow create: if isSignedIn() &&
+        request.resource.data.id == companyId &&
+        request.resource.data.ownerId == callerUid();
+
+      // Изменение — только подтверждённый admin ЭТОЙ ЖЕ компании, и только
+      // разрешённые поля (ownerId и id неизменны с клиента).
+      allow update: if isAdminOf(companyId) &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(companyEditableFields()) &&
+        request.resource.data.ownerId == resource.data.ownerId &&
+        request.resource.data.id == resource.data.id;
+
+      allow delete: if false;
+    }
+
+    // ── company_data/{companyId} ─────────────────────────────────────────
+
+    match /company_data/{companyId} {
+
+      // Поля, которые обычный участник (accountant) НЕ может менять —
+      // закрытие периода доступно только admin (сохраняет исходную бизнес-
+      // логику production Rules, но теперь поверх доказанного membership).
+      function adminOnlyFields() {
+        return ['closingDate'];
+      }
+
+      allow get: if isMemberOf(companyId);
+      allow list: if callerHasProfile();
+
+      // Создание — только подтверждённому участнику компании (закрывает
+      // HIGH-риск BASE-004: раньше create не проверял membership вообще).
+      // viewer не пишет — минимум accountant/admin.
+      allow create: if roleForCompanyIn(companyId, ['accountant', 'admin']);
+
+      allow update: if
+        roleForCompanyIn(companyId, ['accountant', 'admin']) &&
+        (
+          callerRole() == 'admin' ||
+          !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(adminOnlyFields())
+        );
+
+      allow delete: if false;
+    }
+
+    // ── Всё остальное — deny-by-default ──────────────────────────────────
+
     match /{document=**} {
       allow read, write: if false;
     }
