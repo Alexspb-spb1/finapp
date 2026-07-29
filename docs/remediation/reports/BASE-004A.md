@@ -1,5 +1,255 @@
 # BASE-004A — Emergency Firestore Rules remediation (local preparation only)
 
+## Итоговый статус (актуальный)
+**`BASE_004A_FIX2_READY_FOR_REVIEW`** — см. «Часть 2» (текущий раунд,
+`TASK_ID: BASE-004A-FIX-02`) ниже. «Часть 1» оставлена без изменений, для
+истории предыдущего раунда (`BASE_004A_REVIEW_FAILED`).
+
+**Требуется НОВЫЙ независимый аудит.** Предыдущее ревью завершилось
+`BASE_004A_REVIEW_FAILED`. Изменения текущего раунда (Часть 2) не были
+проверены независимо и не могут считаться окончательным исправлением до
+отдельного `REVIEW_RESULT: PASS`.
+
+`REMEDIATION_PLAN.md` не менялся — `BASE-004` остаётся `[ ]`.
+
+---
+
+# Часть 2 — BASE-004A-FIX-02 (текущий раунд)
+
+```text
+TASK_ID: BASE-004A-FIX-02
+```
+
+## Итоговый статус
+READY_FOR_REVIEW (`BASE_004A_FIX2_READY_FOR_REVIEW`)
+
+## Branch / commit
+- branch: `remediation/BASE-004A-rules-emergency-fix`
+- base SHA (ожидаемый HEAD удалённой ветки перед этим раундом): `bfa23b6cb41f2fc212ad53ead1f7d3caadcb0246`
+- result SHA: см. финальный ответ в чате после коммита и push
+
+## Проверенное исходное состояние
+- Preflight подтвердил: рабочее дерево было чистым, ветка —
+  `remediation/BASE-004A-rules-emergency-fix`, локальный HEAD после
+  `git fetch` + fast-forward совпал с `origin` и равен ожидаемому
+  `bfa23b6cb41f2fc212ad53ead1f7d3caadcb0246`.
+- Прочитан код (read-only, без изменений): `firestore.rules`,
+  `tests/rules/firestore.rules.test.ts`, `src/store/authStore.ts`
+  (`onAuthStateChanged`, `switchCompany()`), `src/types/auth.ts`
+  (`companyId`/`role`/`companies[]`), `BASE-004A_EMERGENCY_RULES_PLAN.md`,
+  предыдущий отчёт — самостоятельно перепроверено, не принято на веру.
+- Дефект подтверждён как реально существующий (не гипотетический): в
+  `firestore.rules` на момент `bfa23b6` `allow list` для `users/{userId}`
+  сравнивал `resource.data.companyId` только с
+  `callerProfile().companyId` (основной компанией вызывающего) —
+  `companies[]` (дополнительные компании) не участвовали в проверке
+  `list` вообще, хотя уже участвовали в `get`/`companies`/`company_data`.
+- **Baseline-воспроизведение выполнено ДО правки Rules** (см. «Фактический
+  вывод» ниже): регрессионный тест добавлен в тестовый файл первым, прогнан
+  против ещё неисправленных Rules — 7 тестов, завязанных на чтение
+  дополнительной компании, воспроизводимо падают с `permission-denied`; все
+  остальные 70 (включая полный набор из 55 ранее существовавших) уже
+  проходят на том же коммите — подтверждает точную локализацию дефекта.
+
+## Что изменено
+- `firestore.rules` — единственное изменение: `allow list` для
+  `users/{userId}` заменён с сравнения по ЕДИНСТВЕННОЙ (основной) компании
+  на `isMemberOf(resource.data.companyId)` — ту же роль-функцию, что уже
+  безопасно используется для `companies`/`company_data` (проверяет
+  основную И дополнительные компании по точной паре `{companyId, role}`,
+  ограничена ≤10 memberships, fail-closed при некорректных данных). Никакие
+  другие правила (`get`/`create`/`update`/`delete` для `users`, любые
+  правила `companies`/`company_data`) не менялись.
+- `tests/rules/firestore.rules.test.ts` — добавлен блок
+  `BASE-004A-FIX-02` (22 новых `it()`, включая 1 baseline-тест защиты
+  от регрессии) + добавлена фикстура `COMPANY_C`/`ADMIN_C` для проверки
+  «доступ к дополнительной компании ≠ доступ к третьей, несвязанной». Ни
+  один из 55 существующих тестов не изменён и не удалён.
+- `docs/remediation/BASE-004A_EMERGENCY_RULES_PLAN.md` — исправлено
+  прежнее неверное утверждение (`list` для `users` работает только через
+  основную компанию — это и было дефектом, не описанием финального
+  поведения); добавлен раздел §6a с первопричиной, baseline и точным
+  diff-исправлением; обновлены счётчики тестов (55→77) и чеклист (добавлен
+  пункт про новый независимый аудит).
+- `docs/remediation/reports/BASE-004A.md` — этот отчёт (текущая «Часть 2»
+  дополняет, не заменяет «Часть 1»).
+
+Не менялись: `package.json`, `package-lock.json` (новые зависимости не
+потребовались), любой файл `src/**`, Firebase-конфигурация, индексы,
+Cloud Functions, любая другая ветка.
+
+## Почему изменения входят в текущий пункт
+Единственная строка изменения в `firestore.rules` — прямое и минимальное
+следствие подтверждённого дефекта `BASE-004A-FIX-02`: без нее реальный
+app-flow (вход с ранее выбранной доп. компанией, `switchCompany()`,
+загрузка списка сотрудников выбранной компании) получает
+`permission-denied`. Новые тесты — прямое требование задания (позитивные и
+негативные сценарии для доп. компании). Документация обновлена, т.к. само
+задание явно требует исправить прежнее неверное утверждение.
+
+## Затронутые файлы
+```text
+ M firestore.rules
+ M tests/rules/firestore.rules.test.ts
+ M docs/remediation/BASE-004A_EMERGENCY_RULES_PLAN.md
+ M docs/remediation/reports/BASE-004A.md
+```
+Подтверждено: `git diff --stat -- src/` — пусто, изменений `src/**` нет.
+`package.json`/`package-lock.json` не изменялись — новые зависимости не
+требовались для этого исправления.
+
+## Критерии приемки
+- [x] Дефект воспроизведён регрессионным тестом ДО правки Rules (baseline)
+- [x] Query сотрудников дополнительной компании разрешён при валидном membership
+- [x] Роль для дополнительной компании определяется отдельно, не наследуется от основной
+- [x] `companies[]` — bounded ≤10, fail-closed при null/неизвестной роли/неверном типе/отсутствующем `companyId`
+- [x] Межкорпоративное чтение (компания вне `isMemberOf`) остаётся запрещено — доказано через `resource.data` для каждого потенциального документа, а не постфактум-фильтром
+- [x] Ни один из 55 существующих тестов не изменён/не ослаблен
+- [x] `src/**` не затронут
+- [x] Emulator Suite реально запущен — 77/77 PASS, 0 failed, 0 skipped (дважды подряд, для стабильности)
+- [x] Production deploy НЕ выполнялся
+
+## Проверки
+| Команда | Результат | Примечание |
+|---|---|---|
+| `npm ci` | PASS | 929 packages, без изменений `package-lock.json` (новые зависимости не требовались) |
+| `npm run test:rules` (Firestore Emulator, Java 21) | **PASS — 77/77, 0 failed, 0 skipped** | Прогнано дважды подряд для стабильности — оба раза 77/77. См. baseline (7 failed на старых Rules) и финальный вывод ниже |
+| `npm run lint` | PASS | 0 ошибок, 0 предупреждений |
+| `npx tsc -b` (приложение) | PASS | `src/**` не менялся |
+| `npx tsc --noEmit -p tests/rules/tsconfig.json` | PASS | Новый тестовый блок типизирован корректно |
+| `npm run build` | PASS | Без изменений в `src/**`; существовавшее предупреждение о размере чанка (>500kB) не связано с этой задачей |
+| `git diff --check` | PASS | Без предупреждений о конфликтных маркерах/пробелах |
+| синтаксис Rules | PASS | Подтверждён успешной загрузкой в Firestore Emulator (`initializeTestEnvironment`) на каждом из трёх прогонов |
+| secret scan | PASS | Паттерны API-ключей/паролей/private key — не найдены в изменённых файлах |
+| PII scan | PASS | Реальные email/телефоны — не найдены |
+| financial-data scan | PASS | Номера карт/ИНН — не найдены |
+| Firebase identifier scan | PASS | Найден только уже существовавший синтетический `demo-finapp-rules-test` |
+| absolute-path scan | PASS | Абсолютных локальных путей в изменённых файлах нет |
+| `git diff --stat -- src` | PASS | Пусто — `src/**` не затронут |
+| `git status --short` | PASS | Ровно 4 ожидаемых изменённых файла |
+
+## Фактический вывод существенных тестов
+```text
+$ node --version
+v24.16.0
+$ java -version   (переменные окружения только текущего процесса, portable Temurin 21 из предыдущего раунда)
+openjdk version "21.0.12" 2026-07-21 LTS
+$ npx firebase --version
+15.24.0
+$ npm ls @firebase/rules-unit-testing vitest
+@firebase/rules-unit-testing@5.0.1
+vitest@4.1.10
+
+── BASELINE (до правки firestore.rules, commit bfa23b6) ──────────────────
+$ npm run test:rules
+ Test Files  1 failed (1)
+      Tests  7 failed | 70 passed (77)
+
+FAIL BASELINE (defect reproduction): additional member of B can query
+     B's employees — must now ALLOW
+FAIL 3. additional admin role can query the additional company employees
+FAIL 4. additional accountant role can query the additional company employees
+FAIL 5. additional viewer role can query the additional company employees
+FAIL 6. a valid membership at the tenth position can still query that company
+FAIL 7. query matches the real switchCompany() app flow
+FAIL 20. admin of A / viewer of B does not get admin-level access in B
+         via query-adjacent write
+
+FirebaseError: evaluation error at L168:22 for 'list' @ L168, false for
+'list' @ L264, false for 'list' @ L168, false for 'list' @ L264
+
+── После исправления (allow list: if isMemberOf(resource.data.companyId)) ──
+$ npm run test:rules
+ Test Files  1 passed (1)
+      Tests  77 passed (77)
+   Duration  8.60s
+
+── Повторный прогон для стабильности ──────────────────────────────────────
+$ npm run test:rules
+ Test Files  1 passed (1)
+      Tests  77 passed (77)
+   Duration  9.12s
+
+$ npm run lint
+(без вывода — 0 ошибок)
+$ npx tsc -b
+(без вывода — 0 ошибок)
+$ npm run build
+✓ built in 1.46s
+$ npx tsc --noEmit -p tests/rules/tsconfig.json
+(без вывода — 0 ошибок)
+```
+
+## Security review
+- Исправление — сужение одной проверки до общей роль-функции
+  `isMemberOf`, уже используемой (и уже проверенной 55 тестами) для
+  `companies`/`company_data` — не введена новая логика, новый класс
+  условий или новое доверие к клиентским данным.
+- `list` по-прежнему НЕ является постфактум-фильтром: `isMemberOf(resource.data.companyId)`
+  вычисляется для КАЖДОГО потенциального документа результата — документ
+  компании вне `isMemberOf` проваливает условие → весь query отклоняется
+  целиком. Проверено тестами 8 (чужая компания), 9 (`in`-query со смесью
+  разрешённой и чужой компании), 10 (`collection()` без `where`), 11
+  (`limit()` без `where`), 12 (`orderBy()` без `where`), 21 (третья,
+  несвязанная компания C).
+- Роль для дополнительной компании по-прежнему определяется отдельно,
+  никогда не наследуется от основной — тест 20 и переиспользованные тесты
+  из `existingProfileRoleIn`.
+- `companies[]` fail-closed сохранён без изменений: неизвестная роль
+  (тест 14), отсутствующий `companyId` (тест 15), `null`-элемент (тест 16),
+  неверный тип поля целиком (тест 17), >10 memberships (тест 19).
+- Попытки изменить auth-sensitive поля (`role`/`companyId`/`companies`/`id`/`email`)
+  и `companies.ownerId` при активной дополнительной membership — по-прежнему
+  запрещены (тесты 22, 23) — правки `create`/`update` не затрагивались.
+- Ни один тест не был ослаблен, удалён или переписан ради прохождения —
+  единственные правки в тестовом файле — новые `it()`.
+
+## Данные и миграция
+Нет. Изменение — однострочная правка условия `allow list`; ни один
+документ (реальный или тестовый в постоянном хранилище) не создаётся, не
+удаляется и не мигрирует. Тесты пишут исключительно в изолированный
+Firestore Emulator (`demo-finapp`), очищаемый перед каждым тестом.
+
+## Ручная проверка
+Не выполнялась — UI/браузер не запускался, изменения не в `src/**` и не
+наблюдаемы в превью (Rules проверяются Emulator Suite).
+
+## Rollback
+Локальный: `git diff firestore.rules tests/rules/firestore.rules.test.ts docs/remediation/BASE-004A_EMERGENCY_RULES_PLAN.md docs/remediation/reports/BASE-004A.md`
+показывает точный diff этого раунда; `git checkout bfa23b6 -- firestore.rules tests/rules/firestore.rules.test.ts docs/remediation/BASE-004A_EMERGENCY_RULES_PLAN.md docs/remediation/reports/BASE-004A.md`
+вернёт к состоянию до этого раунда. Production rollback — не применимо
+(deploy не выполнялся).
+
+## Известные ограничения
+1. Ruleset production повторно не запрашивался в этой сессии (см. «Часть 1»,
+   ограничение №1 — не изменилось).
+2. Прямой `get` отдельного документа коллеги дополнительной компании (в
+   отличие от `list`/query) НЕ был расширен этим раундом — сообщённый
+   дефект и реальный app-flow используют `list`/query, а не адресный `get`
+   чужого `users/{uid}`. Если такой прямой `get` понадобится приложению в
+   будущем, потребуется отдельная, отдельно проверенная правка.
+3. Требуется новый независимый аудит именно этого раунда (см. выше).
+
+## Дополнительные находки вне scope
+Нет новых, помимо уже зафиксированных в «Части 1».
+
+## Diff summary
+```text
+ firestore.rules                                     |  15 +++++++++--
+ tests/rules/firestore.rules.test.ts                  | 279 +++++++++++++++++++++++++++
+ docs/remediation/BASE-004A_EMERGENCY_RULES_PLAN.md   |  ~130 ++++++++++++-----
+ docs/remediation/reports/BASE-004A.md                | переписан (текущая Часть 2 + история в Части 1)
+```
+
+## Следующий разрешённый пункт
+Не определяется и не анализируется в рамках этого раунда. Следующий шаг —
+НОВЫЙ независимый аудит именно `BASE-004A-FIX-02`, НЕ следующий `TASK_ID`
+из `REMEDIATION_PLAN.md`. `BASE-004` в `REMEDIATION_PLAN.md` остаётся `[ ]`.
+
+---
+
+# Часть 1 — предыдущий раунд (без изменений, для истории)
+
 ## Итоговый статус
 READY_FOR_REVIEW_AFTER_CHANGES_REQUIRED
 
@@ -35,11 +285,11 @@ Temurin JDK 21 только для текущего процесса — **55/55
   self-editable полей `users/{uid}` через `diff().affectedKeys()`, полный
   запрет клиентского изменения `role`/`companyId`/`companies`/`email`,
   запрет `delete` для `users`, membership-gated `company_data`
-  create/update/read, tenant-изоляция `companies`). В процессе прогона
-  После независимого ревью `allow list` закрыт/ограничен реальным query
-  constraint, а роль вычисляется отдельно для каждой компании по точной
-  паре `{companyId, role}`. Конфликтующие/неизвестные/повреждённые
-  memberships обрабатываются fail-closed.
+  create/update/read, tenant-изоляция `companies`). После независимого
+  ревью `allow list` закрыт/ограничен реальным query constraint, а роль
+  вычисляется отдельно для каждой компании по точной паре
+  `{companyId, role}`. Конфликтующие/неизвестные/повреждённые memberships
+  обрабатываются fail-closed.
 - `tests/rules/firestore.rules.test.ts` — эмуляторные тесты Firestore
   Rules, 55 проверок: исходная матрица, позитивные app-flow, реальные
   `getDocs(query(...))`, per-company roles и malformed memberships; только

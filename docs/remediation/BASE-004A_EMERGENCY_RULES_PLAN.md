@@ -1,11 +1,16 @@
 # BASE-004A — Emergency Firestore Rules remediation plan
 
 ```text
-TASK_ID: BASE-004A
+TASK_ID: BASE-004A-FIX-02
 PHASE: EMERGENCY RULES REMEDIATION — LOCAL PREPARATION ONLY
-STATUS: BASE_004A_READY_FOR_REVIEW_AFTER_CHANGES_REQUIRED (см. §6)
+STATUS: BASE_004A_FIX2_READY_FOR_REVIEW (см. §6 и §6a)
 DEPLOY: НЕ ВЫПОЛНЯЛСЯ
 ```
+
+**Требуется НОВЫЙ независимый аудит** — предыдущий раунд ревью завершился
+`BASE_004A_REVIEW_FAILED`; изменения этого раунда (см. §6a) не были
+проверены независимо и не могут считаться окончательными до отдельного
+`REVIEW_RESULT: PASS`.
 
 ## 1. Подтверждённая причина уязвимости
 
@@ -70,8 +75,8 @@ BASE-004, раздел 9):
 
 | Операция | Правило |
 |---|---|
-| `get` | свой документ, либо коллега той же (уже подтверждённой) компании |
-| `list` | только query с `where('companyId', '==', caller.companyId)`; неограниченный и межкорпоративный query запрещён |
+| `get` | свой документ, либо коллега ОСНОВНОЙ компании (`resource.data.companyId == callerProfile().companyId`) — этот путь `BASE-004A-FIX-02` не менял, т.к. сообщённый дефект и реальный app-flow (страница «Пользователи», `switchCompany()`) используют `list`/query, а не адресный `get` чужого документа |
+| `list` | только query, где КАЖДЫЙ потенциальный документ результата принадлежит компании из `isMemberOf(resource.data.companyId)` — основной ИЛИ дополнительной (`companies[]`); неограниченный и межкорпоративный query запрещён (BASE-004A-FIX-02: **исправлено** — до этого раунда ошибочно проверялась только основная компания, из-за чего запрос сотрудников ДОПОЛНИТЕЛЬНОЙ компании отклонялся, см. §6a) |
 | `create` | только свой `uid`; `id == uid`; поля `role/companyId/companies/email/owner*/admin*/createdAt` должны ОТСУТСТВОВАТЬ |
 | `update` (свой) | allowlist через `diff().affectedKeys().hasOnly([...])` — разрешены только `name`, `avatar` |
 | `update` (чужой) | `false` — управление участниками другой персоной через клиентские Rules не реализовано (см. §4, архитектурный долг) |
@@ -122,6 +127,14 @@ BASE-004, раздел 9):
   роли обрабатываются fail-closed.
 - `closingDate` — самоназначение через подделанную роль `admin` больше не
   проходит, поскольку сама роль больше не может быть подделана.
+- **BASE-004A-FIX-02**: пользователь с валидным membership в дополнительной
+  компании больше НЕ получает permission-denied при чтении списка её
+  сотрудников (реальный `where('companyId', '==', selectedCompanyId)` из
+  входа с ранее выбранной компанией, `switchCompany()` и загрузки списка
+  сотрудников выбранной компании) — при этом межкорпоративное чтение
+  (компания, в которой вызывающий НЕ состоит вообще) остаётся заблокировано
+  на уровне «каждый потенциальный документ результата», а не как
+  постфактум-фильтр (см. §6a).
 
 ## 4. Оставшиеся архитектурные риски (НЕ устранены в этом патче)
 
@@ -252,9 +265,9 @@ security-review. Security-модель не ослаблялась:
    отсутствующие и конфликтующие роли не дают доступ.
 
 После исправлений весь набор перезапущен полностью (не частично) и все
-55 тестов подтверждены зелёными.
+55 тестов подтверждены зелёными (этот раунд — см. §6a — довёл число до 77).
 
-### Итоговый результат
+### Итоговый результат (раунд после независимого ревью, до FIX-02)
 
 ```text
  Test Files  1 passed (1)
@@ -275,6 +288,110 @@ security-review. Security-модель не ослаблялась:
 
 `npm run lint`, `npm run build`, `tsc -b` (приложение), отдельный typecheck
 теста — все зелёные (см. §8 отчёта задачи).
+
+## 6a. BASE-004A-FIX-02 — исправление чтения сотрудников доп. компании
+
+Предыдущий независимый аудит завершился `BASE_004A_REVIEW_FAILED` и выявил
+новый подтверждённый дефект (независимо от четырёх проблем §6): пользователь
+с валидным membership в ДОПОЛНИТЕЛЬНОЙ компании (не основной) не мог
+выполнить query сотрудников этой компании — реальный app-flow
+(`where('companyId', '==', selectedCompanyId)`, используется при входе с
+ранее выбранной доп. компанией, в `switchCompany()`, при загрузке списка
+сотрудников выбранной компании) получал `permission-denied`.
+
+### Первопричина
+
+`allow list` для `users/{userId}` сравнивал `resource.data.companyId`
+**только** с `callerProfile().companyId` (основной компанией) — тот же
+самый паттерн, что уже был устранён для `get`/`company_data`/`companies` в
+предыдущем раунде, но был пропущен для `list` коллекции `users`.
+
+### Baseline-воспроизведение (до исправления, commit `bfa23b6`)
+
+Регрессионный тест добавлен в `tests/rules/firestore.rules.test.ts` (блок
+`BASE-004A-FIX-02`, тест `BASELINE (defect reproduction)`) ДО правки
+`firestore.rules` и прогнан против неисправленных Rules:
+
+```text
+$ npm run test:rules   (commit bfa23b6, firestore.rules ЕЩЁ НЕ изменён)
+
+ Tests  77 total | 7 failed | 70 passed
+
+FAIL BASELINE (defect reproduction): additional member of B can query
+     B's employees — must now ALLOW
+FAIL 3. additional admin role can query the additional company employees
+FAIL 4. additional accountant role can query the additional company employees
+FAIL 5. additional viewer role can query the additional company employees
+FAIL 6. a valid membership at the tenth position can still query that company
+FAIL 7. query matches the real switchCompany() app flow
+FAIL 20. admin of A / viewer of B does not get admin-level access in B
+         via query-adjacent write
+
+FirebaseError: evaluation error at L168:22 for 'list' @ L168, false for
+'list' @ L264, false for 'list' @ L168, false for 'list' @ L264
+```
+
+Ровно 7 новых тестов, завязанных на чтение дополнительной компании, падают
+с `permission-denied`; все 70 остальных (включая полный набор из 55
+существующих) уже проходят — подтверждает, что дефект локализован именно в
+`list` для `users` и не является более широкой регрессией.
+
+### Точное исправление
+
+`firestore.rules`, блок `match /users/{userId}` — заменено сравнение с
+единственной (основной) компанией на ту же роль-функцию `isMemberOf`,
+которая уже безопасно используется для `companies`/`company_data`:
+
+```diff
+- allow list: if callerHasProfile() &&
+-   resource.data.companyId == callerProfile().companyId;
++ allow list: if isMemberOf(resource.data.companyId);
+```
+
+`isMemberOf` вызывает уже существующую `existingProfileRoleIn`, которая:
+- проверяет и основную (`profile.companyId`), и дополнительные
+  (`profile.companies[]`) компании по точной паре `{companyId, role}`;
+- никогда не переносит роль основной компании на дополнительную;
+- ограничена ≤10 memberships (fail-closed при превышении);
+- fail-closed при `null`, отсутствующем `companyId`, неизвестной роли,
+  конфликтующих/дублирующихся записях и `companies[]` неправильного типа.
+
+Поскольку `list` в Firestore Rules вычисляется НЕ как постфактум-фильтр, а
+как условие, которое должно быть доказуемо истинным для КАЖДОГО
+потенциального документа результата (`resource.data` при `list` — это
+данные рассматриваемого документа-кандидата), замена автоматически
+сохраняет все существующие запреты: документ чужой (совсем не входящей в
+`isMemberOf`) компании по-прежнему проваливает проверку → весь query
+целиком отклоняется — неограниченный, межкорпоративный, `in`-query со
+смешанными компаниями, `limit()`/`orderBy()` без `companyId`-ограничения —
+все по-прежнему `DENY` (подтверждено новыми тестами 8–12, 19, 21).
+
+Никакие другие правила (`create`/`update`/`delete` для `users`,
+`companies`, `company_data`) не менялись.
+
+### Новые тесты (добавлены, не заменяют существующие)
+
+22 новых `it()` в блоке `BASE-004A-FIX-02` (`tests/rules/firestore.rules.test.ts`):
+1 baseline-воспроизведение + 6 позитивных (основная компания, доп.
+admin/accountant/viewer, десятая membership-позиция, реальный
+`switchCompany()`-паттерн) + 15 негативных (чужая компания, смешанный
+`in`-query, неограниченный `list`/`limit`/`orderBy`, адресный `get` чужой
+компании, неизвестная роль, membership без `companyId`, `null`-элемент в
+списке, `companies[]` неверного типа, >10 memberships, отсутствие
+admin-прав в доп. компании, доступ к третьей несвязанной компании C,
+попытки изменить auth-sensitive поля и `ownerId` компании).
+
+### Итоговый результат (этот раунд, после исправления)
+
+```text
+ Test Files  1 passed (1)
+      Tests  77 passed (77)
+   Duration  8.60s
+```
+
+**passed: 77, failed: 0, skipped: 0** (прогнано дважды подряд для
+стабильности — оба раза 77/77). Все 55 ранее существовавших тестов не
+изменены и по-прежнему проходят — регрессии нет.
 
 ## 7. Точные команды безопасной локальной проверки
 
@@ -325,22 +442,27 @@ ROLLBACK_REFERENCE: <ссылка/идентификатор текущего а
 1. Подтвердить, что активный production ruleset всё ещё совпадает с тем,
    что зафиксирован в `SECURITY_BASELINE.md` (повторный read-only запрос
    через Rules Management API — ruleset мог измениться с 2026-07-29).
-2. Установить Java 21+ и реально прогнать все 21+ сценариев через
+2. Установить Java 21+ и реально прогнать все 77 тестов через
    `npm run test:rules` — все должны быть **PASS**, ни один не может
    остаться непроверенным для production deploy.
 3. Провести ручную проверку в Firebase Console → Firestore → Rules →
-   Playground для CRITICAL-сценария (self-update companyId/role) на копии
+   Playground для CRITICAL-сценария (self-update companyId/role) И для
+   BASE-004A-FIX-02 (query сотрудников дополнительной компании) на копии
    правил.
-4. Согласовать с владельцем продукта breaking changes из §5 — предупредить
+4. Получить **новый независимый аудит** этого раунда (`BASE-004A-FIX-02`) —
+   предыдущий закончился `BASE_004A_REVIEW_FAILED`; изменения `firestore.rules`
+   и `tests/rules/firestore.rules.test.ts` этого раунда ещё не проверены
+   независимо.
+5. Согласовать с владельцем продукта breaking changes из §5 — предупредить
    пользователей/поддержку, что приглашение/удаление сотрудников и
    регистрация новых компаний временно не работают до реализации Cloud
    Functions (или явно принять этот риск на время).
-5. Выбрать корректный target project (`production`, НЕ `staging`) —
+6. Выбрать корректный target project (`production`, НЕ `staging`) —
    `firebase deploy --only firestore:rules --project production`.
-6. Сохранить `rulesetName`/дату текущего активного (заменяемого) ruleset
+7. Сохранить `rulesetName`/дату текущего активного (заменяемого) ruleset
    ДО deploy — это и есть rollback-точка (см. §10).
-7. Выполнить deploy.
-8. Сразу выполнить пост-деплой проверки (§11).
+8. Выполнить deploy.
+9. Сразу выполнить пост-деплой проверки (§11).
 
 ## 10. Rollback-план
 

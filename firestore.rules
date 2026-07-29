@@ -162,11 +162,22 @@ service cloud.firestore {
       allow get: if isSignedIn() && callerUid() == userId ||
         (callerHasProfile() && resource.data.companyId == callerProfile().companyId);
 
-      // Firestore Rules не фильтруют результаты запроса. Поэтому list
-      // разрешён только когда сам query доказывает companyId вызывающего
-      // пользователя (реальный Users-page flow использует where companyId).
-      allow list: if callerHasProfile() &&
-        resource.data.companyId == callerProfile().companyId;
+      // Firestore Rules не фильтруют результаты запроса — правило
+      // вычисляется отдельно для КАЖДОГО потенциального документа результата
+      // через resource.data, поэтому неограниченный или межкорпоративный
+      // query по-прежнему целиком отклоняется, как только встречается ЛЮБОЙ
+      // документ компании, участником которой вызывающий не является.
+      //
+      // BASE-004A-FIX-02: раньше здесь сравнивалось только с ОСНОВНОЙ
+      // (`callerProfile().companyId`) компанией — из-за этого запрос
+      // сотрудников ДОПОЛНИТЕЛЬНОЙ компании (через companies[], реальный
+      // flow входа с ранее выбранной компанией / switchCompany()) получал
+      // permission-denied. Используем ту же роль-функцию isMemberOf, что и
+      // для companies/company_data — она уже проверяет и основную, и
+      // дополнительные компании через ОДНУ и ту же fail-closed логику
+      // (bounded ≤10 memberships, точное совпадение {companyId, role},
+      // без переноса роли основной компании на дополнительную).
+      allow list: if isMemberOf(resource.data.companyId);
 
       // Создание СВОЕГО профиля разрешено, но БЕЗ единого поля, влияющего
       // на авторизацию — role/companyId/companies должны отсутствовать в
