@@ -1,13 +1,69 @@
 {
+  "status": "OK",
   "projectId": "finapp-staging",
-  "startedAt": "2026-07-30T16:44:34.328Z",
-  "finishedAt": "2026-07-30T16:45:01.925Z",
-  "sourceGitSha": "006dcaee2a9d57ce39385b118cb38e9d322e461c",
-  "localRulesSha256": "1213b185aeb68c124abfd4d7c5921412d2a71aa3413a7b939e9d3648d72a1657",
+  "startedAt": "2026-07-30T17:27:45.104Z",
+  "finishedAt": "2026-07-30T17:28:15.380Z",
+  "sourceGitSha": "3d29589914200ef958bc392ec0ec53ff7514d163",
+  "normalizationAlgorithm": "CRLF -> LF, then lone CR -> LF, UTF-8 text, SHA-256 hex of the canonicalized string",
+  "localCanonicalRulesSha256": "b0f6c045e908bc632a4b24381c3c1164ccca95834761b2dc68d460bce6524c8f",
   "activeStagingRulesetName": "projects/finapp-staging/rulesets/01da0ec2-a6b0-4b17-b533-81195a573359",
-  "activeStagingRulesSha256": "1213b185aeb68c124abfd4d7c5921412d2a71aa3413a7b939e9d3648d72a1657",
-  "localMatchesActiveStaging": true,
-  "fixturePrefix": "stgvms7qumpd",
+  "activeCanonicalRulesSha256": "b0f6c045e908bc632a4b24381c3c1164ccca95834761b2dc68d460bce6524c8f",
+  "rulesHashMatch": true,
+  "projectGuard": {
+    "ok": true,
+    "projectId": "finapp-staging"
+  },
+  "selfTest": {
+    "allPassed": true,
+    "checks": [
+      {
+        "name": "LF vs CRLF canonical SHA-256 match",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "LF vs lone-CR canonical SHA-256 match",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "project guard: finapp-staging passes",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "project guard: finapp-prod-10a83 blocked",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "project guard: arbitrary other project id blocked",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "project guard: emulator host vars block a real run",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "rules hash check: fetch error is blocking",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "rules hash check: mismatch is blocking",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "rules hash check: match is OK",
+        "ok": true,
+        "extra": null
+      }
+    ]
+  },
+  "fixturePrefix": "stgvms7se862",
   "fixturesCreated": {
     "companies": 3,
     "companyData": 2,
