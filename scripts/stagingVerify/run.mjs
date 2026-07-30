@@ -15,6 +15,9 @@
 // Usage (one command):
 //   node scripts/stagingVerify/run.mjs
 //
+// Self-test (no network, no credentials, no fixtures — pure function checks):
+//   node scripts/stagingVerify/run.mjs --self-test
+//
 // Required local state (never read into this script's own persisted
 // output): a `.env.staging.local` file at the repo root with
 // VITE_FIREBASE_* pointing at the target staging project, and an
@@ -22,9 +25,10 @@
 //
 // Configurable via environment variable (not hardcoded):
 //   STAGING_PROJECT_ID   — must equal the staging project id embedded in
-//                          .env.staging.local (defaults to reading it from
-//                          that file). Refuses to run if it resolves to
-//                          the production project id.
+//                          .env.staging.local. Any mismatch (including a
+//                          plausible-looking but different non-production
+//                          project) is a fail-closed BLOCKED condition —
+//                          not just a check for the production id.
 //
 // This script NEVER prints: API keys, tokens, fingerprints, passwords, or
 // any other credential/secret value. Only PASS/FAIL scenario outcomes and
@@ -34,31 +38,144 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
 const require_ = createRequire(import.meta.url)
 
-// ── Load firebase-tools' already-authenticated CLI session (Admin REST,
-//    setup/cleanup only — never used for the security assertions) ─────────
+const REQUIRED_PROJECT_ID = 'finapp-staging'
+const FORBIDDEN_PRODUCTION_PROJECT_ID = 'finapp-prod-10a83'
+
+// ── Pure, network-free, credential-free helper functions (exercised by
+//    --self-test below, and used for real in main()) ───────────────────────
+
+/**
+ * Canonicalizes Rules source text for cross-platform-stable hashing:
+ * CRLF -> LF, then any remaining lone CR -> LF. Does NOT touch meaningful
+ * whitespace/indentation within lines, and does not normalize encoding
+ * beyond treating the input as UTF-8 text (the caller must read the file
+ * as UTF-8, which both `fs.readFileSync(path, 'utf8')` and the Firestore
+ * Rules Management API response already guarantee).
+ */
+export function canonicalizeRulesText(text) {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
+/** SHA-256 hex digest of the canonicalized text. */
+export function canonicalSha256(text) {
+  return crypto.createHash('sha256').update(canonicalizeRulesText(text), 'utf8').digest('hex')
+}
+
+/**
+ * Fail-closed project guard. Must be evaluated BEFORE any credential
+ * acquisition (`requireAuth`), Admin REST client construction, or fixture
+ * writes. Rejects not just the known production id, but ANY project id
+ * other than the exact required staging id — including a plausible but
+ * wrong non-production project — and rejects ambiguous state (conflicting
+ * sources, emulator env vars pointing elsewhere during a real run).
+ */
+export function checkProjectGuard({ viteProjectId, resolvedProjectId, firestoreEmulatorHost, authEmulatorHost }) {
+  const errors = []
+  if (viteProjectId !== REQUIRED_PROJECT_ID) {
+    errors.push(`VITE_FIREBASE_PROJECT_ID must be exactly "${REQUIRED_PROJECT_ID}", got "${viteProjectId}"`)
+  }
+  if (resolvedProjectId !== REQUIRED_PROJECT_ID) {
+    errors.push(`resolved project id must be exactly "${REQUIRED_PROJECT_ID}", got "${resolvedProjectId}"`)
+  }
+  if (viteProjectId !== resolvedProjectId) {
+    errors.push(`conflicting project id sources: VITE_FIREBASE_PROJECT_ID="${viteProjectId}" vs resolved="${resolvedProjectId}"`)
+  }
+  if (resolvedProjectId === FORBIDDEN_PRODUCTION_PROJECT_ID || viteProjectId === FORBIDDEN_PRODUCTION_PROJECT_ID) {
+    errors.push('production project id detected — refusing unconditionally')
+  }
+  if (firestoreEmulatorHost || authEmulatorHost) {
+    errors.push('FIRESTORE_EMULATOR_HOST/FIREBASE_AUTH_EMULATOR_HOST is set — refusing a real staging run to avoid ambiguity about the actual write target')
+  }
+  return { ok: errors.length === 0, errors }
+}
+
+/**
+ * Evaluates whether the local vs active-staging Rules hash check permits
+ * proceeding. Any failure to obtain/parse/hash the active ruleset, or a
+ * hash mismatch, is fail-closed BLOCKED — never treated as "assume OK" and
+ * never satisfied by reusing a previously saved hash from an earlier run.
+ */
+export function evaluateRulesHashCheck({ localCanonicalSha256, activeCanonicalSha256, activeFetchError }) {
+  if (activeFetchError) return { ok: false, reason: `could not read active staging ruleset: ${activeFetchError}` }
+  if (!activeCanonicalSha256) return { ok: false, reason: 'active staging ruleset hash unavailable' }
+  if (!localCanonicalSha256) return { ok: false, reason: 'local ruleset hash unavailable' }
+  if (localCanonicalSha256 !== activeCanonicalSha256) return { ok: false, reason: 'local and active canonical SHA-256 do not match' }
+  return { ok: true }
+}
+
+// ── --self-test: pure, no network, no credentials, no fixtures ────────────
+async function runSelfTest() {
+  const checks = []
+  function check(name, ok, extra) { checks.push({ name, ok, extra: extra ?? null }); console.log(`${ok ? 'PASS' : 'FAIL'} — ${name}`) }
+
+  // 1. LF vs CRLF of the same content hash identically after canonicalization.
+  const lf = 'rules_version = \'2\';\nservice cloud.firestore {\n  match /x { allow read: if false; }\n}\n'
+  const crlf = lf.replace(/\n/g, '\r\n')
+  const crOnly = lf.replace(/\n/g, '\r')
+  check('LF vs CRLF canonical SHA-256 match', canonicalSha256(lf) === canonicalSha256(crlf))
+  check('LF vs lone-CR canonical SHA-256 match', canonicalSha256(lf) === canonicalSha256(crOnly))
+
+  // 2. finapp-staging passes the project guard.
+  check('project guard: finapp-staging passes', checkProjectGuard({
+    viteProjectId: 'finapp-staging', resolvedProjectId: 'finapp-staging',
+    firestoreEmulatorHost: undefined, authEmulatorHost: undefined,
+  }).ok === true)
+
+  // 3. finapp-prod-10a83 is blocked.
+  check('project guard: finapp-prod-10a83 blocked', checkProjectGuard({
+    viteProjectId: 'finapp-prod-10a83', resolvedProjectId: 'finapp-prod-10a83',
+    firestoreEmulatorHost: undefined, authEmulatorHost: undefined,
+  }).ok === false)
+
+  // 4. An arbitrary other (non-production, non-staging) project id is blocked.
+  check('project guard: arbitrary other project id blocked', checkProjectGuard({
+    viteProjectId: 'some-other-firebase-project', resolvedProjectId: 'some-other-firebase-project',
+    firestoreEmulatorHost: undefined, authEmulatorHost: undefined,
+  }).ok === false)
+
+  // 4b. Emulator env vars present blocks a real run even with the right id.
+  check('project guard: emulator host vars block a real run', checkProjectGuard({
+    viteProjectId: 'finapp-staging', resolvedProjectId: 'finapp-staging',
+    firestoreEmulatorHost: '127.0.0.1:8080', authEmulatorHost: undefined,
+  }).ok === false)
+
+  // 5. Error reading the active ruleset is blocking.
+  check('rules hash check: fetch error is blocking', evaluateRulesHashCheck({
+    localCanonicalSha256: 'a'.repeat(64), activeCanonicalSha256: null, activeFetchError: 'network error',
+  }).ok === false)
+
+  // 6. Hash mismatch is blocking.
+  check('rules hash check: mismatch is blocking', evaluateRulesHashCheck({
+    localCanonicalSha256: 'a'.repeat(64), activeCanonicalSha256: 'b'.repeat(64), activeFetchError: null,
+  }).ok === false)
+  check('rules hash check: match is OK', evaluateRulesHashCheck({
+    localCanonicalSha256: 'a'.repeat(64), activeCanonicalSha256: 'a'.repeat(64), activeFetchError: null,
+  }).ok === true)
+
+  const failed = checks.filter(c => !c.ok)
+  console.log('')
+  console.log(`SELF-TEST: ${checks.length} checks, ${checks.length - failed.length} passed, ${failed.length} failed`)
+  return { checks, allPassed: failed.length === 0 }
+}
+
+if (process.argv.includes('--self-test')) {
+  const { allPassed } = await runSelfTest()
+  process.exit(allPassed ? 0 : 1)
+}
+
+// ── Real staging run below — network + credentials from here on ───────────
+
 function ftLib(p) {
   return require_(path.join(REPO_ROOT, 'node_modules/firebase-tools/lib', p))
 }
-const authMod = ftLib('auth.js')
-const requireAuthMod = ftLib('requireAuth.js')
-const apiv2Mod = ftLib('apiv2.js')
-const rulesMod = ftLib('gcp/rules.js')
 
-// ── Load the real Firebase Client SDK (already a project dependency) ──────
-const { initializeApp } = await import('firebase/app')
-const { getAuth, signInWithEmailAndPassword, signOut } = await import('firebase/auth')
-const {
-  getFirestore, doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs, limit,
-} = await import('firebase/firestore')
-
-// ── Parse .env.staging.local (same convention as scripts/verify-staging-env.mjs) ──
 function parseEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return {}
   const raw = fs.readFileSync(filePath, 'utf-8')
@@ -88,30 +205,52 @@ const sdkConfig = {
   appId: envLocal.VITE_FIREBASE_APP_ID,
 }
 
-const PROJECT_ID = process.env.STAGING_PROJECT_ID || sdkConfig.projectId
-if (!PROJECT_ID) {
-  console.error('BLOCKED: no STAGING_PROJECT_ID resolvable (missing .env.staging.local?)')
-  process.exit(2)
-}
-if (PROJECT_ID === 'finapp-prod-10a83') {
-  console.error('BLOCKED: refusing to run against the production project id.')
-  process.exit(2)
-}
-if (PROJECT_ID !== sdkConfig.projectId) {
-  console.error('BLOCKED: STAGING_PROJECT_ID does not match .env.staging.local VITE_FIREBASE_PROJECT_ID.')
-  process.exit(2)
-}
 for (const [k, v] of Object.entries(sdkConfig)) {
   if (!v) {
-    console.error(`BLOCKED: missing ${k} in .env.staging.local — cannot initialize a real Client SDK session.`)
+    console.error(`BLOCKED: missing ${k} in .env.staging.local — cannot resolve staging config.`)
     process.exit(2)
   }
 }
 
+const resolvedProjectId = process.env.STAGING_PROJECT_ID || sdkConfig.projectId
+
+// ── FAIL-CLOSED PROJECT GUARD — evaluated BEFORE requireAuth(), before any
+//    Admin REST client is constructed, before a single fixture is written. ──
+{
+  const guard = checkProjectGuard({
+    viteProjectId: sdkConfig.projectId,
+    resolvedProjectId,
+    firestoreEmulatorHost: process.env.FIRESTORE_EMULATOR_HOST,
+    authEmulatorHost: process.env.FIREBASE_AUTH_EMULATOR_HOST,
+  })
+  if (!guard.ok) {
+    console.error('BASE_004_PREPROD_CORRECTION_02_BLOCKED_PROJECT_GUARD')
+    for (const e of guard.errors) console.error(`  - ${e}`)
+    process.exit(2)
+  }
+  console.log(`project guard: PASS (projectId=${resolvedProjectId})`)
+}
+
+const PROJECT_ID = resolvedProjectId
+
+// ── Load firebase-tools' already-authenticated CLI session (Admin REST,
+//    setup/cleanup only — never used for the security assertions) ─────────
+const authMod = ftLib('auth.js')
+const requireAuthMod = ftLib('requireAuth.js')
+const apiv2Mod = ftLib('apiv2.js')
+const rulesMod = ftLib('gcp/rules.js')
+
+// ── Load the real Firebase Client SDK (already a project dependency) ──────
+const { initializeApp } = await import('firebase/app')
+const { getAuth, signInWithEmailAndPassword, signOut } = await import('firebase/auth')
+const {
+  getFirestore, doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs, limit,
+} = await import('firebase/firestore')
+
 // Identity Toolkit's Admin REST API (used for synthetic fixture Auth
 // account setup/cleanup only) requires an explicit quota project when
 // authenticating via a signed-in user rather than a service account.
-// Not a secret — this is just the project id we're already targeting.
+// Not a secret — this is just the project id we already validated above.
 process.env.GOOGLE_CLOUD_QUOTA_PROJECT = PROJECT_ID
 
 const firestoreClient = new apiv2Mod.Client({ urlPrefix: 'https://firestore.googleapis.com', apiVersion: 'v1' })
@@ -137,35 +276,65 @@ function genPassword() {
 
 async function main() {
   const startedAt = new Date().toISOString()
+
+  // Credential acquisition happens ONLY after the project guard above.
   const account = authMod.getGlobalDefaultAccount()
   if (!account) throw new Error('No default firebase-tools account logged in (`firebase login` required).')
   await requireAuthMod.requireAuth({})
 
-  // Resolve the source SHA being verified (git HEAD of this checkout).
   let sourceSha = 'UNKNOWN'
   try {
     sourceSha = require_('node:child_process')
       .execSync('git rev-parse HEAD', { cwd: REPO_ROOT }).toString().trim()
   } catch { /* not fatal — recorded as UNKNOWN */ }
 
-  // Local vs active staging Rules hash (informational — this harness never
-  // deploys; that is a separate, explicitly-gated step in the main task).
-  const localRulesSha256 = crypto
-    .createHash('sha256')
-    .update(fs.readFileSync(path.join(REPO_ROOT, 'firestore.rules'), 'utf8'), 'utf8')
-    .digest('hex')
-  let activeRulesSha256 = null
+  // ── Rules hash check — MUST happen before the first fixture is created,
+  //    MUST be a fresh read-only fetch (never a reused/saved hash), and MUST
+  //    block (non-zero exit, no fixtures, no scenarios, no deploy) on any
+  //    failure to fetch/parse/hash or on a mismatch. ────────────────────────
+  const localRulesRaw = fs.readFileSync(path.join(REPO_ROOT, 'firestore.rules'), 'utf8')
+  const localCanonicalSha256 = canonicalSha256(localRulesRaw)
+
+  let activeCanonicalSha256 = null
   let activeRulesetName = null
+  let activeFetchError = null
   try {
     const releases = await rulesMod.listAllReleases(PROJECT_ID)
     activeRulesetName = await rulesMod.getLatestRulesetName(PROJECT_ID, 'cloud.firestore', releases)
-    if (activeRulesetName) {
+    if (!activeRulesetName) {
+      activeFetchError = 'no active cloud.firestore release found'
+    } else {
       const files = await rulesMod.getRulesetContent(activeRulesetName)
-      activeRulesSha256 = crypto.createHash('sha256').update(files[0].content, 'utf8').digest('hex')
+      activeCanonicalSha256 = canonicalSha256(files[0].content)
     }
   } catch (e) {
-    console.error('WARN: could not read active staging ruleset:', e.message)
+    activeFetchError = e.message
   }
+
+  const rulesHashCheck = evaluateRulesHashCheck({ localCanonicalSha256, activeCanonicalSha256, activeFetchError })
+  if (!rulesHashCheck.ok) {
+    console.error('BASE_004_PREPROD_CORRECTION_02_BLOCKED_RULES_HASH')
+    console.error(`  - ${rulesHashCheck.reason}`)
+    console.error('  No fixtures were created. No deploy was attempted.')
+    process.exitCode = 2
+    // Still write a minimal, honest JSON record of the blocked attempt.
+    const outPath = path.join(REPO_ROOT, 'docs/remediation/evidence/BASE-004-PREPROD-STAGING-scenarios-result.json')
+    fs.writeFileSync(outPath, JSON.stringify({
+      status: 'BASE_004_PREPROD_CORRECTION_02_BLOCKED_RULES_HASH',
+      projectId: PROJECT_ID,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      sourceGitSha: sourceSha,
+      normalizationAlgorithm: 'CRLF -> LF, then lone CR -> LF, UTF-8 text, SHA-256 hex of the canonicalized string',
+      localCanonicalRulesSha256: localCanonicalSha256,
+      activeStagingRulesetName: activeRulesetName,
+      activeCanonicalRulesSha256: activeCanonicalSha256,
+      rulesHashMatch: false,
+      reason: rulesHashCheck.reason,
+    }, null, 2) + '\n')
+    return
+  }
+  console.log(`rules hash check: PASS (canonical SHA-256 matches, ${localCanonicalSha256})`)
 
   const runId = Date.now().toString(36)
   const fixturePrefix = `stgv${runId}`
@@ -375,16 +544,22 @@ async function main() {
 
   const failed = results.filter(r => !r.ok)
   const finishedAt = new Date().toISOString()
+  const selfTestResult = await runSelfTest()
 
   const output = {
+    status: (failed.length === 0 && cleanupReport?.zeroResidueConfirmed && selfTestResult.allPassed)
+      ? 'OK' : 'FAILED',
     projectId: PROJECT_ID,
     startedAt,
     finishedAt,
     sourceGitSha: sourceSha,
-    localRulesSha256,
+    normalizationAlgorithm: 'CRLF -> LF, then lone CR -> LF, UTF-8 text, SHA-256 hex of the canonicalized string',
+    localCanonicalRulesSha256: localCanonicalSha256,
     activeStagingRulesetName: activeRulesetName,
-    activeStagingRulesSha256: activeRulesSha256,
-    localMatchesActiveStaging: activeRulesSha256 === localRulesSha256,
+    activeCanonicalRulesSha256: activeCanonicalSha256,
+    rulesHashMatch: rulesHashCheck.ok,
+    projectGuard: { ok: true, projectId: PROJECT_ID },
+    selfTest: { allPassed: selfTestResult.allPassed, checks: selfTestResult.checks },
     fixturePrefix,
     fixturesCreated: {
       companies: created.companies.length,
@@ -410,9 +585,10 @@ async function main() {
   console.log('')
   console.log(`TOTAL: ${output.summary.total}  PASS: ${output.summary.pass}  FAIL: ${output.summary.fail}  SKIPPED: ${output.summary.skipped}`)
   console.log(`Zero residue confirmed: ${output.zeroResidueConfirmed}`)
+  console.log(`Self-test: ${selfTestResult.allPassed ? 'PASS' : 'FAIL'}`)
   console.log(`Result written to: ${outPath}`)
 
-  process.exitCode = (failed.length === 0 && output.zeroResidueConfirmed) ? 0 : 1
+  process.exitCode = (failed.length === 0 && output.zeroResidueConfirmed && selfTestResult.allPassed) ? 0 : 1
 }
 
 main().catch(e => {
