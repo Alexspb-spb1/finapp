@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "staging": "finapp-staging",
+    "production": "finapp-prod-10a83"
+  }
+}

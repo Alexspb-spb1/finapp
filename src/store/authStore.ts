@@ -236,9 +236,10 @@ export const authStore = {
       // приложения — только помечает адрес как неподтверждённый.
       sendEmailVerification(cred.user).catch(err =>
         console.warn('[register] sendEmailVerification failed:', err))
-    } catch (e: any) {
+    } catch (e) {
       _registrationInProgress = false
-      if (e?.code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
+      const code = (e as { code?: string } | null)?.code
+      if (code === 'auth/email-already-in-use') return { ok: false, error: 'email_taken' }
       return { ok: false, error: 'invalid_credentials' }
     }
 

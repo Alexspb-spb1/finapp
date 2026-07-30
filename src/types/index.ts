@@ -64,6 +64,8 @@ export interface Transaction {
   comment: string
   tags: string[]
   splitId?: string      // общий ID для частей разделённой операции
+  bankOperationId?: string  // идентификатор операции из банковской выписки
+  importFingerprint?: string // стабильный отпечаток для защиты от повторного импорта
 }
 
 export interface SplitPart {

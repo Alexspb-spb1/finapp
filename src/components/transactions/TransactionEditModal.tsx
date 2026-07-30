@@ -46,6 +46,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
 
   useEffect(() => {
     const acc = accounts.find(a => a.id === accountId)
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync reset tied to the same fetch-or-clear decision below, not derivable at render time
     if (!acc || !isForeign(acc)) { setExchangeRate(''); return }
     if (exchangeRate) return  // don't overwrite existing rate
     setFetchingRate(true)
@@ -461,6 +462,7 @@ function EditForm({ transaction, onClose }: { transaction: Transaction; onClose:
       </div>
 
       <SplitTransactionModal
+        key={splitOpen ? transaction.id : 'closed'}
         transaction={splitOpen ? transaction : null}
         onClose={() => { setSplitOpen(false); onClose() }}
       />

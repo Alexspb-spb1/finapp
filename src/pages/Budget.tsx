@@ -62,6 +62,109 @@ function ProgressBar({ actual, planned }: { actual: number; planned: number }) {
   )
 }
 
+// Category rows for one section (income/expense)
+function CatSection({ cats, type, monthStr, actual, plannedFor, onUpsertBudget, onDeleteBudget }: {
+  cats: { id: string; name: string; icon: string; color: string }[]
+  type: 'income' | 'expense'
+  monthStr: string
+  actual: (catId: string) => number
+  plannedFor: (catId: string) => number
+  onUpsertBudget: (catId: string, month: string, v: number) => void
+  onDeleteBudget: (catId: string, month: string) => void
+}) {
+  const color = type === 'income' ? 'text-emerald-700' : 'text-red-600'
+  const accentBg = type === 'income' ? 'bg-emerald-50/60' : 'bg-red-50/40'
+
+  return (
+    <>
+      <tr className={`border-b border-slate-100 ${accentBg}`}>
+        <td colSpan={5} className={`px-5 py-2 text-xs font-bold uppercase tracking-wider ${color}`}>
+          {type === 'income' ? 'Доходы' : 'Расходы'}
+        </td>
+      </tr>
+      {cats.map(cat => {
+        const act = actual(cat.id)
+        const plan = plannedFor(cat.id)
+        const delta = act - plan
+        const hasActivity = act > 0 || plan > 0
+        if (!hasActivity) return null
+
+        return (
+          <tr key={cat.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+            <td className="px-5 py-3">
+              <span className="flex items-center gap-2">
+                <div className="w-7 h-7 flex items-center justify-center shrink-0 rounded-lg"
+                  style={{ background: cat.color + '22' }}>
+                  <CategoryIcon name={cat.icon} size={13} color={cat.color} />
+                </div>
+                <span className="text-sm text-slate-700">{cat.name}</span>
+              </span>
+            </td>
+            <td className="px-4 py-3 text-right">
+              <PlanCell
+                value={plan}
+                onSave={v => v > 0
+                  ? onUpsertBudget(cat.id, monthStr, v)
+                  : onDeleteBudget(cat.id, monthStr)
+                }
+              />
+            </td>
+            <td className={`px-4 py-3 text-sm font-semibold text-right ${type === 'income' ? 'text-emerald-600' : 'text-red-500'}`}>
+              {act > 0 ? formatCurrency(act) : <span className="text-slate-300">—</span>}
+            </td>
+            <td className="px-4 py-3 text-right">
+              {plan > 0 ? (
+                <span className={`text-sm font-medium ${
+                  type === 'expense'
+                    ? delta > 0 ? 'text-red-500' : 'text-emerald-600'
+                    : delta >= 0 ? 'text-emerald-600' : 'text-red-500'
+                }`}>
+                  {delta > 0 ? '+' : ''}{formatCurrency(delta)}
+                </span>
+              ) : <span className="text-slate-300 text-sm">—</span>}
+            </td>
+            <td className="px-5 py-3">
+              <div className="flex items-center gap-2">
+                <ProgressBar actual={act} planned={plan} />
+                {plan > 0 && (
+                  <span className="text-xs text-slate-400 w-8 text-right">
+                    {Math.round((act / plan) * 100)}%
+                  </span>
+                )}
+              </div>
+            </td>
+          </tr>
+        )
+      })}
+      {/* Row for categories without activity — allow setting plan */}
+      {cats.filter(cat => actual(cat.id) === 0 && plannedFor(cat.id) === 0).map(cat => (
+        <tr key={cat.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors opacity-50 hover:opacity-100">
+          <td className="px-5 py-2.5">
+            <span className="flex items-center gap-2">
+              <div className="w-6 h-6 flex items-center justify-center shrink-0 rounded"
+                style={{ background: cat.color + '11' }}>
+                <CategoryIcon name={cat.icon} size={12} color={cat.color} />
+              </div>
+              <span className="text-sm text-slate-400">{cat.name}</span>
+            </span>
+          </td>
+          <td className="px-4 py-2.5 text-right">
+            <PlanCell
+              value={0}
+              onSave={v => v > 0 && onUpsertBudget(cat.id, monthStr, v)}
+            />
+          </td>
+          <td className="px-4 py-2.5 text-right"><span className="text-slate-200 text-sm">—</span></td>
+          <td className="px-4 py-2.5 text-right"><span className="text-slate-200 text-sm">—</span></td>
+          <td className="px-5 py-2.5">
+            <div className="w-32 h-1.5 bg-slate-100 rounded-full" />
+          </td>
+        </tr>
+      ))}
+    </>
+  )
+}
+
 export default function Budget() {
   const store = useStore()
   const { transactions, categories, budgets } = store
@@ -103,100 +206,6 @@ export default function Budget() {
   const totalExpActual = expCats.reduce((s, c) => s + actual(c.id), 0)
   const planProfit     = totalIncPlan - totalExpPlan
   const actualProfit   = totalIncActual - totalExpActual
-
-  function CatSection({ cats, type }: { cats: typeof incCats; type: 'income' | 'expense' }) {
-    const color = type === 'income' ? 'text-emerald-700' : 'text-red-600'
-    const accentBg = type === 'income' ? 'bg-emerald-50/60' : 'bg-red-50/40'
-
-    return (
-      <>
-        <tr className={`border-b border-slate-100 ${accentBg}`}>
-          <td colSpan={5} className={`px-5 py-2 text-xs font-bold uppercase tracking-wider ${color}`}>
-            {type === 'income' ? 'Доходы' : 'Расходы'}
-          </td>
-        </tr>
-        {cats.map(cat => {
-          const act = actual(cat.id)
-          const plan = plannedFor(cat.id)
-          const delta = act - plan
-          const hasActivity = act > 0 || plan > 0
-          if (!hasActivity) return null
-
-          return (
-            <tr key={cat.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-              <td className="px-5 py-3">
-                <span className="flex items-center gap-2">
-                  <div className="w-7 h-7 flex items-center justify-center shrink-0 rounded-lg"
-                    style={{ background: cat.color + '22' }}>
-                    <CategoryIcon name={cat.icon} size={13} color={cat.color} />
-                  </div>
-                  <span className="text-sm text-slate-700">{cat.name}</span>
-                </span>
-              </td>
-              <td className="px-4 py-3 text-right">
-                <PlanCell
-                  value={plan}
-                  onSave={v => v > 0
-                    ? store.upsertBudget(cat.id, monthStr, v)
-                    : store.deleteBudget(cat.id, monthStr)
-                  }
-                />
-              </td>
-              <td className={`px-4 py-3 text-sm font-semibold text-right ${type === 'income' ? 'text-emerald-600' : 'text-red-500'}`}>
-                {act > 0 ? formatCurrency(act) : <span className="text-slate-300">—</span>}
-              </td>
-              <td className="px-4 py-3 text-right">
-                {plan > 0 ? (
-                  <span className={`text-sm font-medium ${
-                    type === 'expense'
-                      ? delta > 0 ? 'text-red-500' : 'text-emerald-600'
-                      : delta >= 0 ? 'text-emerald-600' : 'text-red-500'
-                  }`}>
-                    {delta > 0 ? '+' : ''}{formatCurrency(delta)}
-                  </span>
-                ) : <span className="text-slate-300 text-sm">—</span>}
-              </td>
-              <td className="px-5 py-3">
-                <div className="flex items-center gap-2">
-                  <ProgressBar actual={act} planned={plan} />
-                  {plan > 0 && (
-                    <span className="text-xs text-slate-400 w-8 text-right">
-                      {Math.round((act / plan) * 100)}%
-                    </span>
-                  )}
-                </div>
-              </td>
-            </tr>
-          )
-        })}
-        {/* Row for categories without activity — allow setting plan */}
-        {cats.filter(cat => actual(cat.id) === 0 && plannedFor(cat.id) === 0).map(cat => (
-          <tr key={cat.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors opacity-50 hover:opacity-100">
-            <td className="px-5 py-2.5">
-              <span className="flex items-center gap-2">
-                <div className="w-6 h-6 flex items-center justify-center shrink-0 rounded"
-                  style={{ background: cat.color + '11' }}>
-                  <CategoryIcon name={cat.icon} size={12} color={cat.color} />
-                </div>
-                <span className="text-sm text-slate-400">{cat.name}</span>
-              </span>
-            </td>
-            <td className="px-4 py-2.5 text-right">
-              <PlanCell
-                value={0}
-                onSave={v => v > 0 && store.upsertBudget(cat.id, monthStr, v)}
-              />
-            </td>
-            <td className="px-4 py-2.5 text-right"><span className="text-slate-200 text-sm">—</span></td>
-            <td className="px-4 py-2.5 text-right"><span className="text-slate-200 text-sm">—</span></td>
-            <td className="px-5 py-2.5">
-              <div className="w-32 h-1.5 bg-slate-100 rounded-full" />
-            </td>
-          </tr>
-        ))}
-      </>
-    )
-  }
 
   return (
     <div className="space-y-4">
@@ -272,8 +281,10 @@ export default function Budget() {
               </tr>
             </thead>
             <tbody>
-              <CatSection cats={incCats} type="income" />
-              <CatSection cats={expCats} type="expense" />
+              <CatSection cats={incCats} type="income" monthStr={monthStr} actual={actual} plannedFor={plannedFor}
+                onUpsertBudget={store.upsertBudget} onDeleteBudget={store.deleteBudget} />
+              <CatSection cats={expCats} type="expense" monthStr={monthStr} actual={actual} plannedFor={plannedFor}
+                onUpsertBudget={store.upsertBudget} onDeleteBudget={store.deleteBudget} />
 
               {/* Profit summary */}
               <tr className="bg-indigo-50 border-t-2 border-indigo-200">

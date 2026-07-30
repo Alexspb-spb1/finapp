@@ -64,8 +64,8 @@ function matchesRule(rule: TransactionRule, tx: Transaction, cpList?: import('..
       case 'amountLt': return tx.amount < parseFloat(cond.value || '0')
       case 'amountEq': return tx.amount === parseFloat(cond.value || '0')
       default: {
-        const val: string = (tx as any)[cond.field] ?? ''
-        return val === cond.value
+        const key = cond.field as 'type' | 'accountId' | 'counterpartyId' | 'categoryId' | 'projectId'
+        return (tx[key] ?? '') === cond.value
       }
     }
   })

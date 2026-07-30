@@ -15,6 +15,27 @@ const MONTH_LABELS: Record<string, string> = {
   '09': 'Сен', '10': 'Окт', '11': 'Ноя', '12': 'Дек',
 }
 
+interface ChartTooltipProps {
+  active?: boolean
+  payload?: { name: string; value: number; color: string }[]
+  label?: string
+}
+
+function CustomTooltip({ active, payload, label }: ChartTooltipProps) {
+  if (!active || !payload?.length) return null
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
+      <p className="font-semibold text-slate-700 mb-1">{label}</p>
+      {payload.map(p => (
+        <p key={p.name} style={{ color: p.color }} className="flex justify-between gap-6">
+          <span>{p.name}:</span>
+          <span className="font-medium">{formatCurrency(p.value)}</span>
+        </p>
+      ))}
+    </div>
+  )
+}
+
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -56,21 +77,6 @@ export default function ProjectDetail() {
   const totalIncome  = tx.filter(t => t.type === 'income').reduce((s, t) => s + toBase(t), 0)
   const totalExpense = tx.filter(t => t.type === 'expense').reduce((s, t) => s + toBase(t), 0)
   const totalNet     = totalIncome - totalExpense
-
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (!active || !payload?.length) return null
-    return (
-      <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
-        <p className="font-semibold text-slate-700 mb-1">{label}</p>
-        {payload.map((p: any) => (
-          <p key={p.name} style={{ color: p.color }} className="flex justify-between gap-6">
-            <span>{p.name}:</span>
-            <span className="font-medium">{formatCurrency(p.value)}</span>
-          </p>
-        ))}
-      </div>
-    )
-  }
 
   return (
     <div className="space-y-6">
