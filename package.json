@@ -12,7 +12,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "firebase:emulators": "firebase emulators:start --project demo-finapp",
-    "test:rules": "firebase emulators:exec --project demo-finapp --only firestore \"vitest run tests/rules\""
+    "test:rules": "firebase emulators:exec --project demo-finapp --only firestore \"vitest run tests/rules\"",
+    "typecheck": "tsc -b --pretty false",
+    "baseline:bundle": "node scripts/technicalBaseline/report-bundle.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

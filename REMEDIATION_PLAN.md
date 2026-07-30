@@ -211,7 +211,9 @@ docs/runbooks/BACKUP_AND_RESTORE.md
 
 ---
 
-## [ ] BASE-004 — Получить фактически развёрнутые Firestore Rules и классифицировать риск
+## [x] BASE-004 — Получить фактически развёрнутые Firestore Rules и классифицировать риск
+
+**Принято и слито:** PR [#5](https://github.com/Alexspb-spb1/finapp/pull/5), merge SHA `1a642460b21e27cc1c0973cb4141ebffc81e4a0f`.
 
 **Ветка:** `remediation/BASE-004-rules-baseline`
 
@@ -272,7 +274,7 @@ docs/remediation/SECURITY_BASELINE.md
 
 ---
 
-## [ ] BASE-005 — Зафиксировать технический baseline
+## [-] BASE-005 — Зафиксировать технический baseline
 
 **Ветка:** `remediation/BASE-005-technical-baseline`
 
