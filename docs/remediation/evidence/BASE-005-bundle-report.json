@@ -1,0 +1,68 @@
+{
+  "sourceGitSha": "7d637d29b4ad4c3dcacde9e9bf46ffe385096171",
+  "generatedAt": "2026-07-30T19:10:24.605Z",
+  "toolVersions": {
+    "node": "v24.16.0",
+    "npm": "11.13.0",
+    "vite": "8.0.13"
+  },
+  "buildCommand": "npm run build -- --manifest",
+  "entry": {
+    "manifestKey": "index.html",
+    "jsFile": "assets/index-C5yUrrGO.js"
+  },
+  "staticImportChain": {
+    "description": "BFS closure of manifest `imports` starting from the entry chunk — this defines \"initial JS\".",
+    "manifestKeys": [
+      "index.html"
+    ]
+  },
+  "initialJs": {
+    "files": [
+      "assets/index-C5yUrrGO.js"
+    ],
+    "rawBytes": 1892447,
+    "gzipBytes": 538574,
+    "brotliBytes": 438180
+  },
+  "initialCss": {
+    "files": [
+      "assets/index-DgivbJvD.css"
+    ],
+    "rawBytes": 62151,
+    "gzipBytes": 10345,
+    "brotliBytes": 8411
+  },
+  "dynamicChunks": {
+    "description": "Chunks reachable only via manifest `dynamicImports` (import()), NOT included in initial JS/CSS.",
+    "manifestKeys": [],
+    "js": {
+      "files": [],
+      "rawBytes": 0,
+      "gzipBytes": 0,
+      "brotliBytes": 0
+    }
+  },
+  "assets": [
+    {
+      "file": "assets/index-C5yUrrGO.js",
+      "rawBytes": 1892447,
+      "gzipBytes": 538574,
+      "brotliBytes": 438180,
+      "sha256": "4c573684bbe98c11f2edf0ae863dcb154c33ff1bf4f095e7d2b713e8420621e3"
+    },
+    {
+      "file": "assets/index-DgivbJvD.css",
+      "rawBytes": 62151,
+      "gzipBytes": 10345,
+      "brotliBytes": 8411,
+      "sha256": "1198e2b836a62ef14f7691fdfec3cd3fbef6e52573272296490b68b2c4f8f0bc"
+    }
+  ],
+  "counts": {
+    "totalJsChunks": 1,
+    "totalCssFiles": 1,
+    "totalAssetFiles": 2
+  },
+  "totalDistBytes": 1969813
+}
