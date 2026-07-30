@@ -85,8 +85,6 @@ READY_FOR_INDEPENDENT_REVIEW (`BASE_004_PREPROD_STAGING_READY_FOR_INDEPENDENT_RE
 - исходный SHA `origin/main`: `e1e958a8cb5eb5e750b3024a05d915fcc3d0c7a4`
 - head PR **до** этого раунда (`CORRECTION-02`): `8ef66864ed75421b4f810f1a264a1b645d603103`
 - **`TESTED_RESULT_SHA`** (коммит A, проверенный полным набором проверок): `3d29589914200ef958bc392ec0ec53ff7514d163`
-- **`FINAL_PR_HEAD_SHA`** (коммит B, этот отчёт) — см. финальный ответ в чате
-  сразу после `git commit`/`git push` этого раунда.
 
 ## Что изменено в этом раунде
 - `scripts/stagingVerify/run.mjs` — добавлены `checkProjectGuard()`
