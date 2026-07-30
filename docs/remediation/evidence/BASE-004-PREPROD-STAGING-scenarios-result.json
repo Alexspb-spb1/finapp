@@ -1,0 +1,243 @@
+{
+  "status": "OK",
+  "projectId": "finapp-staging",
+  "startedAt": "2026-07-30T17:27:45.104Z",
+  "finishedAt": "2026-07-30T17:28:15.380Z",
+  "sourceGitSha": "3d29589914200ef958bc392ec0ec53ff7514d163",
+  "normalizationAlgorithm": "CRLF -> LF, then lone CR -> LF, UTF-8 text, SHA-256 hex of the canonicalized string",
+  "localCanonicalRulesSha256": "b0f6c045e908bc632a4b24381c3c1164ccca95834761b2dc68d460bce6524c8f",
+  "activeStagingRulesetName": "projects/finapp-staging/rulesets/01da0ec2-a6b0-4b17-b533-81195a573359",
+  "activeCanonicalRulesSha256": "b0f6c045e908bc632a4b24381c3c1164ccca95834761b2dc68d460bce6524c8f",
+  "rulesHashMatch": true,
+  "projectGuard": {
+    "ok": true,
+    "projectId": "finapp-staging"
+  },
+  "selfTest": {
+    "allPassed": true,
+    "checks": [
+      {
+        "name": "LF vs CRLF canonical SHA-256 match",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "LF vs lone-CR canonical SHA-256 match",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "project guard: finapp-staging passes",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "project guard: finapp-prod-10a83 blocked",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "project guard: arbitrary other project id blocked",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "project guard: emulator host vars block a real run",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "rules hash check: fetch error is blocking",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "rules hash check: mismatch is blocking",
+        "ok": true,
+        "extra": null
+      },
+      {
+        "name": "rules hash check: match is OK",
+        "ok": true,
+        "extra": null
+      }
+    ]
+  },
+  "fixturePrefix": "stgvms7se862",
+  "fixturesCreated": {
+    "companies": 3,
+    "companyData": 2,
+    "userDocs": 6,
+    "authUsers": 7
+  },
+  "fixturesDeleted": {
+    "companies": 3,
+    "companyData": 2,
+    "userDocs": 6,
+    "authUsers": 7
+  },
+  "cleanupErrors": [],
+  "zeroResidueConfirmed": true,
+  "scenarios": [
+    {
+      "id": "1",
+      "name": "unauthenticated get company_data/A",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "2",
+      "name": "no-profile user get company_data/A",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "3a",
+      "name": "self-update role",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "3b",
+      "name": "self-update companyId",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "3c",
+      "name": "self-update companies[]",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "4a",
+      "name": "cross-company read company_data/A",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "4b",
+      "name": "cross-company write company_data/A",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "5a",
+      "name": "viewer reads own company_data/A",
+      "expect": "ALLOW",
+      "actual": "ALLOW",
+      "ok": true
+    },
+    {
+      "id": "5b",
+      "name": "viewer cannot write company_data/A",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "6a",
+      "name": "accountant normal write company_data/A",
+      "expect": "ALLOW",
+      "actual": "ALLOW",
+      "ok": true
+    },
+    {
+      "id": "6b",
+      "name": "accountant sets closingDate",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "7",
+      "name": "admin sets closingDate company_data/A",
+      "expect": "ALLOW",
+      "actual": "ALLOW",
+      "ok": true
+    },
+    {
+      "id": "8",
+      "name": "query users where companyId==A (own company)",
+      "expect": "ALLOW",
+      "actual": "ALLOW",
+      "ok": true
+    },
+    {
+      "id": "9",
+      "name": "query users where companyId==B (additional membership)",
+      "expect": "ALLOW",
+      "actual": "ALLOW",
+      "ok": true
+    },
+    {
+      "id": "10a",
+      "name": "home-admin (viewer at B) cannot update companies/B",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "10b",
+      "name": "home-admin (viewer at B) cannot set closingDate at B",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "10c",
+      "name": "control: real additional-admin (B) CAN update companies/B",
+      "expect": "ALLOW",
+      "actual": "ALLOW",
+      "ok": true
+    },
+    {
+      "id": "11a",
+      "name": "unrestricted collection(users) query",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "11b",
+      "name": "unrestricted query with only limit()",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "11c",
+      "name": "mixed in-query [A,C]",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "12a",
+      "name": "spoof ownerId on new company create",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    },
+    {
+      "id": "12b",
+      "name": "spoof ownerId on update companies/A",
+      "expect": "DENY",
+      "actual": "DENY",
+      "ok": true
+    }
+  ],
+  "summary": {
+    "total": 22,
+    "pass": 22,
+    "fail": 0,
+    "skipped": 0
+  }
+}
