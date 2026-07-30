@@ -1,18 +1,30 @@
 import { useState } from 'react'
 import { CheckCircle2, XCircle, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
-import type { ParseResult, ParsedTransaction } from '../../utils/bankStatementParser'
+import type { ParseResult } from '../../utils/bankStatementParser'
 import { formatCurrency } from '../../utils/format'
 
 interface Props {
   result: ParseResult
   accountName: string
-  onImport: (selected: ParsedTransaction[]) => void
+  duplicateIndexes?: Set<number>
+  conflictIndexes?: Set<number>
+  onImport: (selectedIndexes: number[]) => void
   onCancel: () => void
 }
 
-export default function StatementPreview({ result, accountName, onImport, onCancel }: Props) {
+export default function StatementPreview({
+  result,
+  accountName,
+  duplicateIndexes = new Set<number>(),
+  conflictIndexes = new Set<number>(),
+  onImport,
+  onCancel,
+}: Props) {
+  const importableIndexes = result.transactions
+    .map((_, index) => index)
+    .filter(index => !duplicateIndexes.has(index) && !conflictIndexes.has(index))
   const [selected, setSelected] = useState<Set<number>>(
-    () => new Set(result.transactions.map((_, i) => i))
+    () => new Set(importableIndexes)
   )
   const [showAll, setShowAll] = useState(false)
 
@@ -25,11 +37,12 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
     .reduce((s, t) => s + t.amount, 0)
 
   function toggleAll() {
-    if (selected.size === result.transactions.length) setSelected(new Set())
-    else setSelected(new Set(result.transactions.map((_, i) => i)))
+    if (selected.size === importableIndexes.length) setSelected(new Set())
+    else setSelected(new Set(importableIndexes))
   }
 
   function toggle(i: number) {
+    if (duplicateIndexes.has(i) || conflictIndexes.has(i)) return
     const next = new Set(selected)
     if (next.has(i)) next.delete(i)
     else next.add(i)
@@ -37,7 +50,7 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
   }
 
   function handleImport() {
-    onImport(result.transactions.filter((_, i) => selected.has(i)))
+    onImport([...selected].sort((a, b) => a - b))
   }
 
   return (
@@ -60,7 +73,7 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
           </div>
 
           {/* Stats */}
-          <div className="flex gap-4 mt-3">
+          <div className="flex flex-wrap gap-4 mt-3">
             <div className="flex items-center gap-1.5 text-sm">
               <CheckCircle2 size={14} className="text-emerald-500" />
               <span className="font-medium text-slate-700">{result.transactions.length}</span>
@@ -71,6 +84,20 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
                 <AlertCircle size={14} className="text-amber-500" />
                 <span className="font-medium text-slate-700">{result.skipped}</span>
                 <span className="text-slate-400">строк пропущено</span>
+              </div>
+            )}
+            {duplicateIndexes.size > 0 && (
+              <div className="flex items-center gap-1.5 text-sm">
+                <AlertCircle size={14} className="text-amber-500" />
+                <span className="font-medium text-slate-700">{duplicateIndexes.size}</span>
+                <span className="text-slate-400">дублей пропущено</span>
+              </div>
+            )}
+            {conflictIndexes.size > 0 && (
+              <div className="flex items-center gap-1.5 text-sm">
+                <XCircle size={14} className="text-red-500" />
+                <span className="font-medium text-slate-700">{conflictIndexes.size}</span>
+                <span className="text-slate-400">конфликтов заблокировано</span>
               </div>
             )}
             {result.accountNumber && (
@@ -98,13 +125,14 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
         )}
 
         {/* Table */}
-        <div className="overflow-y-auto flex-1">
+        <div className="overflow-auto flex-1">
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-white z-10">
               <tr className="border-b border-slate-100 bg-slate-50">
                 <th className="px-4 py-2.5 w-10">
                   <input type="checkbox"
-                    checked={selected.size === result.transactions.length}
+                    checked={importableIndexes.length > 0 && selected.size === importableIndexes.length}
+                    disabled={importableIndexes.length === 0}
                     onChange={toggleAll}
                     className="rounded accent-indigo-600 cursor-pointer"
                   />
@@ -112,6 +140,7 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
                 <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-2 py-2.5">Дата</th>
                 <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-2 py-2.5">Тип</th>
                 <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-2 py-2.5">Описание</th>
+                <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-2 py-2.5">Статус</th>
                 <th className="text-right text-xs font-semibold text-slate-500 uppercase tracking-wide px-4 py-2.5">Сумма</th>
               </tr>
             </thead>
@@ -120,10 +149,20 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
                 <tr
                   key={i}
                   onClick={() => toggle(i)}
-                  className={`border-b border-slate-50 cursor-pointer transition-colors ${selected.has(i) ? 'hover:bg-slate-50' : 'opacity-40 hover:opacity-60 bg-slate-50/50'}`}
+                  className={`border-b border-slate-50 transition-colors ${
+                    conflictIndexes.has(i)
+                      ? 'bg-red-50/60 opacity-80 cursor-not-allowed'
+                      : duplicateIndexes.has(i)
+                      ? 'bg-amber-50/60 opacity-70 cursor-not-allowed'
+                      : selected.has(i)
+                        ? 'hover:bg-slate-50 cursor-pointer'
+                        : 'opacity-40 hover:opacity-60 bg-slate-50/50 cursor-pointer'
+                  }`}
                 >
                   <td className="px-4 py-2.5">
-                    <input type="checkbox" checked={selected.has(i)} onChange={() => toggle(i)}
+                    <input type="checkbox" checked={selected.has(i)}
+                      disabled={duplicateIndexes.has(i) || conflictIndexes.has(i)}
+                      onChange={() => toggle(i)}
                       className="rounded accent-indigo-600 cursor-pointer" onClick={e => e.stopPropagation()} />
                   </td>
                   <td className="px-2 py-2.5 text-slate-500 whitespace-nowrap font-mono text-xs">
@@ -138,6 +177,21 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
                   </td>
                   <td className="px-2 py-2.5 text-slate-600 max-w-xs truncate" title={t.description}>
                     {t.description || '—'}
+                  </td>
+                  <td className="px-2 py-2.5">
+                    {conflictIndexes.has(i) ? (
+                      <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                        Конфликт
+                      </span>
+                    ) : duplicateIndexes.has(i) ? (
+                      <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700">
+                        Уже загружена
+                      </span>
+                    ) : (
+                      <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700">
+                        Новая
+                      </span>
+                    )}
                   </td>
                   <td className={`px-4 py-2.5 font-semibold text-right whitespace-nowrap ${
                     t.type === 'income' ? 'text-emerald-600' : 'text-red-500'
@@ -178,7 +232,7 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
             disabled={selected.size === 0}
             className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition"
           >
-            Импортировать {selected.size > 0 ? `${selected.size} операций` : ''}
+            {selected.size > 0 ? `Импортировать ${selected.size} операций` : 'Новых операций нет'}
           </button>
         </div>
       </div>

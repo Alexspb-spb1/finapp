@@ -9,6 +9,7 @@ export interface ParsedTransaction {
   counterpartAccount?: string
   counterpartBankName?: string
   counterpartBik?: string
+  bankOperationId?: string
   raw: string
 }
 
@@ -184,6 +185,7 @@ function parse1C(text: string): ParseResult {
     ).trim().replace(/\D/g, '')
 
     const purpose = kv['НазначениеПлатежа'] ?? ''
+    const bankOperationId = (kv['Номер'] ?? kv['НомерДокумента'] ?? '').trim()
 
     const description = [counterpart, purpose]
       .map(s => s.trim())
@@ -199,6 +201,7 @@ function parse1C(text: string): ParseResult {
       counterpartAccount:  counterpartAccount  || undefined,
       counterpartBankName: counterpartBankName || undefined,
       counterpartBik:      counterpartBik      || undefined,
+      bankOperationId:      bankOperationId     || undefined,
       raw: block,
     })
   }
@@ -231,6 +234,7 @@ const AMT_HDRS  = ['сумма','amount','сумма операции','сумм
 const CRD_HDRS  = ['приход','зачисление','credit','поступление','сумма зачисления']
 const DBT_HDRS  = ['расход','списание','debit','сумма списания']
 const DSC_HDRS  = ['описание','назначение','description','назначение платежа','информация о платеже','детали']
+const ID_HDRS   = ['id операции','идентификатор операции','номер документа','document id','operation id']
 
 function findCol(headers: string[], patterns: string[]): number {
   for (let i = 0; i < headers.length; i++) {
@@ -262,6 +266,7 @@ function parseDelimited(lines: string[], delim: string): ParsedTransaction[] {
   const crdCol = findCol(headers, CRD_HDRS)
   const dbtCol = findCol(headers, DBT_HDRS)
   const dscCol = findCol(headers, DSC_HDRS)
+  const idCol  = findCol(headers, ID_HDRS)
   if (datCol === -1 || (amtCol === -1 && crdCol === -1 && dbtCol === -1)) return []
 
   for (let i = headerIdx + 1; i < lines.length; i++) {
@@ -290,7 +295,15 @@ function parseDelimited(lines: string[], delim: string): ParsedTransaction[] {
       ? (cols[dscCol] ?? '')
       : cols.filter((_,idx) => ![datCol,amtCol,crdCol,dbtCol].includes(idx)).find(Boolean) ?? ''
 
-    result.push({ date, amount: Math.abs(amount), type, description: description.slice(0,200), raw: line })
+    const bankOperationId = idCol !== -1 ? (cols[idCol] ?? '').trim() : ''
+    result.push({
+      date,
+      amount: Math.abs(amount),
+      type,
+      description: description.slice(0,200),
+      bankOperationId: bankOperationId || undefined,
+      raw: line,
+    })
   }
   return result
 }
