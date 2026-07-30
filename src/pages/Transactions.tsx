@@ -177,6 +177,31 @@ export default function Transactions() {
 
   const checkAllRef = useRef<HTMLInputElement>(null)
 
+  // ── Filtering ──────────────────────────────────────────────────────────────
+  const filtered = transactions.filter(t => {
+    if (typeFilter !== 'all' && t.type !== typeFilter) return false
+    if (dateFrom && t.date < dateFrom) return false
+    if (dateTo   && t.date > dateTo)   return false
+    if (tagFilter.length > 0 && !tagFilter.every(tag => (t.tags ?? []).includes(tag))) return false
+    if (search) {
+      const cat  = categories.find(c => c.id === t.categoryId)
+      const cp   = counterparties.find(c => c.id === t.counterpartyId)
+      const proj = projects.find(p => p.id === t.projectId)
+      const q    = search.toLowerCase()
+      if (
+        !(t.comment ?? '').toLowerCase().includes(q) &&
+        !cat?.name.toLowerCase().includes(q) &&
+        !cp?.name.toLowerCase().includes(q) &&
+        !proj?.name.toLowerCase().includes(q) &&
+        !(t.tags ?? []).some(tag => tag.includes(q))
+      ) return false
+    }
+    return true
+  })
+
+  const periodActive = !!(dateFrom || dateTo)
+  const allTags = store.allTags
+
   // ── Select-all indeterminate state ─────────────────────────────────────────
   useEffect(() => {
     if (!checkAllRef.current) return
@@ -204,31 +229,6 @@ export default function Transactions() {
     window.addEventListener('mouseup',   onUp)
   }
 
-  // ── Filtering ──────────────────────────────────────────────────────────────
-  const filtered = transactions.filter(t => {
-    if (typeFilter !== 'all' && t.type !== typeFilter) return false
-    if (dateFrom && t.date < dateFrom) return false
-    if (dateTo   && t.date > dateTo)   return false
-    if (tagFilter.length > 0 && !tagFilter.every(tag => (t.tags ?? []).includes(tag))) return false
-    if (search) {
-      const cat  = categories.find(c => c.id === t.categoryId)
-      const cp   = counterparties.find(c => c.id === t.counterpartyId)
-      const proj = projects.find(p => p.id === t.projectId)
-      const q    = search.toLowerCase()
-      if (
-        !(t.comment ?? '').toLowerCase().includes(q) &&
-        !cat?.name.toLowerCase().includes(q) &&
-        !cp?.name.toLowerCase().includes(q) &&
-        !proj?.name.toLowerCase().includes(q) &&
-        !(t.tags ?? []).some(tag => tag.includes(q))
-      ) return false
-    }
-    return true
-  })
-
-  const periodActive = !!(dateFrom || dateTo)
-  const allTags = store.allTags
-
   function handleExport() {
     const TYPE_RU: Record<string, string> = { income: 'Доход', expense: 'Расход', transfer: 'Перевод' }
     const rows = filtered.map(t => ({
@@ -250,7 +250,12 @@ export default function Transactions() {
   const allSelected  = filtered.length > 0 && filtered.every(t => selected.has(t.id))
 
   function toggleOne(id: string) {
-    setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
+    setSelected(prev => {
+      const s = new Set(prev)
+      if (s.has(id)) s.delete(id)
+      else s.add(id)
+      return s
+    })
   }
 
   function toggleAll() {

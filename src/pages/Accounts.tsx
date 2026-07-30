@@ -43,6 +43,7 @@ export default function Accounts() {
   useEffect(() => {
     if (!open || currency === 'RUB') { return }
     if (rate) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag for the async fetch started right below
     setFetchingRate(true)
     fetchRate(currency, 'RUB').then(r => {
       if (r) setRate(String(r))

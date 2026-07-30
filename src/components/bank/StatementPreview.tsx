@@ -31,7 +31,8 @@ export default function StatementPreview({ result, accountName, onImport, onCanc
 
   function toggle(i: number) {
     const next = new Set(selected)
-    next.has(i) ? next.delete(i) : next.add(i)
+    if (next.has(i)) next.delete(i)
+    else next.add(i)
     setSelected(next)
   }
 

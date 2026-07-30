@@ -12,6 +12,19 @@ dist
 dist-ssr
 *.local
 
+# Firebase local/emulator artifacts (BASE-002) — never commit
+.env.local
+.env.*.local
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+.firebase/
+firebase-export/
+emulator-data/
+.secret.local
+functions/.secret.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

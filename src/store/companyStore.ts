@@ -30,6 +30,7 @@ interface CompanyData {
   paymentCalendar: PaymentCalendarItem[]
   closingDate?:    string       // период закрыт по эту дату включ.: операции <= неё нельзя менять/удалять (БАГ №6)
   auditLog?:       AuditEntry[] // журнал чувствительных действий (пока только смена closingDate)
+  _savedAt?:       number       // метка времени последней записи — для выбора более свежей версии (localStorage vs Firestore)
 }
 
 const EMPTY: CompanyData = {
@@ -70,7 +71,7 @@ let unsubSnapshot: (() => void) | null = null
     if (!saved.categories)      saved.categories      = DEFAULT_CATEGORIES
     state            = saved
     currentCompanyId = lastId   // ← чтобы persist() работал сразу
-  } catch {}
+  } catch { /* повреждённые данные в localStorage — остаёмся с пустым состоянием */ }
 })()
 
 // ── Persist: localStorage (всегда) + Firestore (кросс-устройства) ────────────
@@ -80,7 +81,7 @@ function persist() {
   const saveId = currentCompanyId ?? auth.currentUser?.uid ?? null
 
   if (saveId) {
-    (state as any)._savedAt = Date.now()
+    state._savedAt = Date.now()
     // 1. localStorage — мгновенно, никогда не падает
     try {
       localStorage.setItem(LS_LAST_ID, saveId)
@@ -99,7 +100,7 @@ function persist() {
   notify()
 }
 
-function savedAt(d: CompanyData): number { return (d as any)._savedAt ?? 0 }
+function savedAt(d: CompanyData): number { return d._savedAt ?? 0 }
 
 // Период закрыт: операцию с датой <= closingDate нельзя менять или удалять (БАГ №6)
 function isPeriodLocked(dateStr: string): boolean {
@@ -139,7 +140,7 @@ const companyStoreImpl = {
         if (!lsData.categories)      lsData.categories      = DEFAULT_CATEGORIES
         state = lsData
         notify()
-      } catch {}
+      } catch { /* повреждённые данные в localStorage — пропускаем, ждём Firestore */ }
     }
 
     // 2. Затем данные из Firestore — актуальная версия с других устройств

@@ -30,7 +30,10 @@ function suggestCategory(tx: Transaction, store: ReturnType<typeof useStore>): s
         case 'amountGt': return tx.amount > parseFloat(cond.value || '0')
         case 'amountLt': return tx.amount < parseFloat(cond.value || '0')
         case 'amountEq': return tx.amount === parseFloat(cond.value || '0')
-        default:         return (tx as any)[cond.field] === cond.value
+        default: {
+          const key = cond.field as 'type' | 'accountId' | 'counterpartyId' | 'categoryId' | 'projectId'
+          return tx[key] === cond.value
+        }
       }
     })
     if (match) {

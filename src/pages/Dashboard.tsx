@@ -48,7 +48,7 @@ function readLS<T>(key: string, fallback: T): T {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback } catch { return fallback }
 }
 function writeLS(key: string, v: unknown) {
-  try { localStorage.setItem(key, JSON.stringify(v)) } catch {}
+  try { localStorage.setItem(key, JSON.stringify(v)) } catch { /* best-effort persist, ignore */ }
 }
 
 // ── SortableWidget wrapper ────────────────────────────────────────────────────
@@ -80,12 +80,18 @@ function SortableWidget({ id, wide, configMode, children }: {
 }
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
-function ChartTooltip({ active, payload, label }: any) {
+interface ChartTooltipProps {
+  active?: boolean
+  payload?: { name: string; value: number; color: string }[]
+  label?: string
+}
+
+function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
   if (!active || !payload?.length) return null
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
       <p className="font-semibold text-slate-700 mb-1">{label}</p>
-      {payload.map((p: any) => (
+      {payload.map(p => (
         <p key={p.name} style={{ color: p.color }} className="flex justify-between gap-6">
           <span>{p.name}:</span>
           <span className="font-medium">{formatCurrency(p.value)}</span>
@@ -135,7 +141,8 @@ export default function Dashboard() {
   function toggleWidget(id: string) {
     setDisabledWidgets(prev => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       // Persist: enabled = widgetOrder minus disabled
       const enabled = widgetOrder.filter(wid => !next.has(wid))
       writeLS(LS_WIDGETS, enabled)
@@ -189,7 +196,10 @@ export default function Dashboard() {
 
   function sectionSum(type: 'income' | 'expense', section: string, month: string) {
     const ids = categories.filter(c => !c.isGroup && c.type === type && (c.pnlSection ?? (type === 'income' ? 'direct' : 'indirect')) === section).map(c => c.id)
-    return transactions.filter(t => ids.includes(t.categoryId) && monthKey(t.date) === month).reduce((s, t) => s + toBase(t), 0)
+    // Операция без категории не относится ни к одному разделу — исключаем
+    // её только из этой посекционной суммы (см. PnL.sumBySection); общие
+    // итоги (monthData ниже) считаются по всем транзакциям без фильтра.
+    return transactions.filter(t => t.categoryId !== undefined && ids.includes(t.categoryId) && monthKey(t.date) === month).reduce((s, t) => s + toBase(t), 0)
   }
   const curGrossProfit  = sectionSum('income', 'direct', curMonth) - sectionSum('expense', 'direct', curMonth)
   const prevGrossProfit = sectionSum('income', 'direct', prevMonth) - sectionSum('expense', 'direct', prevMonth)
@@ -198,6 +208,11 @@ export default function Dashboard() {
 
   const expByCat: Record<string, number> = {}
   transactions.filter(t => t.type === 'expense' && monthKey(t.date) === curMonth).forEach(t => {
+    // Разбивка по категориям — операция без категории не относится ни к
+    // одной статье, поэтому не участвует в этой разбивке (но продолжает
+    // учитываться в totalBalance/monthData выше, которые не фильтруют по
+    // категории).
+    if (t.categoryId === undefined) return
     expByCat[t.categoryId] = (expByCat[t.categoryId] ?? 0) + toBase(t)
   })
   const pieData = Object.entries(expByCat).map(([catId, val]) => {
@@ -460,7 +475,7 @@ export default function Dashboard() {
       )}
 
       {/* Toolbar */}
-      <div className="flex justify-end">
+      <div className="sticky top-0 z-10 -mx-3 -mt-3 sm:-mx-6 sm:-mt-6 px-3 sm:px-6 pt-3 sm:pt-6 pb-3 bg-slate-50 flex justify-end">
         <button onClick={() => setConfigOpen(v => !v)}
           className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
             configOpen

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { X, Plus, Trash2, Scissors, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { useStore } from '../../store/useStore'
 import { formatCurrency } from '../../utils/format'
@@ -21,19 +21,12 @@ export default function SplitTransactionModal({ transaction, onClose }: Props) {
   const store = useStore()
   const total = transaction?.amount ?? 0
 
-  const [parts, setParts] = useState<PartRow[]>([
-    { _key: newKey(), categoryId: '', amount: 0, comment: '', projectId: '' },
+  // Parent remounts this component (via `key`) whenever the target transaction
+  // changes, so the initial state below is always seeded fresh — no reset effect needed.
+  const [parts, setParts] = useState<PartRow[]>(() => [
+    { _key: newKey(), categoryId: transaction?.categoryId ?? '', amount: 0, comment: '', projectId: transaction?.projectId ?? '' },
     { _key: newKey(), categoryId: '', amount: 0, comment: '', projectId: '' },
   ])
-
-  // Reset when transaction changes
-  useEffect(() => {
-    if (!transaction) return
-    setParts([
-      { _key: newKey(), categoryId: transaction.categoryId ?? '', amount: 0, comment: '', projectId: transaction.projectId ?? '' },
-      { _key: newKey(), categoryId: '', amount: 0, comment: '', projectId: '' },
-    ])
-  }, [transaction?.id])
 
   if (!transaction) return null
 
