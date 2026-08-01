@@ -1,0 +1,494 @@
+{
+  "sourceGitSha": "7d637d29b4ad4c3dcacde9e9bf46ffe385096171",
+  "auditExitCode": 1,
+  "summary": {
+    "info": 0,
+    "low": 1,
+    "moderate": 7,
+    "high": 20,
+    "critical": 0,
+    "total": 28
+  },
+  "dependencyCounts": {
+    "prod": 149,
+    "dev": 821,
+    "optional": 61,
+    "peer": 1,
+    "peerOptional": 0,
+    "total": 970
+  },
+  "xlsxInstalledVersion": "0.18.5",
+  "vulnerabilities": [
+    {
+      "package": "@babel/core",
+      "severity": "low",
+      "isDirectDependency": false,
+      "affectedRange": "<=7.29.0",
+      "fixAvailable": true,
+      "advisories": [
+        {
+          "title": "@babel/core: Arbitrary File Read via sourceMappingURL Comment",
+          "url": "https://github.com/advisories/GHSA-4x5r-pxfx-6jf8",
+          "severity": "low",
+          "cwe": [
+            "CWE-22",
+            "CWE-200"
+          ],
+          "cvssScore": 3.2,
+          "range": "<=7.29.0"
+        }
+      ]
+    },
+    {
+      "package": "@google-cloud/pubsub",
+      "severity": "moderate",
+      "isDirectDependency": false,
+      "affectedRange": ">=5.1.0",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "@hono/node-server",
+      "severity": "moderate",
+      "isDirectDependency": false,
+      "affectedRange": "<2.0.5",
+      "fixAvailable": true,
+      "advisories": [
+        {
+          "title": "Node.js Adapter for Hono: Path traversal in `serve-static` on Windows via encoded backslash (`%5C`)",
+          "url": "https://github.com/advisories/GHSA-frvp-7c67-39w9",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvssScore": 5.9,
+          "range": "<2.0.5"
+        }
+      ]
+    },
+    {
+      "package": "@modelcontextprotocol/sdk",
+      "severity": "moderate",
+      "isDirectDependency": false,
+      "affectedRange": "1.25.0 - 1.29.0",
+      "fixAvailable": true,
+      "advisories": []
+    },
+    {
+      "package": "@opentelemetry/core",
+      "severity": "moderate",
+      "isDirectDependency": false,
+      "affectedRange": "<2.8.0",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [
+        {
+          "title": "OpenTelemetry Core: Unbounded memory allocation in W3C Baggage propagation",
+          "url": "https://github.com/advisories/GHSA-8988-4f7v-96qf",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-770"
+          ],
+          "cvssScore": 5.3,
+          "range": "<2.8.0"
+        }
+      ]
+    },
+    {
+      "package": "archiver",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "0.20.0 - 7.0.1",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "archiver-utils",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": ">=0.2.0",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "brace-expansion",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "<=5.0.7",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [
+        {
+          "title": "brace-expansion: DoS via exponential-time expansion of consecutive non-expanding {} groups",
+          "url": "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-407"
+          ],
+          "cvssScore": 5.3,
+          "range": ">=3.0.0 <5.0.7"
+        },
+        {
+          "title": "brace-expansion: DoS via unbounded expansion length causing an out-of-memory process crash",
+          "url": "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-770"
+          ],
+          "cvssScore": 7.5,
+          "range": "<=5.0.7"
+        }
+      ]
+    },
+    {
+      "package": "exegesis",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "*",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "exegesis-express",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "*",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "firebase-tools",
+      "severity": "high",
+      "isDirectDependency": true,
+      "affectedRange": ">=2.0.0",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "gaxios",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "6.4.0 - 6.7.1 || 7.1.3",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "gcp-metadata",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "8.1.3 - 8.1.4",
+      "fixAvailable": true,
+      "advisories": []
+    },
+    {
+      "package": "glob",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "4.3.0 - 10.5.0",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "google-gax",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "5.0.5 - 5.0.8",
+      "fixAvailable": true,
+      "advisories": []
+    },
+    {
+      "package": "googleapis-common",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": ">=8.0.2-rc.0",
+      "fixAvailable": true,
+      "advisories": []
+    },
+    {
+      "package": "minimatch",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "2.0.0 - 10.0.2",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "postcss",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "<=8.5.17",
+      "fixAvailable": true,
+      "advisories": [
+        {
+          "title": "PostCSS: Path Traversal in Previous Source Map Auto-Loading (sourceMappingURL) leads to Arbitrary .map File Disclosure",
+          "url": "https://github.com/advisories/GHSA-r28c-9q8g-f849",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvssScore": 7.5,
+          "range": "<=8.5.17"
+        }
+      ]
+    },
+    {
+      "package": "protobufjs",
+      "severity": "moderate",
+      "isDirectDependency": false,
+      "affectedRange": "7.5.0 - 7.6.4",
+      "fixAvailable": true,
+      "advisories": [
+        {
+          "title": "protobufjs: Denial of Service via infinite loop in .proto option parsing",
+          "url": "https://github.com/advisories/GHSA-j3f2-48v5-ccww",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-835"
+          ],
+          "cvssScore": 5.3,
+          "range": ">=7.5.0 <=7.6.4"
+        }
+      ]
+    },
+    {
+      "package": "react-router",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "6.0.0 - 8.2.0",
+      "fixAvailable": true,
+      "advisories": [
+        {
+          "title": "React Router: Open redirect via backslash in <Link> and useNavigate (CVE-2025-68470 bypass)",
+          "url": "https://github.com/advisories/GHSA-wrjc-x8rr-h8h6",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-601"
+          ],
+          "cvssScore": 0,
+          "range": ">=6.0.0 <7.18.0"
+        },
+        {
+          "title": "React Router: RSCErrorHandler Missing Protocol Validation (XSS)",
+          "url": "https://github.com/advisories/GHSA-h8fp-f39c-q6mh",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-79"
+          ],
+          "cvssScore": 6.9,
+          "range": ">=7.11.0 <7.18.0"
+        },
+        {
+          "title": "React Router: Arbitrary Constructor Injection via deserializeErrors() in React Router SSR Hydration",
+          "url": "https://github.com/advisories/GHSA-337j-9hxr-rhxg",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-470"
+          ],
+          "cvssScore": 6.1,
+          "range": ">=6.4.0 <7.18.0"
+        },
+        {
+          "title": "React Router: Unauthenticated Denial of Service via Inefficient Route Matching",
+          "url": "https://github.com/advisories/GHSA-chx6-hx7r-mcp5",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-407"
+          ],
+          "cvssScore": 0,
+          "range": ">=7.0.0 <7.18.0"
+        },
+        {
+          "title": "React Router: RSC Mode CSRF Bypass Allows Action Execution Before 400 Response",
+          "url": "https://github.com/advisories/GHSA-qwww-vcr4-c8h2",
+          "severity": "high",
+          "cwe": [
+            "CWE-352"
+          ],
+          "cvssScore": 0,
+          "range": ">=7.12.0 <8.3.0"
+        }
+      ]
+    },
+    {
+      "package": "react-router-dom",
+      "severity": "moderate",
+      "isDirectDependency": true,
+      "affectedRange": "6.0.0-alpha.0 - 7.17.0",
+      "fixAvailable": true,
+      "advisories": []
+    },
+    {
+      "package": "readdir-glob",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "<=2.0.3",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "rimraf",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "2.3.0 - 3.0.2 || 4.2.0 - 5.0.10",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "superstatic",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": ">=2.0.0-rc1",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": []
+    },
+    {
+      "package": "uuid",
+      "severity": "moderate",
+      "isDirectDependency": false,
+      "affectedRange": "<11.1.1",
+      "fixAvailable": {
+        "name": "firebase-tools",
+        "version": "14.23.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [
+        {
+          "title": "uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided",
+          "url": "https://github.com/advisories/GHSA-w5hq-g745-h8pq",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-787",
+            "CWE-1285"
+          ],
+          "cvssScore": 7.5,
+          "range": "<11.1.1"
+        }
+      ]
+    },
+    {
+      "package": "vite",
+      "severity": "high",
+      "isDirectDependency": true,
+      "affectedRange": "8.0.0 - 8.0.15",
+      "fixAvailable": true,
+      "advisories": [
+        {
+          "title": "launch-editor: NTLMv2 hash disclosure via UNC path handling on Windows",
+          "url": "https://github.com/advisories/GHSA-v6wh-96g9-6wx3",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-73",
+            "CWE-522"
+          ],
+          "cvssScore": 0,
+          "range": ">=8.0.0 <=8.0.15"
+        },
+        {
+          "title": "vite: `server.fs.deny` bypass on Windows alternate paths",
+          "url": "https://github.com/advisories/GHSA-fx2h-pf6j-xcff",
+          "severity": "high",
+          "cwe": [
+            "CWE-22",
+            "CWE-200"
+          ],
+          "cvssScore": 7.5,
+          "range": ">=8.0.0 <=8.0.15"
+        }
+      ]
+    },
+    {
+      "package": "xlsx",
+      "severity": "high",
+      "isDirectDependency": true,
+      "affectedRange": "*",
+      "fixAvailable": false,
+      "advisories": [
+        {
+          "title": "Prototype Pollution in sheetJS",
+          "url": "https://github.com/advisories/GHSA-4r6h-8v6p-xvw6",
+          "severity": "high",
+          "cwe": [
+            "CWE-1321"
+          ],
+          "cvssScore": 7.8,
+          "range": "<0.19.3"
+        },
+        {
+          "title": "SheetJS Regular Expression Denial of Service (ReDoS)",
+          "url": "https://github.com/advisories/GHSA-5pgg-2g8v-p4x9",
+          "severity": "high",
+          "cwe": [
+            "CWE-1333"
+          ],
+          "cvssScore": 7.5,
+          "range": "<0.20.2"
+        }
+      ]
+    },
+    {
+      "package": "zip-stream",
+      "severity": "high",
+      "isDirectDependency": false,
+      "affectedRange": "0.8.0 - 6.0.1",
+      "fixAvailable": true,
+      "advisories": []
+    }
+  ]
+}

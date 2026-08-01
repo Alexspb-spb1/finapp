@@ -1,0 +1,77 @@
+{
+  "sourceGitSha": "7d637d29b4ad4c3dcacde9e9bf46ffe385096171",
+  "route": "http://127.0.0.1:4173/finapp/#/login",
+  "runCount": 3,
+  "environment": {
+    "builtWith": "npm run build (tsc -b && vite build --mode emulator)",
+    "servedWith": "vite preview --host 127.0.0.1 --port 4173",
+    "firebaseProject": "demo-finapp (Auth + Firestore Emulator Suite, local only)"
+  },
+  "lighthouseVersion": "13.4.1",
+  "chromeUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+  "os": "Windows 10 Pro (win32)",
+  "emulationMode": "simulate",
+  "formFactor": "mobile",
+  "screenEmulation": {
+    "mobile": true,
+    "width": 412,
+    "height": 823,
+    "deviceScaleFactor": 1.75,
+    "disabled": false
+  },
+  "throttling": {
+    "rttMs": 150,
+    "throughputKbps": 1638.4,
+    "requestLatencyMs": 562.5,
+    "downloadThroughputKbps": 1474.5600000000002,
+    "uploadThroughputKbps": 675,
+    "cpuSlowdownMultiplier": 4
+  },
+  "runs": [
+    {
+      "performance": 0.72,
+      "accessibility": 0.79,
+      "bestPractices": 1,
+      "seo": 0.9,
+      "firstContentfulPaintMs": 4658.991,
+      "largestContentfulPaintMs": 4658.991,
+      "speedIndexMs": 4327,
+      "totalBlockingTimeMs": 9.19799999999941,
+      "cumulativeLayoutShift": 0
+    },
+    {
+      "performance": 0.72,
+      "accessibility": 0.79,
+      "bestPractices": 1,
+      "seo": 0.9,
+      "firstContentfulPaintMs": 4623.368,
+      "largestContentfulPaintMs": 4623.368,
+      "speedIndexMs": 4294,
+      "totalBlockingTimeMs": 10.834000000000742,
+      "cumulativeLayoutShift": 0
+    },
+    {
+      "performance": 0.72,
+      "accessibility": 0.79,
+      "bestPractices": 1,
+      "seo": 0.9,
+      "firstContentfulPaintMs": 4683.827,
+      "largestContentfulPaintMs": 4683.827,
+      "speedIndexMs": 4349,
+      "totalBlockingTimeMs": 23.01599999999962,
+      "cumulativeLayoutShift": 0
+    }
+  ],
+  "median": {
+    "performance": 0.72,
+    "accessibility": 0.79,
+    "bestPractices": 1,
+    "seo": 0.9,
+    "firstContentfulPaintMs": 4658.991,
+    "largestContentfulPaintMs": 4658.991,
+    "speedIndexMs": 4327,
+    "totalBlockingTimeMs": 10.834000000000742,
+    "cumulativeLayoutShift": 0
+  },
+  "notes": "Unauthenticated route. Fresh temporary Chrome profile used for each of the 3 runs."
+}

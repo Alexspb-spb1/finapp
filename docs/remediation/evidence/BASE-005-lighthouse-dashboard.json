@@ -1,0 +1,77 @@
+{
+  "sourceGitSha": "7d637d29b4ad4c3dcacde9e9bf46ffe385096171",
+  "route": "http://127.0.0.1:4173/finapp/#/",
+  "runCount": 3,
+  "environment": {
+    "builtWith": "npm run build (tsc -b && vite build --mode emulator)",
+    "servedWith": "vite preview --host 127.0.0.1 --port 4173",
+    "firebaseProject": "demo-finapp (Auth + Firestore Emulator Suite, local only)"
+  },
+  "lighthouseVersion": "13.4.1",
+  "chromeUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+  "os": "Windows 10 Pro (win32)",
+  "emulationMode": "simulate",
+  "formFactor": "mobile",
+  "screenEmulation": {
+    "mobile": true,
+    "width": 412,
+    "height": 823,
+    "deviceScaleFactor": 1.75,
+    "disabled": false
+  },
+  "throttling": {
+    "rttMs": 150,
+    "throughputKbps": 1638.4,
+    "requestLatencyMs": 562.5,
+    "downloadThroughputKbps": 1474.5600000000002,
+    "uploadThroughputKbps": 675,
+    "cpuSlowdownMultiplier": 4
+  },
+  "runs": [
+    {
+      "performance": 0.58,
+      "accessibility": 0.79,
+      "bestPractices": 1,
+      "seo": 0.9,
+      "firstContentfulPaintMs": 4694.481,
+      "largestContentfulPaintMs": 7970.774,
+      "speedIndexMs": 7290,
+      "totalBlockingTimeMs": 149.90199998474145,
+      "cumulativeLayoutShift": 0
+    },
+    {
+      "performance": 0.59,
+      "accessibility": 0.79,
+      "bestPractices": 1,
+      "seo": 0.9,
+      "firstContentfulPaintMs": 4527.97,
+      "largestContentfulPaintMs": 7818,
+      "speedIndexMs": 7140,
+      "totalBlockingTimeMs": 135.03899999999976,
+      "cumulativeLayoutShift": 0
+    },
+    {
+      "performance": 0.57,
+      "accessibility": 0.79,
+      "bestPractices": 1,
+      "seo": 0.9,
+      "firstContentfulPaintMs": 4726.083,
+      "largestContentfulPaintMs": 8001.389,
+      "speedIndexMs": 7315,
+      "totalBlockingTimeMs": 162.15699998474156,
+      "cumulativeLayoutShift": 0
+    }
+  ],
+  "median": {
+    "performance": 0.58,
+    "accessibility": 0.79,
+    "bestPractices": 1,
+    "seo": 0.9,
+    "firstContentfulPaintMs": 4694.481,
+    "largestContentfulPaintMs": 7970.774,
+    "speedIndexMs": 7290,
+    "totalBlockingTimeMs": 149.90199998474145,
+    "cumulativeLayoutShift": 0
+  },
+  "notes": "Authenticated route. A single dedicated temporary Chrome profile (with a synthetic user session created via the real registration UI flow against the local Auth Emulator) was reused across all 3 runs, as explicitly permitted for the dashboard case."
+}
