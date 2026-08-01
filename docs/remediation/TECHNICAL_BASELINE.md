@@ -32,7 +32,8 @@ Lighthouse score, npm-уязвимость, отсутствие code-splitting)
 | npm | 11.13.0 |
 | TypeScript | 6.0.3 |
 | Vite | 8.0.13 |
-| Chrome (headless, Lighthouse) | 151.0.0.0 (`HeadlessChrome/151.0.0.0`) |
+| Chrome executable (headless, Lighthouse) | 151.0.7922.71 |
+| Chrome User-Agent token | 151.0.0.0 (`HeadlessChrome/151.0.0.0`; User-Agent намеренно сокращает номер версии и не равен версии executable) |
 | Lighthouse | 13.4.1 |
 | Java (Firestore Emulator) | portable Temurin 21.0.12 (системная Java не менялась) |
 
@@ -94,17 +95,28 @@ Lighthouse score, npm-уязвимость, отсутствие code-splitting)
 **Найдено, не исправлено**: весь код приложения собирается в один
 JS-чанк ~1.8 MiB (raw) без единого `import()` — то же предупреждение,
 которое печатает сам Vite при каждой сборке («Some chunks are larger than
-500 kB after minification»). Это прямая техническая причина низкого
-Lighthouse Performance score на dashboard (см. ниже) — весь код должен
-быть скачан и распарсен до первого полезного рендера, а не только код,
-нужный для конкретной страницы. **Не исправлено в этой задаче** —
-BASE-005 измеряет, не чинит.
+500 kB after minification»). Большой единый бандл создаёт общую нагрузку
+для login и dashboard и может ухудшать абсолютные показатели обоих
+маршрутов. Он, однако, сам по себе **не объясняет разницу** между score
+login 0.72 и dashboard 0.58, потому что оба маршрута загружают один и тот
+же entry-бандл. Более высокие LCP и TBT dashboard также совместимы с
+дополнительной загрузкой данных и рендерингом авторизованного интерфейса;
+вклад отдельных факторов этим baseline не изолировался. **Не исправлено в
+этой задаче** — BASE-005 измеряет, не чинит.
 
 ### Воспроизводимость (обязательная проверка)
 `npm run build` и `npm run build -- --manifest` дают **побитово
 идентичные** JS/CSS assets (одинаковые имена файлов, одинаковый SHA-256) —
-проверено явным сравнением на этом же коммите. `--manifest` не меняет
-chunking. `BASE_005_BLOCKED_BUNDLE_REPRODUCIBILITY` не потребовался.
+проверено явным сравнением на этом же коммите **в одном и том же
+зафиксированном окружении**: Windows 10, Node.js 24.16.0, npm 11.13.0,
+Vite 8.0.13. `--manifest` не меняет chunking.
+`BASE_005_BLOCKED_BUNDLE_REPRODUCIBILITY` не потребовался.
+
+Это не утверждение о переносимости хешей между ОС и toolchain. При
+независимой проверке того же SHA под Linux и другой версией Node.js
+получился другой JS SHA-256. Для побитового сравнения нужно повторять
+зафиксированное окружение; в другом окружении сравниваются структура,
+размеры и перечень чанков, а не обязательное совпадение хеша.
 
 ## npm audit baseline
 
@@ -212,20 +224,25 @@ major-ветки в реестре). Замена/обновление `xlsx` **
 
 ## Известные ограничения и источники погрешности
 
-1. Однопоточная сборка в один JS-чанк (0 dynamic imports) напрямую
-   объясняет разницу Performance score между login (0.72, минимальный UI)
-   и dashboard (0.58, тот же огромный бандл + реальный рендер данных) —
-   зафиксировано как техническая находка, не исправлено.
-2. `npm audit` использует живую базу advisories реестра — результат может
+1. Однопоточная сборка в один JS-чанк (0 dynamic imports) является общей
+   нагрузкой для обоих маршрутов и может ухудшать их абсолютные показатели,
+   но не доказывает причину разницы login 0.72 и dashboard 0.58. Dashboard
+   дополнительно загружает данные и рендерит авторизованный интерфейс;
+   вклад факторов отдельно не измерялся.
+2. Побитовая воспроизводимость JS/CSS подтверждена внутри одинакового
+   Windows/Node/npm/Vite-окружения. Linux или другая версия Node.js может
+   дать другой content hash на том же исходном SHA; это ограничивает
+   межплатформенное сравнение хешей.
+3. `npm audit` использует живую базу advisories реестра — результат может
    незначительно отличаться при повторном запуске в другой момент времени
    даже без изменения зависимостей (см. пояснение в разделе «npm audit
    baseline»).
-3. Lighthouse-измерения выполнены в `simulate`-режиме (не throttling
+4. Lighthouse-измерения выполнены в `simulate`-режиме (не throttling
    реального устройства) на headless Chrome под Windows в виртуализированной
    рабочей станции — абсолютные цифры могут отличаться на другом железе;
    относительные различия между login/dashboard и будущие сравнения с этим
    baseline остаются валидными при том же методе измерения.
-4. Дашборд-профиль Chrome использовался один на все 3 прогона (явно
+5. Дашборд-профиль Chrome использовался один на все 3 прогона (явно
    разрешено заданием) — в отличие от login, где каждый прогон получил
    отдельный чистый профиль.
 
@@ -265,13 +282,118 @@ npm audit --json
 npm ls xlsx --depth=0
 npm run build -- --manifest
 npm run baseline:bundle
-
-# Lighthouse (требует Firebase Emulator Suite + временный .env.emulator.local +
-# временную установку lighthouse/puppeteer точных зафиксированных версий —
-# см. docs/remediation/reports/BASE-005-technical-baseline.md для полной
-# процедуры, включая создание синтетического пользователя через реальный
-# UI-флоу регистрации).
 ```
+
+### Полная процедура воспроизведения Lighthouse
+
+Ниже приведена процедура непосредственно в этом отчёте; внешнего файла
+`docs/remediation/reports/BASE-005-technical-baseline.md` не существует и
+он не требуется.
+
+1. Использовать Windows 10 x64, Node.js 24.16.0, npm 11.13.0, Java 21,
+   Chrome executable 151.0.7922.71 и Lighthouse 13.4.1. User-Agent Chrome
+   при этом показывает сокращённый токен `HeadlessChrome/151.0.0.0`.
+2. На чистом checkout `TESTED_BASELINE_SHA` выполнить `npm ci`.
+3. Создать только локальный, git-ignored файл `.env.emulator.local`:
+
+```dotenv
+VITE_APP_ENV=development
+VITE_USE_FIREBASE_EMULATORS=true
+VITE_FIREBASE_API_KEY=local-emulator-only
+VITE_FIREBASE_AUTH_DOMAIN=demo-finapp.invalid
+VITE_FIREBASE_PROJECT_ID=demo-finapp
+VITE_FIREBASE_STORAGE_BUCKET=demo-finapp.invalid
+VITE_FIREBASE_MESSAGING_SENDER_ID=000000000000
+VITE_FIREBASE_APP_ID=local-emulator-only
+VITE_FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
+VITE_FIREBASE_FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
+```
+
+4. В первом терминале запустить эмуляторы без import/export:
+
+```powershell
+npx firebase emulators:start --project demo-finapp --only auth,firestore
+```
+
+Дождаться готовности Auth на `127.0.0.1:9099` и Firestore на
+`127.0.0.1:8080`.
+
+5. Во втором терминале собрать emulator-mode и запустить preview только на
+   loopback:
+
+```powershell
+npm run build -- --mode emulator
+npm run preview -- --host 127.0.0.1 --port 4173
+```
+
+6. В отдельный временный каталог установить инструменты, не меняя
+   `package.json` и `package-lock.json`. Для повторной процедуры
+   фиксируется Puppeteer 25.4.0; он используется только для подготовки
+   изолированного профиля, а Lighthouse-измерение выполняет Lighthouse
+   13.4.1:
+
+```powershell
+$baselineTools = Join-Path $env:TEMP "finapp-base-005-lighthouse"
+$baselineCache = Join-Path $baselineTools "npm-cache"
+New-Item -ItemType Directory -Force -Path $baselineTools | Out-Null
+$env:PUPPETEER_SKIP_DOWNLOAD = "true"
+npm install --prefix $baselineTools --cache $baselineCache --no-save lighthouse@13.4.1 puppeteer@25.4.0
+```
+
+7. Для login выполнить три запуска по
+   `http://127.0.0.1:4173/finapp/#/login`; каждый запуск должен получить
+   новый пустой `user-data-dir`. Для dashboard сначала открыть
+   `http://127.0.0.1:4173/finapp/#/register` системным Chrome
+   151.0.7922.71 через Puppeteer в отдельном временном `user-data-dir`,
+   затем через настоящий двухшаговый UI заполнить только синтетические
+   значения: имя, уникальный email в домене `.invalid`, пароль,
+   подтверждение пароля, тип ООО и синтетическое название компании; ИНН
+   оставить пустым. Дождаться фактического URL `/finapp/#/` и появления
+   содержимого dashboard, закрыть Chrome и использовать тот же профиль для
+   всех трёх dashboard-запусков. Прямые вызовы Auth API и обход
+   `ProtectedRoute` не допускаются.
+8. Каждый Lighthouse-запуск выполнять headless с системным Chrome и
+   соответствующим изолированным профилем, сохраняя сырой JSON только во
+   временный каталог. Эквивалентная форма команды:
+
+```powershell
+node "$baselineTools\node_modules\lighthouse\cli\index.js" `
+  "http://127.0.0.1:4173/finapp/#/login" `
+  --chrome-path="<путь-к-chrome.exe-151.0.7922.71>" `
+  --chrome-flags="--headless=new --user-data-dir=<изолированный-профиль>" `
+  --form-factor=mobile `
+  --screenEmulation.mobile=true `
+  --screenEmulation.width=412 `
+  --screenEmulation.height=823 `
+  --screenEmulation.deviceScaleFactor=1.75 `
+  --throttling-method=simulate `
+  --only-categories=performance,accessibility,best-practices,seo `
+  --output=json `
+  --output-path="<временный-report.json>" `
+  --quiet
+```
+
+Для dashboard заменить URL на
+`http://127.0.0.1:4173/finapp/#/` и трижды использовать один
+подготовленный авторизованный профиль. Перед принятием результата сверить
+фактические параметры из raw JSON с evidence: viewport 412×823,
+`deviceScaleFactor=1.75`, RTT 150 ms, download ≈1475 Kbps, upload
+675 Kbps, CPU slowdown ×4, `simulate`.
+
+9. Из трёх raw JSON для каждого маршрута извлечь категории, FCP, LCP,
+   Speed Index, TBT и CLS; медиана считается отдельно по каждой метрике.
+   Не коммитить raw reports, профиль, синтетический email или пароль.
+10. Остановить preview и Emulator Suite обычным завершением процессов,
+    без export/import; удалить `.env.emulator.local`, временные профили,
+    raw reports и временный каталог инструментов. Не обращаться к staging
+    или production Firebase.
+
+Оригинальный временный automation-script и версия Puppeteer не были
+включены в evidence коммита B. Поэтому сохранённые численные результаты
+воспроизводятся методологически по процедуре выше, но это не обещание
+побитового совпадения raw Lighthouse JSON на другом запуске. Версии
+Chrome executable, User-Agent и Lighthouse, а также все параметры
+эмуляции, viewport и throttling зафиксированы явно.
 
 ## Rollback
 
