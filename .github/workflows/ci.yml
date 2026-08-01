@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Print tool versions
+        run: |
+          node --version
+          npm --version
+          java -version
+
+      - name: Verify Node/npm versions match package.json engines
+        run: |
+          EXPECTED_NODE="v$(node -p "require('./package.json').engines.node")"
+          ACTUAL_NODE="$(node --version)"
+          EXPECTED_NPM="$(node -p "require('./package.json').engines.npm")"
+          ACTUAL_NPM="$(npm --version)"
+          if [ "$ACTUAL_NODE" != "$EXPECTED_NODE" ]; then
+            echo "Node version mismatch: expected $EXPECTED_NODE, got $ACTUAL_NODE"
+            exit 1
+          fi
+          if [ "$ACTUAL_NPM" != "$EXPECTED_NPM" ]; then
+            echo "npm version mismatch: expected $EXPECTED_NPM, got $ACTUAL_NPM"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm run test:staging-preflight
+
+      - run: npm exec -- tsc --noEmit -p tests/rules/tsconfig.json
+
+      - run: npm run test:unit
+
+      - run: npm run test:rules
+
+      - run: npm run build
