@@ -357,9 +357,9 @@ npm install --prefix $baselineTools --cache $baselineCache --no-save lighthouse@
    временный каталог. Эквивалентная форма команды:
 
 ```powershell
+$env:CHROME_PATH = "<путь-к-chrome.exe-151.0.7922.71>"
 node "$baselineTools\node_modules\lighthouse\cli\index.js" `
   "http://127.0.0.1:4173/finapp/#/login" `
-  --chrome-path="<путь-к-chrome.exe-151.0.7922.71>" `
   --chrome-flags="--headless=new --user-data-dir=<изолированный-профиль>" `
   --form-factor=mobile `
   --screenEmulation.mobile=true `
@@ -367,6 +367,12 @@ node "$baselineTools\node_modules\lighthouse\cli\index.js" `
   --screenEmulation.height=823 `
   --screenEmulation.deviceScaleFactor=1.75 `
   --throttling-method=simulate `
+  --throttling.rttMs=150 `
+  --throttling.throughputKbps=1638.4 `
+  --throttling.requestLatencyMs=562.5 `
+  --throttling.downloadThroughputKbps=1474.56 `
+  --throttling.uploadThroughputKbps=675 `
+  --throttling.cpuSlowdownMultiplier=4 `
   --only-categories=performance,accessibility,best-practices,seo `
   --output=json `
   --output-path="<временный-report.json>" `
