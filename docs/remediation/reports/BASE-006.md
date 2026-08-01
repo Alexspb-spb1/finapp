@@ -6,7 +6,7 @@ READY_FOR_REVIEW
 ## Branch / commit
 - branch: `remediation/BASE-006-ci`
 - base SHA: `9800f88ab46bac36819bf82271d03f26cf8d5299` (PR #6 merge SHA, `origin/main`)
-- result SHA: заполняется после коммита (см. `git show --stat --oneline HEAD` в PR)
+- result SHA: `ec20f33` (полный SHA см. `git show --stat --oneline HEAD` на ветке `remediation/BASE-006-ci`)
 
 ## Проверенное исходное состояние
 - Подтверждено, что `origin/main` находится на ожидаемом SHA `9800f88ab46bac36819bf82271d03f26cf8d5299` и что PR #6 (BASE-005) смёржен именно этим коммитом (`gh pr view 6 --json state,mergedAt,mergeCommit`).
@@ -52,7 +52,7 @@ READY_FOR_REVIEW
 - [x] `package.json` дополнен `engines`/`packageManager` без изменения `package-lock.json`.
 - [x] В `ci.yml` нет Firebase secrets и запрещённых команд (`npm audit`, `npm audit fix`, `npm update`, `firebase deploy`, `build:staging`).
 - [x] YAML-синтаксис обоих файлов проверен (`js-yaml` из `node_modules`, `actionlint` недоступен — см. ниже).
-- [ ] Проверка через реальный GitHub Actions run на Draft PR — выполняется после push/PR (см. раздел «Ручная проверка» и следующий шаг после этого отчёта).
+- [x] Проверка через реальный GitHub Actions run на Draft PR — PR #7, run `30717598459`, все 14 шагов job `ci` зелёные; `Deploy to GitHub Pages` не запустился для этого PR (подтверждено `gh run list` — последний Deploy run датирован мержем BASE-005, до создания этого PR).
 
 ## Проверки
 | Команда | Результат | Примечание |
