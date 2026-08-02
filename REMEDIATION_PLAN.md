@@ -274,7 +274,9 @@ docs/remediation/SECURITY_BASELINE.md
 
 ---
 
-## [-] BASE-005 — Зафиксировать технический baseline
+## [x] BASE-005 — Зафиксировать технический baseline
+
+**PR:** #6 (merged), merge SHA `9800f88ab46bac36819bf82271d03f26cf8d5299`. Независимый review завершён с результатом PASS.
 
 **Ветка:** `remediation/BASE-005-technical-baseline`
 
@@ -318,7 +320,7 @@ docs/remediation/TECHNICAL_BASELINE.md
 
 ---
 
-## [ ] BASE-006 — Создать отдельный CI workflow для проверок PR
+## [-] BASE-006 — Создать отдельный CI workflow для проверок PR
 
 **Ветка:** `remediation/BASE-006-ci`
 
