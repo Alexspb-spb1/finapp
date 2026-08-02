@@ -22,13 +22,18 @@ export const LegalTypeSchema = z.enum(['ooo', 'ip'])
 // AND `new Date('2026-02-30T...Z')` silently normalizes to March 2 instead
 // of failing — so an out-of-range calendar day would otherwise pass.
 // Full ISO-8601 extended datetime: date + mandatory time + mandatory
-// timezone designator (Z or +/-HH:MM), optional fractional seconds.
-const ISO_DATE_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+// timezone designator (Z or +/-HH:MM), optional fractional seconds. The
+// timezone is captured as its own group so its hour/minute components can
+// be range-checked separately below — the regex alone only constrains them
+// to two digits each, which would otherwise accept e.g. "+99:99"/"+25:00"/
+// "+02:60" (independent review finding #2b on SEC-002 PR #9).
+const ISO_DATE_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/
+const TZ_OFFSET_RE = /^[+-](\d{2}):(\d{2})$/
 
 function isValidIsoDateTime(value: string): boolean {
   const match = ISO_DATE_TIME_RE.exec(value)
   if (!match) return false
-  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, timezone] = match
   const year = Number(yearStr)
   const month = Number(monthStr)
   const day = Number(dayStr)
@@ -40,7 +45,14 @@ function isValidIsoDateTime(value: string): boolean {
   // Day-0-of-next-month trick (UTC, so no local-timezone/DST interference)
   // gives the last valid day of `month` — correctly accounts for leap years.
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate()
-  return day >= 1 && day <= daysInMonth
+  if (day < 1 || day > daysInMonth) return false
+  if (timezone !== 'Z') {
+    const tzMatch = TZ_OFFSET_RE.exec(timezone)
+    if (!tzMatch) return false
+    const [, tzHourStr, tzMinuteStr] = tzMatch
+    if (Number(tzHourStr) > 23 || Number(tzMinuteStr) > 59) return false
+  }
+  return true
 }
 
 const isoDateTimeString = nonEmptyString.refine(isValidIsoDateTime, { message: 'invalid_iso_date' })

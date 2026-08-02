@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Timestamp } from 'firebase/firestore'
 import {
   RoleSchema,
@@ -145,38 +145,53 @@ describe('parseMembershipDocument', () => {
     expect(result.ok).toBe(false)
   })
 
-  it('source is a fixed safe path template — never the real companyId/uid/document values (independent review finding #3)', () => {
+  it('source is a fixed safe path template — never the real companyId/uid/document values, including in logged console output (independent review finding #3)', () => {
     const secretCompanyId = 'co_SECRET_LEAKED_COMPANY_ID_98765'
     const secretUid = 'uid_SECRET_LEAKED_UID_12345'
     const secretMismatchUid = 'uid_SECRET_OTHER_UID_54321'
     const secretInvitedBy = 'uid_SECRET_INVITER_11111'
+    const secretEmail = 'secret-leaked-owner@internal.example.test'
 
-    // Case A: schema validation failure (bad role).
+    const consoleSpies = [
+      vi.spyOn(console, 'error').mockImplementation(() => {}),
+      vi.spyOn(console, 'warn').mockImplementation(() => {}),
+      vi.spyOn(console, 'log').mockImplementation(() => {}),
+    ]
+    const allSecrets = [secretCompanyId, secretUid, secretMismatchUid, secretInvitedBy, secretEmail]
+    const loggedOutput = () =>
+      consoleSpies.flatMap(spy => spy.mock.calls).map(args => JSON.stringify(args)).join('\n')
+
+    // Case A: schema validation failure (bad role + an unexpected `email`
+    // field — Membership has no email field, so a strict-schema document
+    // that somehow carries one must fail without ever surfacing it).
     const badRole = parseMembershipDocument(secretCompanyId, secretUid, {
-      ...validMembership, uid: secretUid, role: 'superadmin', invitedBy: secretInvitedBy,
+      ...validMembership, uid: secretUid, role: 'superadmin', invitedBy: secretInvitedBy, email: secretEmail,
     })
     expect(badRole.ok).toBe(false)
     if (!badRole.ok) {
       expect(badRole.error.code).toBe('data_error')
       expect(badRole.error.source).toBe('companies/{companyId}/members/{uid}')
       const serialized = JSON.stringify(badRole.error)
-      expect(serialized).not.toContain(secretCompanyId)
-      expect(serialized).not.toContain(secretUid)
-      expect(serialized).not.toContain(secretInvitedBy)
+      for (const secret of allSecrets) expect(serialized).not.toContain(secret)
     }
 
     // Case B: document id mismatch (uid parameter differs from membership.uid).
     const mismatch = parseMembershipDocument(secretCompanyId, secretMismatchUid, {
-      ...validMembership, uid: secretUid,
+      ...validMembership, uid: secretUid, email: secretEmail,
     })
     expect(mismatch.ok).toBe(false)
     if (!mismatch.ok) {
       expect(mismatch.error.source).toBe('companies/{companyId}/members/{uid}')
       const serialized = JSON.stringify(mismatch.error)
-      expect(serialized).not.toContain(secretCompanyId)
-      expect(serialized).not.toContain(secretUid)
-      expect(serialized).not.toContain(secretMismatchUid)
+      for (const secret of allSecrets) expect(serialized).not.toContain(secret)
     }
+
+    // Neither case logged anything containing the secret values (parseMembershipDocument
+    // itself never logs — this also guards against a future regression that adds logging).
+    const captured = loggedOutput()
+    for (const secret of allSecrets) expect(captured).not.toContain(secret)
+
+    consoleSpies.forEach(spy => spy.mockRestore())
   })
 
   it('a successful parse still enforces that the document id matches membership.uid', () => {

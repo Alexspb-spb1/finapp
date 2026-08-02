@@ -108,6 +108,20 @@ describe('CompanySchema.createdAt — strict ISO-8601 datetime (independent revi
     expect(result.success).toBe(false)
   })
 
+  it.each([
+    ['offset hour and minute both out of range', '2026-01-02T03:04:05.000+99:99'],
+    ['offset hour out of range (>23)', '2026-01-02T03:04:05.000+25:00'],
+    ['offset minute out of range (>59)', '2026-01-02T03:04:05.000+02:60'],
+  ])('rejects an invalid timezone offset — %s (%s) (independent review finding #2b)', (_label, value) => {
+    const result = CompanySchema.safeParse({ ...validCompany, createdAt: value })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a negative offset within valid range', () => {
+    const result = CompanySchema.safeParse({ ...validCompany, createdAt: '2026-01-02T03:04:05.000-12:00' })
+    expect(result.success).toBe(true)
+  })
+
   it('accepts a valid leap-year Feb 29', () => {
     // 2028 is a leap year.
     const result = CompanySchema.safeParse({ ...validCompany, createdAt: '2028-02-29T00:00:00.000Z' })
