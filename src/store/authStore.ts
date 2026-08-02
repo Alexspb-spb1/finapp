@@ -12,12 +12,66 @@ import {
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import type { User, Company } from '../types/auth'
+import { parseLegacyUserDocument, type DataError } from '../schemas/auth'
+import { parseCompanyDocument } from '../schemas/company'
 
 // ── In-memory state ──────────────────────────────────────────────────────────
 let currentUser:    User    | null = null
 let currentCompany: Company | null = null
 let companyUsers:   User[]         = []
 let allUserCompanies: Company[]    = []
+
+// Observable data status — see src/hooks/useAuth.ts. `data_error` means a
+// Firestore document failed schema validation (see src/schemas/auth.ts,
+// src/schemas/company.ts); it is deliberately NOT recoverable by falling
+// back to a default role or a partially-loaded list (CLAUDE.md §6.2).
+export type AuthDataStatus = 'loading' | 'ready' | 'signed_out' | 'data_error'
+let authDataStatus: AuthDataStatus = 'loading'
+let lastDataError: DataError | null = null
+
+/** Any document at the users/companies boundary failed validation (or its
+ * document ID didn't match its own uid/id field). Clear all privileged
+ * in-memory state instead of continuing with a partially-loaded/corrupted
+ * result — never substitute a default role. */
+function setDataErrorState(error: DataError) {
+  console.error('[authStore] data_error:', error.source, error.issues)
+  currentUser = null; currentCompany = null; companyUsers = []
+  authDataStatus = 'data_error'
+  lastDataError = error
+  notify()
+}
+
+/** Parses a list of users/{uid} documents. Fails the WHOLE list on the first
+ * invalid entry — a corrupted record is never silently dropped while the
+ * rest of the list is kept ("partially trusted list"). */
+function parseLegacyUsersList(
+  docs: { id: string; data: () => unknown }[],
+): { ok: true; data: User[] } | { ok: false; error: DataError } {
+  const users: User[] = []
+  for (const d of docs) {
+    const parsed = parseLegacyUserDocument(d.id, d.data())
+    if (!parsed.ok) return parsed
+    users.push(parsed.data)
+  }
+  return { ok: true, data: users }
+}
+
+/** Same all-or-nothing contract as parseLegacyUsersList, for companies/{id}
+ * documents. Non-existent snapshots are skipped (that is normal — a
+ * membership entry pointing at a company that hasn't loaded yet — not
+ * corruption); an EXISTING document that fails validation fails the list. */
+function parseCompanyDocsList(
+  snaps: { id: string; exists: () => boolean; data: () => unknown }[],
+): { ok: true; data: Company[] } | { ok: false; error: DataError } {
+  const companies: Company[] = []
+  for (const s of snaps) {
+    if (!s.exists()) continue
+    const parsed = parseCompanyDocument(s.id, s.data())
+    if (!parsed.ok) return parsed
+    companies.push(parsed.data)
+  }
+  return { ok: true, data: companies }
+}
 
 // Active company may differ from user.companyId when user switches company
 const LS_ACTIVE_COMPANY = 'finapp_active_company'
@@ -71,6 +125,8 @@ onAuthStateChanged(auth, async firebaseUser => {
     }
     // Real logout (user explicitly signed out, or token expired)
     currentUser = null; currentCompany = null; companyUsers = []
+    authDataStatus = 'signed_out'
+    lastDataError = null
     notify()
     return
   }
@@ -124,11 +180,15 @@ onAuthStateChanged(auth, async firebaseUser => {
         // to use the app with in-memory + localStorage storage via the UID fallback.
         console.warn('[authStore] Recovery write to Firestore failed (will use localStorage fallback):', recoveryErr)
       }
+      authDataStatus = 'ready'
+      lastDataError = null
       notify()
       return
     }
 
-    currentUser = userSnap.data() as User
+    const parsedProfile = parseLegacyUserDocument(firebaseUser.uid, userSnap.data())
+    if (!parsedProfile.ok) { setDataErrorState(parsedProfile.error); return }
+    currentUser = parsedProfile.data
 
     // Validate activeCompanyId belongs to this user — clear it if it's from a different account
     const validCompanyIds = [
@@ -178,22 +238,29 @@ onAuthStateChanged(auth, async firebaseUser => {
         console.warn('[authStore] Company recovery write failed (will use localStorage fallback):', recoveryErr)
       }
     } else {
-      currentCompany = companySnap.data() as Company
+      const parsedCompany = parseCompanyDocument(resolvedActiveId, companySnap.data())
+      if (!parsedCompany.ok) { setDataErrorState(parsedCompany.error); return }
+      currentCompany = parsedCompany.data
     }
 
-    companyUsers = usersSnap.docs.map(d => d.data() as User)
+    const parsedUsers = parseLegacyUsersList(usersSnap.docs)
+    if (!parsedUsers.ok) { setDataErrorState(parsedUsers.error); return }
+    companyUsers = parsedUsers.data
 
     // Build list of all companies user belongs to
-    const extraCompanies = extraSnaps
-      .filter(s => s.exists())
-      .map(s => s.data() as Company)
+    const parsedExtraCompanies = parseCompanyDocsList(extraSnaps)
+    if (!parsedExtraCompanies.ok) { setDataErrorState(parsedExtraCompanies.error); return }
     allUserCompanies = [
       ...(currentCompany ? [currentCompany] : []),
-      ...extraCompanies,
+      ...parsedExtraCompanies.data,
     ]
+    authDataStatus = 'ready'
+    lastDataError = null
   } catch (err) {
     console.error('[authStore] onAuthStateChanged error:', err)
     currentUser = null; currentCompany = null; companyUsers = []
+    authDataStatus = 'data_error'
+    lastDataError = { code: 'data_error', source: 'onAuthStateChanged', issues: ['unexpected_error'] }
   }
   notify()
 })
@@ -284,6 +351,8 @@ export const authStore = {
     companyUsers   = [user]
     allUserCompanies = [company]
     _registrationInProgress = false
+    authDataStatus = 'ready'
+    lastDataError = null
     notify()
 
     return { ok: true }
@@ -321,6 +390,8 @@ export const authStore = {
   getCurrentCompany() { return currentCompany },
   getCompanyUsers(_companyId: string) { return companyUsers },
   getSession()        { return auth.currentUser ? { userId: auth.currentUser.uid, companyId: currentUser?.companyId ?? '', expiresAt: '' } : null },
+  getAuthDataStatus(): AuthDataStatus { return authDataStatus },
+  getDataError(): DataError | null { return lastDataError },
 
   // ── Invite user (REST API — keeps current admin session) ──────────────────
   async inviteUser(params: {
@@ -352,7 +423,15 @@ export const authStore = {
 
       // Refresh company users list
       const snap = await getDocs(query(collection(db, 'users'), where('companyId', '==', params.companyId)))
-      companyUsers = snap.docs.map(d => d.data() as User)
+      const parsedUsers = parseLegacyUsersList(snap.docs)
+      if (!parsedUsers.ok) {
+        // The invite write above already succeeded — report it as such —
+        // but the refreshed list itself is corrupted: don't trust or apply
+        // it (no partial/partially-trusted list), surface data_error instead.
+        setDataErrorState(parsedUsers.error)
+        return { ok: true }
+      }
+      companyUsers = parsedUsers.data
       notify()
       return { ok: true }
     } catch {
@@ -457,12 +536,20 @@ export const authStore = {
 
     // Load new company metadata
     const snap = await getDoc(doc(db, 'companies', companyId))
-    if (snap.exists()) currentCompany = snap.data() as Company
+    if (snap.exists()) {
+      const parsedCompany = parseCompanyDocument(companyId, snap.data())
+      if (!parsedCompany.ok) { setDataErrorState(parsedCompany.error); return }
+      currentCompany = parsedCompany.data
+    }
 
     // Refresh users for new company
     const usersSnap = await getDocs(query(collection(db, 'users'), where('companyId', '==', companyId)))
-    companyUsers = usersSnap.docs.map(d => d.data() as User)
+    const parsedUsers = parseLegacyUsersList(usersSnap.docs)
+    if (!parsedUsers.ok) { setDataErrorState(parsedUsers.error); return }
+    companyUsers = parsedUsers.data
 
+    authDataStatus = 'ready'
+    lastDataError = null
     notify()
   },
 
