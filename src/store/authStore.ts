@@ -30,12 +30,21 @@ let authDataStatus: AuthDataStatus = 'loading'
 let lastDataError: DataError | null = null
 
 /** Any document at the users/companies boundary failed validation (or its
- * document ID didn't match its own uid/id field). Clear all privileged
+ * document ID didn't match its own uid/id field). Clear ALL privileged
  * in-memory state instead of continuing with a partially-loaded/corrupted
- * result — never substitute a default role. */
+ * result — never substitute a default role. This must clear the FULL
+ * context (including allUserCompanies/activeCompanyId, not just
+ * currentUser/currentCompany/companyUsers) — otherwise a stale company
+ * list or active company id could keep being returned via the public
+ * getters/useAuth() after a data_error (independent review finding #1
+ * on SEC-002 PR #9). All clears happen before notify() so no subscriber
+ * ever observes an intermediate/stale state. */
 function setDataErrorState(error: DataError) {
   console.error('[authStore] data_error:', error.source, error.issues)
   currentUser = null; currentCompany = null; companyUsers = []
+  allUserCompanies = []
+  activeCompanyId = null
+  localStorage.removeItem(LS_ACTIVE_COMPANY)
   authDataStatus = 'data_error'
   lastDataError = error
   notify()

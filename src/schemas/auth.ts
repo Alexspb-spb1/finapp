@@ -164,10 +164,16 @@ export function parseLegacyUserDocument(docId: string, raw: unknown): ParseResul
   return { ok: true, data: result.data }
 }
 
-export function parseMembershipDocument(companyId: string, uid: string, raw: unknown): ParseResult<Membership> {
-  const source = `companies/${companyId}/members/{uid}`
+// `source` is a fixed, safe path TEMPLATE — never interpolates the real
+// companyId/uid so callers/logs can't leak them via a DataError (independent
+// review finding #3 on SEC-002 PR #9). `companyId` is still taken as a
+// parameter (kept for API compatibility / future use by callers), but is
+// deliberately not read into the error.
+const MEMBERSHIP_SOURCE = 'companies/{companyId}/members/{uid}'
+
+export function parseMembershipDocument(_companyId: string, uid: string, raw: unknown): ParseResult<Membership> {
   const result = MembershipSchema.safeParse(raw)
-  if (!result.success) return { ok: false, error: zodIssuesToDataError(source, result.error) }
-  if (result.data.uid !== uid) return { ok: false, error: idMismatchError(source, 'uid') }
+  if (!result.success) return { ok: false, error: zodIssuesToDataError(MEMBERSHIP_SOURCE, result.error) }
+  if (result.data.uid !== uid) return { ok: false, error: idMismatchError(MEMBERSHIP_SOURCE, 'uid') }
   return { ok: true, data: result.data }
 }

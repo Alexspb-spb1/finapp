@@ -58,7 +58,8 @@ vi.mock('firebase/firestore', () => ({
   where: (field: string, _op: string, value: unknown) => ({ field, value }),
   getDoc: vi.fn(async (ref: { path: string }) => {
     const data = firestoreDocs.get(ref.path)
-    return { exists: () => data !== undefined, data: () => data }
+    const id = ref.path.split('/').pop()!
+    return { id, exists: () => data !== undefined, data: () => data }
   }),
   getDocs: vi.fn(async (q: { path: string; clauses: { field: string; value: unknown }[] }) => {
     const companyId = q.clauses[0]?.value as string
@@ -220,5 +221,58 @@ describe('authStore — data_error on corrupted documents', () => {
     expect(authStore.getAuthDataStatus()).toBe('signed_out')
     expect(authStore.getDataError()).toBeNull()
     expect(authStore.getCurrentUser()).toBeNull()
+  })
+
+  it('data_error atomically clears the FULL privileged context — including allUserCompanies and activeCompanyId (independent review finding #1)', async () => {
+    const { authStore, subscribeAuth } = await import('./authStore')
+
+    // Step 1: successful sign-in with a home company AND one additional
+    // (multi-company) membership, so activeCompanyId and allUserCompanies
+    // are both non-empty afterwards.
+    setUserDoc('uid_1', {
+      ...validUser('uid_1', 'co_a'),
+      companies: [{ companyId: 'co_b', role: 'admin' }],
+    })
+    setCompanyDoc('co_a', validCompany('co_a'))
+    setCompanyDoc('co_b', validCompany('co_b'))
+    setCompanyUsersQuery('co_a', [{ id: 'uid_1', data: validUser('uid_1', 'co_a') }])
+
+    await triggerSignIn('uid_1')
+
+    expect(authStore.getAuthDataStatus()).toBe('ready')
+    expect(authStore.getActiveCompanyId()).toBe('co_a')
+    expect(authStore.getAllCompanies().map(c => c.id).sort()).toEqual(['co_a', 'co_b'])
+
+    // Step 2: the NEXT load of the same signed-in user's profile document
+    // is corrupted (e.g. a concurrent bad write). Re-triggering the auth
+    // listener with the same uid simulates this (token refresh, tab focus).
+    setUserDoc('uid_1', { id: 'uid_1', name: 'Broken' })
+
+    const seenDuringNotify: { activeCompanyId: string | null; allCompanies: unknown[] }[] = []
+    const unsub = subscribeAuth(() => {
+      seenDuringNotify.push({
+        activeCompanyId: authStore.getActiveCompanyId(),
+        allCompanies: authStore.getAllCompanies(),
+      })
+    })
+
+    await triggerSignIn('uid_1')
+    unsub()
+
+    expect(authStore.getAuthDataStatus()).toBe('data_error')
+    expect(authStore.getCurrentUser()).toBeNull()
+    expect(authStore.getCurrentCompany()).toBeNull()
+    expect(authStore.getCompanyUsers('co_a')).toEqual([])
+    // The two fields the independent review flagged as NOT being cleared:
+    expect(authStore.getAllCompanies()).toEqual([])
+    expect(authStore.getActiveCompanyId()).toBeNull()
+
+    // No subscriber notification observed the stale pre-data_error context —
+    // the clear must happen before notify(), not after.
+    expect(seenDuringNotify.length).toBeGreaterThan(0)
+    for (const snapshot of seenDuringNotify) {
+      expect(snapshot.activeCompanyId).toBeNull()
+      expect(snapshot.allCompanies).toEqual([])
+    }
   })
 })

@@ -73,6 +73,53 @@ describe('CompanySchema', () => {
   })
 })
 
+describe('CompanySchema.createdAt — strict ISO-8601 datetime (independent review finding #2)', () => {
+  it('accepts a full ISO-8601 datetime with milliseconds and Z', () => {
+    const result = CompanySchema.safeParse({ ...validCompany, createdAt: '2026-01-02T03:04:05.000Z' })
+    expect(result.success).toBe(true)
+  })
+
+  it.each([
+    ['date-only, no time', '2026-01-02'],
+    ['US-style slash date', '01/02/2026'],
+    ['long-form English date', 'January 1, 2026'],
+    ['calendar-invalid day (Feb 30)', '2026-02-30T03:04:05.000Z'],
+    ['not a date at all', 'not-a-date'],
+    ['empty string', ''],
+  ])('rejects %s (%s)', (_label, value) => {
+    const result = CompanySchema.safeParse({ ...validCompany, createdAt: value })
+    expect(result.success).toBe(false)
+  })
+
+  it('does not mutate the original input object', () => {
+    const input = { ...validCompany }
+    const snapshot = JSON.stringify(input)
+    CompanySchema.safeParse(input)
+    expect(JSON.stringify(input)).toBe(snapshot)
+  })
+
+  it('accepts a valid ISO offset (non-Z) timezone', () => {
+    const result = CompanySchema.safeParse({ ...validCompany, createdAt: '2026-01-02T03:04:05.000+02:00' })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects a value with no timezone designator at all', () => {
+    const result = CompanySchema.safeParse({ ...validCompany, createdAt: '2026-01-02T03:04:05.000' })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a valid leap-year Feb 29', () => {
+    // 2028 is a leap year.
+    const result = CompanySchema.safeParse({ ...validCompany, createdAt: '2028-02-29T00:00:00.000Z' })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects Feb 29 in a non-leap year', () => {
+    const result = CompanySchema.safeParse({ ...validCompany, createdAt: '2026-02-29T00:00:00.000Z' })
+    expect(result.success).toBe(false)
+  })
+})
+
 describe('parseCompanyDocument', () => {
   it('accepts a company matching the document id', () => {
     const result = parseCompanyDocument('co_a', validCompany)

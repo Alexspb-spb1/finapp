@@ -144,6 +144,47 @@ describe('parseMembershipDocument', () => {
     const result = parseMembershipDocument('co_a', 'uid_1', { role: 'admin' })
     expect(result.ok).toBe(false)
   })
+
+  it('source is a fixed safe path template — never the real companyId/uid/document values (independent review finding #3)', () => {
+    const secretCompanyId = 'co_SECRET_LEAKED_COMPANY_ID_98765'
+    const secretUid = 'uid_SECRET_LEAKED_UID_12345'
+    const secretMismatchUid = 'uid_SECRET_OTHER_UID_54321'
+    const secretInvitedBy = 'uid_SECRET_INVITER_11111'
+
+    // Case A: schema validation failure (bad role).
+    const badRole = parseMembershipDocument(secretCompanyId, secretUid, {
+      ...validMembership, uid: secretUid, role: 'superadmin', invitedBy: secretInvitedBy,
+    })
+    expect(badRole.ok).toBe(false)
+    if (!badRole.ok) {
+      expect(badRole.error.code).toBe('data_error')
+      expect(badRole.error.source).toBe('companies/{companyId}/members/{uid}')
+      const serialized = JSON.stringify(badRole.error)
+      expect(serialized).not.toContain(secretCompanyId)
+      expect(serialized).not.toContain(secretUid)
+      expect(serialized).not.toContain(secretInvitedBy)
+    }
+
+    // Case B: document id mismatch (uid parameter differs from membership.uid).
+    const mismatch = parseMembershipDocument(secretCompanyId, secretMismatchUid, {
+      ...validMembership, uid: secretUid,
+    })
+    expect(mismatch.ok).toBe(false)
+    if (!mismatch.ok) {
+      expect(mismatch.error.source).toBe('companies/{companyId}/members/{uid}')
+      const serialized = JSON.stringify(mismatch.error)
+      expect(serialized).not.toContain(secretCompanyId)
+      expect(serialized).not.toContain(secretUid)
+      expect(serialized).not.toContain(secretMismatchUid)
+    }
+  })
+
+  it('a successful parse still enforces that the document id matches membership.uid', () => {
+    const ok = parseMembershipDocument('co_a', 'uid_1', validMembership)
+    expect(ok.ok).toBe(true)
+    const mismatched = parseMembershipDocument('co_a', 'uid_does_not_match', validMembership)
+    expect(mismatched.ok).toBe(false)
+  })
 })
 
 describe('UserProfileSchema', () => {
