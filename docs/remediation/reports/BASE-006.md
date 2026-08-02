@@ -6,7 +6,8 @@ READY_FOR_REVIEW
 ## Branch / commit
 - branch: `remediation/BASE-006-ci`
 - base SHA: `9800f88ab46bac36819bf82271d03f26cf8d5299` (PR #6 merge SHA, `origin/main`)
-- result SHA: `ec20f33` (полный SHA см. `git show --stat --oneline HEAD` на ветке `remediation/BASE-006-ci`)
+- implementation SHA: `ec20f336875074941d9e3940c647964dc6cfd5a3`
+- pre-review head SHA: `035b2ec6457cbe6d1a6d78884b329264fc8951d6`; актуальный head после review-коррекции фиксируется в PR #7 и GitHub Actions
 
 ## Проверенное исходное состояние
 - Подтверждено, что `origin/main` находится на ожидаемом SHA `9800f88ab46bac36819bf82271d03f26cf8d5299` и что PR #6 (BASE-005) смёржен именно этим коммитом (`gh pr view 6 --json state,mergedAt,mergeCommit`).
@@ -28,8 +29,9 @@ READY_FOR_REVIEW
 4. Изменён `.github/workflows/deploy.yml`:
    - убран триггер `pull_request`;
    - вместо прямого `push`-триггера на job `build` теперь используется `workflow_run` на workflow `CI` (`types: [completed]`);
-   - job `build` защищён условием `github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'` (плюс отдельная ветка условия для ручного `workflow_dispatch`);
-   - `checkout` использует точный `ref: ${{ github.event.workflow_run.head_sha || github.sha }}`, чтобы деплоился именно тот коммит, для которого CI был зелёным;
+   - ручной триггер `workflow_dispatch` удалён: обойти обязательный CI-гейт невозможно;
+   - job `build` защищён условием `github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'`;
+   - `checkout` использует точный `ref: ${{ github.event.workflow_run.head_sha }}`, чтобы деплоился именно тот коммит, для которого CI был зелёным;
    - версия Node берётся из `.nvmrc` (`node-version-file`) вместо захардкоженной `20`;
    - шаги build/upload-pages-artifact/deploy-pages сохранены без изменений логики; production Firebase-переменные остаются только в этом workflow, после CI-гейта, и не логируются.
 
@@ -52,7 +54,7 @@ READY_FOR_REVIEW
 - [x] `package.json` дополнен `engines`/`packageManager` без изменения `package-lock.json`.
 - [x] В `ci.yml` нет Firebase secrets и запрещённых команд (`npm audit`, `npm audit fix`, `npm update`, `firebase deploy`, `build:staging`).
 - [x] YAML-синтаксис обоих файлов проверен (`js-yaml` из `node_modules`, `actionlint` недоступен — см. ниже).
-- [x] Проверка через реальный GitHub Actions run на Draft PR — PR #7, run `30717598459`, все 14 шагов job `ci` зелёные; `Deploy to GitHub Pages` не запустился для этого PR (подтверждено `gh run list` — последний Deploy run датирован мержем BASE-005, до создания этого PR).
+- [x] Проверка через реальный GitHub Actions run на Draft PR — PR #7, последний pre-review run `30717670663`, все 14 шагов job `ci` зелёные; `Deploy to GitHub Pages` не запустился для этого PR. Новый run после review-коррекции указывается в описании PR после завершения.
 
 ## Проверки
 | Команда | Результат | Примечание |
@@ -98,15 +100,17 @@ test:staging-preflight:
 - нет — задача не затрагивает данные, Firestore Rules, миграции.
 
 ## Ручная проверка
-- После push и создания Draft PR необходимо подтвердить в GitHub Actions UI: `CI` автоматически запустился на PR, все шаги (`npm ci`, lint, typecheck, staging-preflight, rules-tsconfig typecheck, unit, rules, build) завершились успешно; `Deploy to GitHub Pages` НЕ запустился для события `pull_request` (workflow_run срабатывает только после push в `main`, чего на Draft PR не происходит).
+- [x] `CI` автоматически запустился на Draft PR #7.
+- [x] Все шаги (`npm ci`, lint, typecheck, staging-preflight, rules-tsconfig typecheck, unit, rules, build) завершились успешно.
+- [x] `Deploy to GitHub Pages` не запустился для события `pull_request`.
 
 ## Rollback
-- `git revert <result-SHA>` на ветке `remediation/BASE-006-ci` либо простое закрытие/непринятие PR — изменения ограничены workflow-файлами, `.nvmrc` и `package.json`; откат не затрагивает данные, Firestore Rules, зависимости в `package-lock.json` (не менялся).
+- До merge: закрыть PR #7 без слияния. После merge: выполнить `git revert <merge-commit-SHA>` отдельным PR и дождаться CI; не откатывать ветку force-push/reset. Изменения не затрагивают данные, Firestore Rules или `package-lock.json`.
 
 ## Известные ограничения
 - `actionlint` недоступен в окружении — синтаксическая проверка выполнена через `js-yaml`, что подтверждает валидность YAML, но не заменяет полноценный line-level lint workflow-специфичных полей/схемы Actions.
-- Реальное поведение `workflow_run` (включая корректную работу gate-условий и checkout на `head_sha`) может быть окончательно подтверждено только после реального прогона на GitHub — локально это не воспроизводимо. Будет проверено на этапе push/Draft PR перед финальным ответом пользователю.
-- Branch protection для `main` на момент проверки отсутствует (`404 Branch not protected`) — зафиksировано как факт, никак не менялось в рамках этой задачи.
+- PR-проверка подтверждает автоматический запуск `CI` и отсутствие deploy для `pull_request`. Полная цепочка `push main → CI → workflow_run → Deploy` может быть подтверждена только после принятия и слияния PR; в рамках Draft PR production-деплой намеренно не запускался.
+- Branch protection для `main` на момент проверки отсутствует (`404 Branch not protected`) — зафиксировано как факт, никак не менялось в рамках этой задачи.
 - Существующее предупреждение ESLint (`react-hooks/exhaustive-deps` в `src/pages/Balance.tsx`) не устранялось — вне scope BASE-006.
 
 ## Дополнительные находки вне scope
