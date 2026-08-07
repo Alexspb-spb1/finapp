@@ -440,7 +440,9 @@ users/{uid}
 
 ---
 
-## [-] SEC-002 — Добавить runtime-схемы для данных авторизации
+## [x] SEC-002 — Добавить runtime-схемы для данных авторизации
+
+**PR:** #9 (merged), merge SHA `432c23051353f6dff599cdbb13193ac80f18a311`. Независимый review завершён с результатом PASS (два корректирующих раунда, все замечания устранены).
 
 **Ветка:** `remediation/SEC-002-auth-schemas`
 
@@ -482,7 +484,7 @@ src/types/auth.ts
 
 ---
 
-## [ ] SEC-003 — Создать Cloud Functions backend для привилегированных операций
+## [-] SEC-003 — Создать Cloud Functions backend для привилегированных операций
 
 **Ветка:** `remediation/SEC-003-functions-foundation`
 
