@@ -107,7 +107,8 @@ describe('validateRequest', () => {
     } catch (err) {
       expect(JSON.stringify(err)).not.toContain(secretValue)
       if (err instanceof AppError) {
-        expect(JSON.stringify(err.details)).not.toContain(secretValue)
+        expect(err.appCode).toBe('invalid_request')
+        expect(JSON.stringify(err.toHttpsError().details)).not.toContain(secretValue)
       }
     }
   })

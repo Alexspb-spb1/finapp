@@ -55,16 +55,7 @@ jobs:
 
       - run: npm ci
 
-      # Not `npm run lint` (package.json's script is out of SEC-003's
-      # allowed-file scope): functions/ is a separate npm package (added in
-      # SEC-003) with its own eslint.config.mjs/tsconfig.json and its own
-      # lint step in the `functions` job below. Root ESLint parsing
-      # functions/**/*.ts against the wrong tsconfig fails with a
-      # tsconfigRootDir conflict, so it's excluded here via CLI flag —
-      # same rules, same strictness for every file this job is actually
-      # responsible for, just not re-linting a directory that already has
-      # its own equally strict, independent check.
-      - run: npx eslint . --ignore-pattern functions
+      - run: npm run lint
 
       - run: npm run typecheck
 

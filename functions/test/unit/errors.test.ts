@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { HttpsError } from 'firebase-functions/v2/https'
-import { AppError, APP_ERROR_CODES, toSafeHttpsError } from '../../src/lib/errors'
+import { AppError, APP_ERROR_CODES, toSafeHttpsError, type AppErrorCode } from '../../src/lib/errors'
 
 describe('AppError -> HttpsError mapping', () => {
   it.each([
@@ -31,11 +31,22 @@ describe('AppError -> HttpsError mapping', () => {
     expect((httpsError.details as { appCode: string }).appCode).toBe('insufficient_role')
   })
 
-  it('the stable appCode always wins even if caller-supplied details tries to override it (independent review finding #1b)', () => {
-    // If a caller ever passed a `details` object containing its own
-    // `appCode` key, spread order must not let it clobber the real one.
-    const httpsError = new AppError('last_admin', { appCode: 'FORGED_OVERRIDE' } as unknown as Record<string, string>).toHttpsError()
-    expect((httpsError.details as { appCode: string }).appCode).toBe('last_admin')
+  it('AppError.details can only ever be { appCode } — no arbitrary caller-supplied data can reach it, even via a cast that bypasses the public constructor signature (independent review finding #3, round 2)', () => {
+    const secretValue = 'SECRET_APPERROR_DETAILS_LEAK_98765'
+    // Simulates a caller bypassing the public (appCode-only) constructor
+    // signature via a type cast on the class itself — the constructor
+    // must structurally ignore any extra argument, not merely "not type
+    // it" in the public API.
+    const ForgedAppError = AppError as unknown as new (
+      code: AppErrorCode,
+      forged: Record<string, unknown>,
+    ) => AppError
+    const forged = new ForgedAppError('last_admin', { secret: secretValue, appCode: 'FORGED_OVERRIDE' })
+    const httpsError = forged.toHttpsError()
+    expect(httpsError.details).toEqual({ appCode: 'last_admin' })
+    const serialized = JSON.stringify({ details: httpsError.details, message: httpsError.message })
+    expect(serialized).not.toContain(secretValue)
+    expect(serialized).not.toContain('FORGED_OVERRIDE')
   })
 })
 
@@ -83,7 +94,7 @@ describe('toSafeHttpsError', () => {
 
     const secretToken = 'SECRET_ID_TOKEN_abcdefghijklmnop'
     toSafeHttpsError(new Error(`token=${secretToken}`))
-    toSafeHttpsError(new AppError('membership_data_error', { fieldCount: 3 }))
+    toSafeHttpsError(new AppError('membership_data_error'))
 
     const allLogged = [...errorSpy.mock.calls, ...warnSpy.mock.calls, ...logSpy.mock.calls]
       .map(args => JSON.stringify(args))

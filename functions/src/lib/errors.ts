@@ -8,9 +8,13 @@
 //
 // Hard rule: nothing built here may ever carry an ID token, email, real
 // uid/companyId, raw Firestore document content, a Zod issue message with a
-// user-controlled value, or a stack trace. `details` only ever holds the
-// stable `appCode` plus safe, enumerable metadata (e.g. a field NAME, never
-// a field VALUE).
+// user-controlled value, or a stack trace. `AppError` has NO caller-facing
+// `details`/metadata parameter at all (independent review finding #3,
+// round 2 on SEC-003 PR #10) — the only thing `HttpsError.details` can
+// ever contain is `{ appCode }`. If a specific error code genuinely needs
+// extra client-facing data in the future, that requires introducing an
+// explicit, per-error-code allowlist with its own runtime sanitization —
+// not a general-purpose `Record<string, unknown>` bag.
 import { HttpsError } from 'firebase-functions/v2/https'
 
 export const APP_ERROR_CODES = [
@@ -52,31 +56,27 @@ const HTTPS_CODE_FOR: Record<AppErrorCode, HttpsErrorCode> = {
   internal_error: 'internal',
 }
 
-// Safe metadata only — field NAMES/counts/enum-like tags, never a value
-// pulled from a request, a Firestore document, or an exception message.
-export type AppErrorDetails = Record<string, string | number | boolean>
-
 export class AppError extends Error {
   readonly appCode: AppErrorCode
-  readonly details: AppErrorDetails
 
-  constructor(appCode: AppErrorCode, details: AppErrorDetails = {}) {
+  constructor(appCode: AppErrorCode) {
     // The Error `message` is intentionally just the stable code — never
-    // anything derived from request/document content.
+    // anything derived from request/document content. There is
+    // deliberately no second (details/metadata) constructor parameter —
+    // see the module-level "Hard rule" comment above.
     super(appCode)
     this.name = 'AppError'
     this.appCode = appCode
-    this.details = details
   }
 
   toHttpsError(): HttpsError {
-    // `appCode` is spread LAST so it always wins — a caller-supplied
-    // `details` object can never override the stable code (independent
-    // review finding #1b on SEC-003 PR #10).
-    return new HttpsError(HTTPS_CODE_FOR[this.appCode], this.appCode, {
-      ...this.details,
-      appCode: this.appCode,
-    })
+    // The ONLY thing this can ever return: `{ appCode }`. Since the
+    // constructor accepts no other data, there is nothing else it could
+    // contain — even a caller that bypasses the public TypeScript
+    // signature via a cast on the class itself cannot smuggle extra
+    // fields in, because this method never reads anything from `this`
+    // except `appCode`.
+    return new HttpsError(HTTPS_CODE_FOR[this.appCode], this.appCode, { appCode: this.appCode })
   }
 }
 
