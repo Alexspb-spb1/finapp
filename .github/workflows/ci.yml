@@ -68,3 +68,41 @@ jobs:
       - run: npm run test:rules
 
       - run: npm run build
+
+  functions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: functions/.nvmrc
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Print tool versions
+        run: |
+          node --version
+          npm --version
+          java -version
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm run test:unit
+
+      - run: npm run build
+
+      - run: npm run test:emulator

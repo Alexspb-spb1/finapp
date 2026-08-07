@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Cloud Functions build output (SEC-003) — generated, not committed
+functions/lib
+
 # Firebase local/emulator artifacts (BASE-002) — never commit
 .env.local
 .env.*.local
