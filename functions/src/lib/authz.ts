@@ -135,7 +135,21 @@ export async function assertNotLastAdmin(
   let activeAdminUids: string[]
   try {
     const snap = await txn.get(query)
-    activeAdminUids = snap.docs.map(d => d.id)
+    // The query filter only constrains the `role`/`status` FIELD VALUES —
+    // it says nothing about whether the rest of the document is a valid
+    // membership. A document matching role=admin/status=active by chance
+    // (corrupted, or with `uid` not matching its own document ID) must NOT
+    // count as a real admin here, the same way requireActiveMember()
+    // already refuses to trust such a document for reads (independent
+    // review finding #3 on SEC-003 PR #10). Excluding an unverifiable
+    // document from the count is the fail-closed direction — it can only
+    // make this check MORE protective of the true last admin, never less.
+    activeAdminUids = snap.docs
+      .filter(doc => {
+        const parsed = MembershipSchema.safeParse(doc.data())
+        return parsed.success && parsed.data.uid === doc.id
+      })
+      .map(doc => doc.id)
   } catch {
     throw new AppError('membership_data_error')
   }

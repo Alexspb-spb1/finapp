@@ -30,12 +30,30 @@ describe('AppError -> HttpsError mapping', () => {
     const httpsError = new AppError('insufficient_role').toHttpsError()
     expect((httpsError.details as { appCode: string }).appCode).toBe('insufficient_role')
   })
+
+  it('the stable appCode always wins even if caller-supplied details tries to override it (independent review finding #1b)', () => {
+    // If a caller ever passed a `details` object containing its own
+    // `appCode` key, spread order must not let it clobber the real one.
+    const httpsError = new AppError('last_admin', { appCode: 'FORGED_OVERRIDE' } as unknown as Record<string, string>).toHttpsError()
+    expect((httpsError.details as { appCode: string }).appCode).toBe('last_admin')
+  })
 })
 
 describe('toSafeHttpsError', () => {
-  it('passes an existing HttpsError through unchanged', () => {
-    const original = new HttpsError('not-found', 'not_found')
-    expect(toSafeHttpsError(original)).toBe(original)
+  it('does NOT pass an arbitrary HttpsError through unchanged — sanitizes it like any other error (independent review finding #1a)', () => {
+    const secretUid = 'uid_SECRET_LEAKED_98765'
+    const secretEmail = 'secret-leaked@internal.example.test'
+    const original = new HttpsError('permission-denied', `denied for uid ${secretUid} email ${secretEmail}`, {
+      rawDocument: { uid: secretUid, email: secretEmail, idToken: 'SECRET_TOKEN_abc123' },
+    })
+    const result = toSafeHttpsError(original)
+    expect(result).not.toBe(original)
+    expect(result.code).toBe('internal')
+    expect((result.details as { appCode: string }).appCode).toBe('internal_error')
+    const serialized = JSON.stringify({ code: result.code, message: result.message, details: result.details })
+    expect(serialized).not.toContain(secretUid)
+    expect(serialized).not.toContain(secretEmail)
+    expect(serialized).not.toContain('SECRET_TOKEN_abc123')
   })
 
   it('converts an AppError to its mapped HttpsError', () => {

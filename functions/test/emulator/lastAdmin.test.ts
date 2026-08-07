@@ -8,7 +8,7 @@ import type { Transaction, DocumentReference } from 'firebase-admin/firestore'
 import { db } from '../../src/lib/admin'
 import { assertNotLastAdmin } from '../../src/lib/authz'
 import { AppError, type AppErrorCode } from '../../src/lib/errors'
-import { seedCompany, seedMembership } from './helpers'
+import { seedCompany, seedMembership, seedRawMembershipDoc } from './helpers'
 
 async function attemptGuardedMutation(
   companyId: string,
@@ -127,5 +127,44 @@ describe('assertNotLastAdmin — transaction-guarded last-admin invariant', () =
     const y = await readMembership(companyId, 'uid_admin_y')
     const stillActiveAdminCount = [x, y].filter(m => m?.role === 'admin' && m?.status === 'active').length
     expect(stillActiveAdminCount).toBe(1)
+  })
+
+  it('a corrupted document that merely matches role/status by field value does NOT count as a real admin — protects the true last admin (independent review finding #3)', async () => {
+    const companyId = `co_lastadmin_corrupted_${Date.now()}`
+    await seedCompany(companyId)
+    // uid_real_admin is the ONLY genuinely valid active admin.
+    await seedMembership({ companyId, uid: 'uid_real_admin', role: 'admin', status: 'active' })
+    // uid_corrupted's document matches the query filter (role=admin,
+    // status=active) but its own `uid` field does not match the document
+    // ID — MembershipSchema/document-id checks should exclude it from the
+    // active-admin count, exactly like requireActiveMember already does
+    // for reads.
+    await seedRawMembershipDoc(companyId, 'uid_corrupted', {
+      uid: 'uid_someone_else_entirely', role: 'admin', status: 'active',
+    })
+
+    const result = await attemptGuardedMutation(companyId, 'uid_real_admin', (txn, ref) =>
+      txn.update(ref, { role: 'viewer' }),
+    )
+    expect(result).toBe('last_admin')
+
+    const after = await readMembership(companyId, 'uid_real_admin')
+    expect(after?.role).toBe('admin')
+  })
+
+  it('a schema-invalid document (missing required fields) that matches the query filter does NOT count as a real admin', async () => {
+    const companyId = `co_lastadmin_schemainvalid_${Date.now()}`
+    await seedCompany(companyId)
+    await seedMembership({ companyId, uid: 'uid_real_admin', role: 'admin', status: 'active' })
+    // Matches the query (role/status fields present) but is missing
+    // createdAt/updatedAt — fails MembershipSchema.
+    await seedRawMembershipDoc(companyId, 'uid_schema_invalid', {
+      uid: 'uid_schema_invalid', role: 'admin', status: 'active',
+    })
+
+    const result = await attemptGuardedMutation(companyId, 'uid_real_admin', (txn, ref) =>
+      txn.update(ref, { status: 'disabled' }),
+    )
+    expect(result).toBe('last_admin')
   })
 })

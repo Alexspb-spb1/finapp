@@ -6,11 +6,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  // functions/ is a separate npm package (SEC-003) with its own
-  // eslint.config.mjs/tsconfig.json and its own CI lint job — including it
-  // here causes typescript-eslint's project service to see two conflicting
-  // tsconfigRootDir candidates and fail to parse.
-  globalIgnores(['dist', 'functions']),
+  globalIgnores(['dist']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

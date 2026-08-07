@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeFingerprint } from '../../src/lib/idempotency'
+import { computeFingerprint, buildIdempotencyReceiptId } from '../../src/lib/idempotency'
 
 describe('computeFingerprint', () => {
   it('is deterministic for the same payload', () => {
@@ -36,5 +36,32 @@ describe('computeFingerprint', () => {
     const long = computeFingerprint({ a: 'x'.repeat(5000) })
     expect(short).toMatch(/^[0-9a-f]{64}$/)
     expect(long).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+describe('buildIdempotencyReceiptId — scope/key collision safety (independent review finding #4)', () => {
+  it('does not collide when the caller-uid/key boundary shifts across a naive separator character', () => {
+    // Naive `${operation}:${companyId}:${callerUid}:${rawKey}` string
+    // concatenation would make these two produce the IDENTICAL string
+    // "op:co:u:v:w" — an unambiguous serialization must tell them apart.
+    const a = buildIdempotencyReceiptId({ operation: 'op', companyId: 'co', callerUid: 'u:v' }, 'w')
+    const b = buildIdempotencyReceiptId({ operation: 'op', companyId: 'co', callerUid: 'u' }, 'v:w')
+    expect(a).not.toBe(b)
+  })
+
+  it('does not collide when the operation/companyId boundary shifts', () => {
+    const a = buildIdempotencyReceiptId({ operation: 'op:extra', companyId: 'co', callerUid: 'u' }, 'k')
+    const b = buildIdempotencyReceiptId({ operation: 'op', companyId: 'extra:co', callerUid: 'u' }, 'k')
+    expect(a).not.toBe(b)
+  })
+
+  it('is deterministic for identical scope + key', () => {
+    const scope = { operation: 'op', companyId: 'co', callerUid: 'u' }
+    expect(buildIdempotencyReceiptId(scope, 'k')).toBe(buildIdempotencyReceiptId(scope, 'k'))
+  })
+
+  it('differs when only the key differs', () => {
+    const scope = { operation: 'op', companyId: 'co', callerUid: 'u' }
+    expect(buildIdempotencyReceiptId(scope, 'k1')).not.toBe(buildIdempotencyReceiptId(scope, 'k2'))
   })
 })

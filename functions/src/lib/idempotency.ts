@@ -71,18 +71,26 @@ export function computeFingerprint(payload: unknown): string {
  * combined with `operation`/`companyId`/`callerUid` and hashed, so it can
  * never be used to construct or collide with an unrelated/unsafe Firestore
  * path, and the resulting doc ID has a fixed, safe length regardless of
- * what the caller passed as the key. */
-function buildReceiptId(scope: IdempotencyScope, rawKey: string): string {
-  return createHash('sha256')
-    .update(`${scope.operation}:${scope.companyId}:${scope.callerUid}:${rawKey}`)
-    .digest('hex')
+ * what the caller passed as the key.
+ *
+ * The four components are combined via `JSON.stringify` of an array, NOT
+ * naive `:`-joined string concatenation (independent review finding #4 on
+ * SEC-003 PR #10): a plain separator lets the boundary between components
+ * shift — e.g. `operation:companyId:"u:v":"w"` and
+ * `operation:companyId:"u":"v:w"` would hash identically under naive
+ * joining, breaking per-caller isolation. `JSON.stringify` quotes and
+ * escapes each element, so no component's content can forge a fake
+ * boundary between elements. */
+export function buildIdempotencyReceiptId(scope: IdempotencyScope, rawKey: string): string {
+  const serialized = JSON.stringify([scope.operation, scope.companyId, scope.callerUid, rawKey])
+  return createHash('sha256').update(serialized).digest('hex')
 }
 
 export async function runIdempotent<TResult>(params: RunIdempotentParams<TResult>): Promise<TResult> {
   const { db, scope, idempotencyKey, payloadForFingerprint, run } = params
   validateIdempotencyKey(idempotencyKey)
 
-  const receiptId = buildReceiptId(scope, idempotencyKey)
+  const receiptId = buildIdempotencyReceiptId(scope, idempotencyKey)
   const fingerprint = computeFingerprint(payloadForFingerprint)
   const receiptRef = db
     .collection('companies').doc(scope.companyId)

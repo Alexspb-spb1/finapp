@@ -70,24 +70,30 @@ export class AppError extends Error {
   }
 
   toHttpsError(): HttpsError {
+    // `appCode` is spread LAST so it always wins — a caller-supplied
+    // `details` object can never override the stable code (independent
+    // review finding #1b on SEC-003 PR #10).
     return new HttpsError(HTTPS_CODE_FOR[this.appCode], this.appCode, {
-      appCode: this.appCode,
       ...this.details,
+      appCode: this.appCode,
     })
   }
 }
 
 /**
  * Converts anything thrown inside a callable handler into a safe HttpsError.
- * An already-safe AppError/HttpsError is passed through (re-wrapped for
- * HttpsError, unchanged for AppError). Anything else (a raw Firestore SDK
- * error, a programming bug, an unexpected exception) is collapsed to a
- * generic `internal_error` — its original message/stack is deliberately
- * DROPPED rather than forwarded to the client, since it could contain
- * document paths, field values, or other internal details.
+ * Only an AppError (which we fully control) is ever converted directly —
+ * an arbitrary `HttpsError` is deliberately NOT passed through unchanged
+ * (independent review finding #1a on SEC-003 PR #10): this code never
+ * throws a raw HttpsError itself, so any HttpsError reaching here is
+ * unexpected and could carry an attacker- or SDK-controlled
+ * message/details (uid, email, token, raw document content). Anything that
+ * isn't our own AppError — including a raw HttpsError, a Firestore SDK
+ * error, a programming bug, or any other unexpected exception — is
+ * collapsed to a generic `internal_error`; its original message/stack is
+ * deliberately DROPPED rather than forwarded to the client.
  */
 export function toSafeHttpsError(err: unknown): HttpsError {
-  if (err instanceof HttpsError) return err
   if (err instanceof AppError) return err.toHttpsError()
   return new AppError('internal_error').toHttpsError()
 }
