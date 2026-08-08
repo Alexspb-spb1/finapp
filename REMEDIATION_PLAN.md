@@ -484,7 +484,9 @@ src/types/auth.ts
 
 ---
 
-## [-] SEC-003 — Создать Cloud Functions backend для привилегированных операций
+## [x] SEC-003 — Создать Cloud Functions backend для привилегированных операций
+
+**PR:** #10 (merged), merge SHA `16e515cd8061f5ff6ee0217fac837788fde1fe23`. Независимый review завершён с результатом PASS (три раунда: два кодовых/процессных, один документационный — все замечания устранены).
 
 **Ветка:** `remediation/SEC-003-functions-foundation`
 
