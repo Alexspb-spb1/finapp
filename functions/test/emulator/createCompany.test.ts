@@ -10,6 +10,7 @@ import { Timestamp } from 'firebase-admin/firestore'
 import {
   createTestUser, signOutClient, callCreateCompany,
   getCompanyDoc, getCompanyDataDoc, getMembershipDoc, getUserDoc, countCompaniesOwnedBy,
+  seedRawUserDoc, getBootstrapReceipt, countAuditEvents,
 } from './helpers'
 
 function appCodeOf(err: unknown): string | undefined {
@@ -182,5 +183,52 @@ describe('createCompany — real callable pipeline through the Functions Emulato
       expect(serialized).not.toContain('SECRET_LEAKED_NAME')
       expect(serialized).not.toContain(secretInn)
     }
+  })
+
+  // ── Independent audit fix #4: existing users/{uid} without a bootstrap receipt ──
+  it('a uid with an EXISTING users/{uid} profile but no bootstrap receipt is rejected — never a second "first company", never overwrites the profile', async () => {
+    const { uid } = await createTestUser(true, 'existing-legacy-profile')
+    const legacyProfile = {
+      id: uid, name: 'Legacy Name', email: 'legacy@example.test',
+      role: 'admin', companyId: 'co_legacy_existing', createdAt: '2020-01-01T00:00:00.000Z',
+      companies: [{ companyId: 'co_legacy_existing', role: 'admin' }],
+      avatar: 'legacy-avatar-url',
+    }
+    await seedRawUserDoc(uid, legacyProfile)
+
+    await expect(
+      callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() }),
+    ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'idempotency_conflict')
+
+    // Original profile (companies[]/avatar/legacy companyId) is untouched.
+    expect(await getUserDoc(uid)).toEqual(legacyProfile)
+    // No new "first company" was created for this uid, and no bootstrap
+    // receipt/company/membership/company_data/audit event were left behind
+    // by the transaction that threw mid-way (this IS the "error inside the
+    // Firestore transaction leaves no partial documents" proof — the throw
+    // happens after companyRef/membershipRef/companyDataRef are computed
+    // but before any txn.set() call).
+    expect(await countCompaniesOwnedBy(uid)).toBe(0)
+    expect(await getBootstrapReceipt(uid)).toBeUndefined()
+  })
+
+  // ── Independent audit fix #5: test-gap closure ──────────────────────────
+  it('a successful bootstrap creates the user_bootstrap/{uid} receipt', async () => {
+    const { uid } = await createTestUser(true, 'creates-receipt')
+    await callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() })
+    const receipt = await getBootstrapReceipt(uid)
+    expect(receipt).toBeDefined()
+    expect(receipt?.idempotencyKey).toBeTruthy()
+    expect(receipt?.fingerprint).toBeTruthy()
+  })
+
+  it('a successful bootstrap creates exactly ONE audit event, and a retry does not create a second one', async () => {
+    const { uid: _uid } = await createTestUser(true, 'one-audit-event')
+    const idempotencyKey = crypto.randomUUID()
+    const first = (await callCreateCompany({ ...basePayload, idempotencyKey })) as { companyId: string }
+    expect(await countAuditEvents(first.companyId)).toBe(1)
+
+    await callCreateCompany({ ...basePayload, idempotencyKey }) // retry, same key
+    expect(await countAuditEvents(first.companyId)).toBe(1)
   })
 })

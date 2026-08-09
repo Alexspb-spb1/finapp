@@ -162,3 +162,20 @@ export async function countCompaniesOwnedBy(uid: string): Promise<number> {
   const snap = await db.collection('companies').where('ownerId', '==', uid).get()
   return snap.size
 }
+
+/** Writes an arbitrary raw users/{uid} document directly via the Admin SDK — for the "existing legacy profile without a bootstrap receipt" scenario. */
+export async function seedRawUserDoc(uid: string, raw: Record<string, unknown>): Promise<void> {
+  await db.collection('users').doc(uid).set(raw)
+}
+
+/** Reads the SEC-004 bootstrap receipt (user_bootstrap/{uid}) directly via the Admin SDK. */
+export async function getBootstrapReceipt(uid: string): Promise<Record<string, unknown> | undefined> {
+  const snap = await db.collection('user_bootstrap').doc(uid).get()
+  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined
+}
+
+/** Counts companies/{companyId}/audit_events documents — used to assert exactly-once audit writes across retries. */
+export async function countAuditEvents(companyId: string): Promise<number> {
+  const snap = await db.collection('companies').doc(companyId).collection('audit_events').get()
+  return snap.size
+}

@@ -254,6 +254,169 @@ describe('authStore.register — SEC-004 server-side company creation', () => {
   })
 })
 
+describe('authStore.completeCompanySetup — independent audit fix #1 (pending state / activeCompanyId lifecycle)', () => {
+  it('callable success -> Firestore read failure -> setup_incomplete -> retry with same key -> canonical load success', async () => {
+    const { authStore } = await import('./authStore')
+    const companyId = 'co_readback_race'
+    // The server confirms the SAME companyId both times (idempotent) — only
+    // the client's readback of the canonical documents differs.
+    callCreateCompanyMock.mockResolvedValue({ companyId })
+
+    // Attempt 1: callable succeeds, but users/{uid} and companies/{companyId}
+    // are not yet readable (simulates a transient Firestore read failure /
+    // eventual-consistency lag right after the server's commit).
+    const first = await authStore.register(registerParams)
+    expect(first).toEqual({ ok: false, error: 'setup_incomplete' })
+    expect(authStore.getAuthDataStatus()).toBe('setup_incomplete')
+    // Not committed as the active company until the canonical load succeeds.
+    expect(authStore.getActiveCompanyId()).toBeNull()
+
+    // The documents become readable (e.g. on retry, shortly after).
+    const uid = mockAuth.currentUser!.uid
+    setUserDoc(uid, validUser(uid, companyId))
+    setCompanyDoc(companyId, validCompany(companyId, uid))
+
+    const retry = await authStore.completeCompanySetup()
+    expect(retry).toEqual({ ok: true })
+    expect(authStore.getAuthDataStatus()).toBe('ready')
+    expect(authStore.getCurrentCompany()?.id).toBe(companyId)
+    expect(authStore.getActiveCompanyId()).toBe(companyId)
+
+    // Same idempotency key on both attempts — no second Auth user, no
+    // second "first company" bootstrap attempt.
+    expect(callCreateCompanyMock).toHaveBeenCalledTimes(2)
+    const k1 = (callCreateCompanyMock.mock.calls[0][0] as { idempotencyKey: string }).idempotencyKey
+    const k2 = (callCreateCompanyMock.mock.calls[1][0] as { idempotencyKey: string }).idempotencyKey
+    expect(k1).toBe(k2)
+  })
+
+  it('activeCompanyId is not committed until the canonical company/profile load succeeds', async () => {
+    const { authStore } = await import('./authStore')
+    callCreateCompanyMock.mockResolvedValue({ companyId: 'co_not_yet_active' })
+    // No documents seeded -> loadReadyStateAfterSetup sees them as not-yet-existing.
+    await authStore.register(registerParams)
+    expect(authStore.getActiveCompanyId()).toBeNull()
+  })
+
+  it('a real data_error from the canonical load is never silently overwritten with setup_incomplete', async () => {
+    const { authStore } = await import('./authStore')
+    const companyId = 'co_corrupted_profile'
+    callCreateCompanyMock.mockImplementation(async () => {
+      const uid = mockAuth.currentUser!.uid
+      // Fails LegacyUserSchema — missing role/companyId/email/createdAt.
+      setUserDoc(uid, { id: uid, name: 'Broken' })
+      setCompanyDoc(companyId, validCompany(companyId, uid))
+      return { companyId }
+    })
+
+    await authStore.register(registerParams)
+
+    expect(authStore.getAuthDataStatus()).toBe('data_error')
+    expect(authStore.getAuthDataStatus()).not.toBe('setup_incomplete')
+    expect(authStore.getDataError()).not.toBeNull()
+  })
+
+  it('a pending setup for uid A cannot be resumed as uid B (shared-device isolation — independent audit fix #3)', async () => {
+    const { authStore } = await import('./authStore')
+    callCreateCompanyMock.mockRejectedValue(new Error('network error'))
+
+    await authStore.register({ ...registerParams, email: 'userA@example.test' })
+    expect(callCreateCompanyMock).toHaveBeenCalledTimes(1)
+
+    // A DIFFERENT user signs in on the same browser (same localStorage),
+    // without going through register() — e.g. via authStore.login().
+    mockAuth.currentUser = { uid: 'uid_completely_different_userB' }
+
+    const result = await authStore.completeCompanySetup()
+
+    expect(result).toEqual({ ok: false, error: 'setup_incomplete' })
+    // The callable must NOT be called again with user A's pending name/company data.
+    expect(callCreateCompanyMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('after a simulated reload (fresh module load), the SAME uid still finds its resumable pending setup — independent audit fix #2', async () => {
+    const { authStore: authStoreBeforeReload } = await import('./authStore')
+    callCreateCompanyMock.mockRejectedValue(new Error('network error'))
+    await authStoreBeforeReload.register(registerParams)
+    const uidBeforeReload = mockAuth.currentUser!.uid
+
+    // Simulate a page reload: fresh module graph, but localStorage persists
+    // and Firebase Auth restores the same signed-in uid (mockAuth.currentUser
+    // is left as-is — a real reload keeps the Auth session).
+    vi.resetModules()
+    const { authStore: authStoreAfterReload } = await import('./authStore')
+
+    const resumable = authStoreAfterReload.getResumableSetupSummary()
+    expect(resumable).not.toBeNull()
+    expect(resumable?.companyName).toBe(registerParams.companyName)
+
+    callCreateCompanyMock.mockImplementationOnce(async () => {
+      const companyId = 'co_after_reload'
+      setUserDoc(uidBeforeReload, validUser(uidBeforeReload, companyId))
+      setCompanyDoc(companyId, validCompany(companyId, uidBeforeReload))
+      return { companyId }
+    })
+    const retryResult = await authStoreAfterReload.completeCompanySetup()
+    expect(retryResult).toEqual({ ok: true })
+  })
+})
+
+describe('authStore.startCompanySetup — resumable re-entry without a new Auth user (independent audit fix #2)', () => {
+  it('completes setup for an authenticated user with no pending state, without calling createUserWithEmailAndPassword', async () => {
+    const authModule = await import('firebase/auth')
+    const { authStore } = await import('./authStore')
+    mockAuth.currentUser = { uid: 'uid_already_authenticated' }
+    callCreateCompanyMock.mockImplementation(async () => {
+      const companyId = 'co_started_fresh'
+      setUserDoc('uid_already_authenticated', validUser('uid_already_authenticated', companyId))
+      setCompanyDoc(companyId, validCompany(companyId, 'uid_already_authenticated'))
+      return { companyId }
+    })
+
+    const result = await authStore.startCompanySetup({
+      ownerName: 'Пётр Петров', companyName: 'Новая Компания', legalType: 'ip',
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(authModule.createUserWithEmailAndPassword).not.toHaveBeenCalled()
+    expect(callCreateCompanyMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-submitting startCompanySetup twice does not create a second Auth account or a second company (idempotency handled server-side, but the client never re-authenticates)', async () => {
+    const authModule = await import('firebase/auth')
+    const { authStore } = await import('./authStore')
+    mockAuth.currentUser = { uid: 'uid_resubmit' }
+    let calls = 0
+    callCreateCompanyMock.mockImplementation(async () => {
+      calls += 1
+      const companyId = 'co_resubmit'
+      setUserDoc('uid_resubmit', validUser('uid_resubmit', companyId))
+      setCompanyDoc(companyId, validCompany(companyId, 'uid_resubmit'))
+      return { companyId }
+    })
+
+    await authStore.startCompanySetup({ ownerName: 'A', companyName: 'B', legalType: 'ooo' })
+    await authStore.startCompanySetup({ ownerName: 'A', companyName: 'B', legalType: 'ooo' })
+
+    expect(authModule.createUserWithEmailAndPassword).not.toHaveBeenCalled()
+    expect(calls).toBe(2) // each explicit re-submit is a new bootstrap attempt (fresh key) — server-side bootstrap idempotency (functions/test/emulator/createCompany.test.ts) is what collapses this to one company, not the client
+  })
+
+  it('getResumableSetupSummary returns null when there is no pending state for the current uid', async () => {
+    const { authStore } = await import('./authStore')
+    mockAuth.currentUser = { uid: 'uid_fresh_no_pending' }
+    expect(authStore.getResumableSetupSummary()).toBeNull()
+  })
+
+  it('getResumableSetupSummary returns the pending summary after a failed register() for the same uid', async () => {
+    const { authStore } = await import('./authStore')
+    callCreateCompanyMock.mockRejectedValue(new Error('network error'))
+    await authStore.register(registerParams)
+    const summary = authStore.getResumableSetupSummary()
+    expect(summary).toEqual({ companyName: registerParams.companyName, legalType: registerParams.legalType })
+  })
+})
+
 describe('authStore — missing profile no longer triggers local admin auto-recovery (SEC-004)', () => {
   it('a signed-in user with no users/{uid} document lands in setup_incomplete, not ready — and no doc is auto-created', async () => {
     const { authStore } = await import('./authStore')

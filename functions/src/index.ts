@@ -21,7 +21,7 @@ import { onCall } from 'firebase-functions/v2/https'
 import { FieldValue, type Transaction } from 'firebase-admin/firestore'
 import { db, adminAuth } from './lib/admin'
 import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, validateRequest } from './lib/authz'
-import { toSafeHttpsError } from './lib/errors'
+import { AppError, toSafeHttpsError } from './lib/errors'
 import { writeAuditEvent } from './lib/audit'
 import { runBootstrapIdempotent } from './lib/bootstrapIdempotency'
 import { AuthzProbeRequestSchema, type AuthzProbeResponse } from './schemas/auth'
@@ -85,11 +85,27 @@ export const createCompany = onCall(async request => {
         inn: input.inn ?? null,
       },
       run: async (txn: Transaction) => {
+        const userRef = db.collection('users').doc(auth.uid)
+
+        // Guard against bootstrapping a SECOND "first company" for a uid
+        // that already has a users/{uid} profile but no bootstrap receipt —
+        // e.g. a pre-SEC-004 legacy account, an admin-invited user
+        // (authStore.inviteUser), or any other path that created a profile
+        // without going through this callable. This read MUST happen inside
+        // the SAME transaction as the receipt check (independent audit
+        // finding on SEC-004 PR #12) — a plain pre-check outside the
+        // transaction would race with a concurrent legitimate bootstrap.
+        // Firestore's "all reads before all writes" rule is satisfied: this
+        // is the very first statement in run(), before any txn.set() below.
+        const existingUserSnap = await txn.get(userRef)
+        if (existingUserSnap.exists) {
+          // Stable, safe, no user-controlled data — never overwrites the
+          // existing profile, never creates a company/membership for it.
+          throw new AppError('idempotency_conflict')
+        }
+
         // Server-generated random Firestore document id — never
-        // Date.now(), the uid, or the idempotency key. No reads are needed
-        // in this callback (the only read — the bootstrap receipt — already
-        // happened before run() was invoked), so the transaction's "all
-        // reads before all writes" rule is trivially satisfied.
+        // Date.now(), the uid, or the idempotency key.
         const companyRef = db.collection('companies').doc()
         const companyId = companyRef.id
         const nowIso = new Date().toISOString()
@@ -97,7 +113,6 @@ export const createCompany = onCall(async request => {
 
         const membershipRef = companyRef.collection('members').doc(auth.uid)
         const companyDataRef = db.collection('company_data').doc(companyId)
-        const userRef = db.collection('users').doc(auth.uid)
 
         txn.set(companyRef, {
           id: companyId,

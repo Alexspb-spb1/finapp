@@ -100,6 +100,12 @@ export type AuthError = 'email_taken' | 'invalid_credentials' | 'user_not_found'
 const LS_PENDING_SETUP = 'finapp_pending_setup'
 
 interface PendingCompanySetup {
+  // Independent audit fix #3 on SEC-004 PR #12: the pending-setup record is
+  // now bound to the Firebase Auth uid it was created for. Without this, a
+  // shared-device scenario (user A registers/fails, user B signs in on the
+  // same browser before A's retry) could let B's completeCompanySetup()
+  // silently reuse A's idempotencyKey/company data. See loadUsablePendingSetup().
+  uid: string
   idempotencyKey: string
   ownerName: string
   companyName: string
@@ -116,10 +122,12 @@ function loadPendingSetup(): PendingCompanySetup | null {
   if (!raw) return null
   try {
     const parsed = JSON.parse(raw) as Partial<PendingCompanySetup> | null
-    if (!parsed || typeof parsed.idempotencyKey !== 'string' || !parsed.idempotencyKey) return null
+    if (!parsed || typeof parsed.uid !== 'string' || !parsed.uid) return null
+    if (typeof parsed.idempotencyKey !== 'string' || !parsed.idempotencyKey) return null
     if (typeof parsed.ownerName !== 'string' || typeof parsed.companyName !== 'string') return null
     if (parsed.legalType !== 'ooo' && parsed.legalType !== 'ip') return null
     return {
+      uid: parsed.uid,
       idempotencyKey: parsed.idempotencyKey,
       ownerName: parsed.ownerName,
       companyName: parsed.companyName,
@@ -131,28 +139,44 @@ function loadPendingSetup(): PendingCompanySetup | null {
   }
 }
 
+/** Only returns the pending-setup record if it belongs to THIS uid — see the
+ * `uid` field comment on PendingCompanySetup above. A pending record left
+ * over from a different (e.g. previously signed-in) user is never usable. */
+function loadUsablePendingSetup(uid: string): PendingCompanySetup | null {
+  const pending = loadPendingSetup()
+  if (!pending || pending.uid !== uid) return null
+  return pending
+}
+
 function clearPendingSetup() {
   localStorage.removeItem(LS_PENDING_SETUP)
 }
 
+type ReadyLoadResult = 'ready' | 'transient_failure' | 'data_error'
+
 /** Loads the canonical profile/company from Firestore (never fabricated
- * client-side) after the server has confirmed company creation. Returns
- * false — without throwing — on any read/parse failure; callers must treat
- * that as setup_incomplete, never as a reason to fall back to local state. */
-async function loadReadyStateAfterSetup(uid: string, companyId: string): Promise<boolean> {
+ * client-side) after the server has confirmed company creation.
+ * - 'transient_failure' — a read failed or a document doesn't exist yet
+ *   (network blip, read-your-write lag): the server-side commit already
+ *   happened, so callers must treat this as still-resumable (keep the
+ *   pending state, do NOT clear it — independent audit fix #1).
+ * - 'data_error' — a document exists but failed schema validation;
+ *   setDataErrorState() has ALREADY been called with the real error — a
+ *   caller must never overwrite that with 'setup_incomplete' afterwards. */
+async function loadReadyStateAfterSetup(uid: string, companyId: string): Promise<ReadyLoadResult> {
   let userSnap, companySnap
   try {
     userSnap = await getDoc(doc(db, 'users', uid))
     companySnap = await getDoc(doc(db, 'companies', companyId))
   } catch {
-    return false
+    return 'transient_failure'
   }
-  if (!userSnap.exists() || !companySnap.exists()) return false
+  if (!userSnap.exists() || !companySnap.exists()) return 'transient_failure'
 
   const parsedProfile = parseLegacyUserDocument(uid, userSnap.data())
-  if (!parsedProfile.ok) { setDataErrorState(parsedProfile.error); return false }
+  if (!parsedProfile.ok) { setDataErrorState(parsedProfile.error); return 'data_error' }
   const parsedCompany = parseCompanyDocument(companyId, companySnap.data())
-  if (!parsedCompany.ok) { setDataErrorState(parsedCompany.error); return false }
+  if (!parsedCompany.ok) { setDataErrorState(parsedCompany.error); return 'data_error' }
 
   currentUser = parsedProfile.data
   currentCompany = parsedCompany.data
@@ -161,7 +185,7 @@ async function loadReadyStateAfterSetup(uid: string, companyId: string): Promise
   authDataStatus = 'ready'
   lastDataError = null
   notify()
-  return true
+  return 'ready'
 }
 
 // ── Pub/sub ──────────────────────────────────────────────────────────────────
@@ -376,8 +400,10 @@ export const authStore = {
     // attempt and persisted (without the password) so a retry after a
     // network/server failure reuses it instead of minting a new one, which
     // is what lets the server's SEC-004 bootstrap-idempotency mechanism
-    // recognize a retry as the SAME attempt.
+    // recognize a retry as the SAME attempt. Bound to `cred.user.uid` — see
+    // loadUsablePendingSetup().
     savePendingSetup({
+      uid: cred.user.uid,
       idempotencyKey: crypto.randomUUID(),
       ownerName: params.name,
       companyName: params.companyName,
@@ -390,15 +416,36 @@ export const authStore = {
 
   // ── Complete or retry the server-side company setup ───────────────────────
   // Called by register() right after Auth user creation, and again by the
-  // UI's retry button after a setup_incomplete result. NEVER creates a new
-  // Firebase Auth user and never touches the password — it only re-sends the
-  // SAME pending idempotency key/payload to the server `createCompany`
-  // callable. A failure here must not fall back to any local admin/company
-  // state — see loadReadyStateAfterSetup(), which only ever reads the
-  // canonical Firestore documents the server itself wrote.
+  // UI's retry button after a setup_incomplete result (including after a
+  // reload/re-login — see src/components/layout/ProtectedRoute.tsx and
+  // src/pages/Register.tsx). NEVER creates a new Firebase Auth user and
+  // never touches the password — it only re-sends the SAME pending
+  // idempotency key/payload to the server `createCompany` callable.
+  //
+  // Independent audit fix #1 (SEC-004 PR #12): the pending state is now only
+  // cleared, and activeCompanyId only committed, AFTER loadReadyStateAfterSetup()
+  // confirms the canonical documents were read back successfully. A
+  // transient Firestore read failure right after a successful server commit
+  // keeps the pending state intact — a retry reuses the same idempotency
+  // key, and the server's bootstrap-idempotency mechanism returns the
+  // ALREADY-created companyId rather than creating a second one. A genuine
+  // data_error from loadReadyStateAfterSetup() is never downgraded/overwritten.
   async completeCompanySetup(): Promise<{ ok: true } | { ok: false; error: AuthError }> {
-    const pending = loadPendingSetup()
-    if (!auth.currentUser || !pending) {
+    const uid = auth.currentUser?.uid
+    if (!uid) {
+      _registrationInProgress = false
+      authDataStatus = 'setup_incomplete'
+      lastDataError = null
+      notify()
+      return { ok: false, error: 'setup_incomplete' }
+    }
+
+    // Independent audit fix #3: never use a pending record that belongs to
+    // a DIFFERENT uid (e.g. left over from another user on a shared
+    // device) — never call the callable with someone else's name/company
+    // data, and never resolve it as if it were this user's attempt.
+    const pending = loadUsablePendingSetup(uid)
+    if (!pending) {
       _registrationInProgress = false
       authDataStatus = 'setup_incomplete'
       lastDataError = null
@@ -407,27 +454,86 @@ export const authStore = {
     }
 
     try {
-      const response = await callCreateCompany(pending)
-      clearPendingSetup()
-      activeCompanyId = response.companyId
-      localStorage.setItem(LS_ACTIVE_COMPANY, response.companyId)
+      const response = await callCreateCompany({
+        idempotencyKey: pending.idempotencyKey,
+        ownerName: pending.ownerName,
+        companyName: pending.companyName,
+        legalType: pending.legalType,
+        inn: pending.inn,
+      })
 
-      const loaded = await loadReadyStateAfterSetup(auth.currentUser.uid, response.companyId)
+      const result = await loadReadyStateAfterSetup(uid, response.companyId)
       _registrationInProgress = false
-      if (!loaded) {
+
+      if (result === 'ready') {
+        // Only now — after the canonical documents were confirmed readable
+        // and valid — is the pending state cleared and this company
+        // committed as the active one.
+        clearPendingSetup()
+        activeCompanyId = response.companyId
+        localStorage.setItem(LS_ACTIVE_COMPANY, response.companyId)
+        return { ok: true }
+      }
+      if (result === 'transient_failure') {
+        // Server confirmed the company; only the readback failed. Keep the
+        // pending state (same idempotencyKey) so a retry is safe.
         authDataStatus = 'setup_incomplete'
         notify()
-        return { ok: false, error: 'setup_incomplete' }
       }
-      return { ok: true }
+      // result === 'data_error': loadReadyStateAfterSetup() already set the
+      // correct data_error state via setDataErrorState() — do not touch
+      // authDataStatus here, and do not clear the pending state either
+      // (a corrupted document is not this attempt's fault to discard).
+      return { ok: false, error: 'setup_incomplete' }
     } catch (e) {
       console.error('[register] createCompany failed (auth succeeded):', e)
       _registrationInProgress = false
+      // Pending state is intentionally NOT cleared — the server may or may
+      // not have committed (network error before/after commit); the same
+      // idempotencyKey makes a retry safe either way.
       authDataStatus = 'setup_incomplete'
       lastDataError = null
       notify()
       return { ok: false, error: 'setup_incomplete' }
     }
+  },
+
+  // ── Start (or restart) company setup for an ALREADY authenticated user ───
+  // Independent audit fix #2: used when there is no usable pending-setup
+  // record for the current uid (cleared storage, different browser/device,
+  // or a pending record that belonged to a different uid) but the user
+  // still has a live Firebase Auth session with no completed profile
+  // (authDataStatus === 'setup_incomplete'). NEVER calls
+  // createUserWithEmailAndPassword and never touches a password — it only
+  // (re)creates the pending-setup record for the CURRENT uid with a FRESH
+  // idempotency key, then delegates to completeCompanySetup(), so a second
+  // Auth account/company can never result from resubmitting this form.
+  async startCompanySetup(params: {
+    ownerName: string; companyName: string; legalType: 'ooo' | 'ip'; inn?: string
+  }): Promise<{ ok: true } | { ok: false; error: AuthError }> {
+    const uid = auth.currentUser?.uid
+    if (!uid) return { ok: false, error: 'setup_incomplete' }
+
+    savePendingSetup({
+      uid,
+      idempotencyKey: crypto.randomUUID(),
+      ownerName: params.ownerName,
+      companyName: params.companyName,
+      legalType: params.legalType,
+      inn: params.inn,
+    })
+    return authStore.completeCompanySetup()
+  },
+
+  // ── Is there a resumable pending setup for the current uid? ──────────────
+  // Lets the UI decide between a plain "retry" button (pending exists) and a
+  // re-entry form (no usable pending — see startCompanySetup()), without
+  // exposing the raw idempotency key.
+  getResumableSetupSummary(): { companyName: string; legalType: 'ooo' | 'ip' } | null {
+    const uid = auth.currentUser?.uid
+    if (!uid) return null
+    const pending = loadUsablePendingSetup(uid)
+    return pending ? { companyName: pending.companyName, legalType: pending.legalType } : null
   },
 
   // ── Login ─────────────────────────────────────────────────────────────────
