@@ -44,7 +44,7 @@ interface StoredReceipt<TResult> {
   result: TResult
 }
 
-function validateIdempotencyKey(key: string): void {
+export function validateIdempotencyKey(key: string): void {
   if (typeof key !== 'string' || key.length === 0 || key.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
     throw new AppError('invalid_request')
   }

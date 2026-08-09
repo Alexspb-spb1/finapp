@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { TrendingUp, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { authStore } from '../store/authStore'
 
-type Step = 'account' | 'company'
+type Step = 'account' | 'company' | 'setup_incomplete'
 
 export default function Register() {
   const navigate = useNavigate()
@@ -56,8 +56,28 @@ export default function Register() {
     } else if (result.error === 'email_taken') {
       setStep('account')
       setError('Пользователь с таким email уже существует')
+    } else if (result.error === 'setup_incomplete') {
+      // Аккаунт создан, но серверное создание компании не завершилось —
+      // НЕ переходим на главную и НЕ создаём никакого локального fallback
+      // (SEC-004). Показываем отдельный экран с безопасным повтором,
+      // который использует тот же идемпотентный запрос, а не создаёт
+      // второго пользователя Auth.
+      setStep('setup_incomplete')
     } else {
       setError('Ошибка регистрации. Попробуйте ещё раз.')
+    }
+  }
+
+  async function handleRetrySetup() {
+    setError('')
+    setLoading(true)
+    const result = await authStore.completeCompanySetup()
+    setLoading(false)
+
+    if (result.ok) {
+      navigate('/', { replace: true })
+    } else {
+      setError('Не удалось завершить создание компании. Попробуйте ещё раз.')
     }
   }
 
@@ -98,7 +118,32 @@ export default function Register() {
         </div>
 
         <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
-          {step === 'account' ? (
+          {step === 'setup_incomplete' ? (
+            <>
+              <h2 className="text-lg font-semibold text-white mb-1">Аккаунт создан, компания — нет</h2>
+              <p className="text-slate-400 text-sm mb-6">
+                Ваш аккаунт создан, но настройка компании на сервере не завершилась. Это можно безопасно повторить —
+                пароль вводить снова не нужно.
+              </p>
+
+              {error && (
+                <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl px-4 py-3 text-sm mb-4">
+                  <AlertCircle size={16} className="shrink-0" /> {error}
+                </div>
+              )}
+
+              <button type="button" onClick={handleRetrySetup} disabled={loading}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                {loading && (
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                )}
+                {loading ? 'Повторяем...' : 'Повторить создание компании'}
+              </button>
+            </>
+          ) : step === 'account' ? (
             <>
               <h2 className="text-lg font-semibold text-white mb-1">Создать аккаунт</h2>
               <p className="text-slate-400 text-sm mb-6">Шаг 1 из 2 — данные пользователя</p>

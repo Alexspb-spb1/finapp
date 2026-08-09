@@ -11,6 +11,7 @@ import {
   collection, query, where,
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
+import { callCreateCompany } from '../lib/companyApi'
 import type { User, Company } from '../types/auth'
 import { parseLegacyUserDocument, type DataError } from '../schemas/auth'
 import { parseCompanyDocument } from '../schemas/company'
@@ -25,7 +26,11 @@ let allUserCompanies: Company[]    = []
 // Firestore document failed schema validation (see src/schemas/auth.ts,
 // src/schemas/company.ts); it is deliberately NOT recoverable by falling
 // back to a default role or a partially-loaded list (CLAUDE.md §6.2).
-export type AuthDataStatus = 'loading' | 'ready' | 'signed_out' | 'data_error'
+// `setup_incomplete` — SEC-004: the Firebase Auth user exists, but the
+// server-side `createCompany` setup has not (yet) succeeded. Distinct from
+// `data_error` (a corrupted/invalid EXISTING document) — this is an
+// incomplete-but-recoverable state with a safe retry (authStore.completeCompanySetup()).
+export type AuthDataStatus = 'loading' | 'ready' | 'signed_out' | 'data_error' | 'setup_incomplete'
 let authDataStatus: AuthDataStatus = 'loading'
 let lastDataError: DataError | null = null
 
@@ -89,7 +94,75 @@ let activeCompanyId: string | null = localStorage.getItem(LS_ACTIVE_COMPANY)
 // Prevents recovery code from firing while register() is still writing Firestore docs
 let _registrationInProgress = false
 
-export type AuthError = 'email_taken' | 'invalid_credentials' | 'user_not_found'
+export type AuthError = 'email_taken' | 'invalid_credentials' | 'user_not_found' | 'setup_incomplete'
+
+// ── SEC-004: resumable registration state (no password, no tokens) ────────
+const LS_PENDING_SETUP = 'finapp_pending_setup'
+
+interface PendingCompanySetup {
+  idempotencyKey: string
+  ownerName: string
+  companyName: string
+  legalType: 'ooo' | 'ip'
+  inn?: string
+}
+
+function savePendingSetup(pending: PendingCompanySetup) {
+  localStorage.setItem(LS_PENDING_SETUP, JSON.stringify(pending))
+}
+
+function loadPendingSetup(): PendingCompanySetup | null {
+  const raw = localStorage.getItem(LS_PENDING_SETUP)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingCompanySetup> | null
+    if (!parsed || typeof parsed.idempotencyKey !== 'string' || !parsed.idempotencyKey) return null
+    if (typeof parsed.ownerName !== 'string' || typeof parsed.companyName !== 'string') return null
+    if (parsed.legalType !== 'ooo' && parsed.legalType !== 'ip') return null
+    return {
+      idempotencyKey: parsed.idempotencyKey,
+      ownerName: parsed.ownerName,
+      companyName: parsed.companyName,
+      legalType: parsed.legalType,
+      inn: typeof parsed.inn === 'string' ? parsed.inn : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+function clearPendingSetup() {
+  localStorage.removeItem(LS_PENDING_SETUP)
+}
+
+/** Loads the canonical profile/company from Firestore (never fabricated
+ * client-side) after the server has confirmed company creation. Returns
+ * false — without throwing — on any read/parse failure; callers must treat
+ * that as setup_incomplete, never as a reason to fall back to local state. */
+async function loadReadyStateAfterSetup(uid: string, companyId: string): Promise<boolean> {
+  let userSnap, companySnap
+  try {
+    userSnap = await getDoc(doc(db, 'users', uid))
+    companySnap = await getDoc(doc(db, 'companies', companyId))
+  } catch {
+    return false
+  }
+  if (!userSnap.exists() || !companySnap.exists()) return false
+
+  const parsedProfile = parseLegacyUserDocument(uid, userSnap.data())
+  if (!parsedProfile.ok) { setDataErrorState(parsedProfile.error); return false }
+  const parsedCompany = parseCompanyDocument(companyId, companySnap.data())
+  if (!parsedCompany.ok) { setDataErrorState(parsedCompany.error); return false }
+
+  currentUser = parsedProfile.data
+  currentCompany = parsedCompany.data
+  companyUsers = [currentUser]
+  allUserCompanies = [currentCompany]
+  authDataStatus = 'ready'
+  lastDataError = null
+  notify()
+  return true
+}
 
 // ── Pub/sub ──────────────────────────────────────────────────────────────────
 type Listener = () => void
@@ -148,48 +221,23 @@ onAuthStateChanged(auth, async firebaseUser => {
 
     if (!userSnap.exists()) {
       if (_registrationInProgress) {
-        // register() is still writing Firestore docs — skip recovery, it will call notify() itself
+        // register()/completeCompanySetup() is still running — it will call notify() itself
         return
       }
-      // users/{uid} document is missing — recovery: create it from Auth data
-      const now = new Date().toISOString()
-      const companyId = 'co_' + firebaseUser.uid   // stable UID-based ID
-      const email = firebaseUser.email ?? 'user@unknown.com'
-
-      const recoveredUser: User = {
-        id: firebaseUser.uid,
-        name: firebaseUser.displayName ?? email.split('@')[0],
-        email: email.toLowerCase(),
-        role: 'admin',
-        companyId,
-        createdAt: now,
-      }
-      const recoveredCompany: Company = {
-        id: companyId, name: 'Моя компания', legalType: 'ip',
-        currency: 'RUB', createdAt: now, ownerId: firebaseUser.uid,
-      }
-
-      // Use recovered data in memory regardless of Firestore write success
-      currentUser    = recoveredUser
-      currentCompany = recoveredCompany
-      companyUsers   = [recoveredUser]
-
-      try {
-        await Promise.all([
-          setDoc(doc(db, 'users',        firebaseUser.uid), recoveredUser),
-          setDoc(doc(db, 'companies',    companyId),        recoveredCompany),
-          setDoc(doc(db, 'company_data', companyId),        {
-            accounts: [], categories: DEFAULT_CATEGORIES_AUTH, counterparties: [],
-            transactions: [], projects: [], rules: [],
-          }),
-        ])
-        console.log('[authStore] Auto-recovered missing Firestore docs for uid:', firebaseUser.uid)
-      } catch (recoveryErr) {
-        // Firestore write failed (rules or network) — but we still allow the user
-        // to use the app with in-memory + localStorage storage via the UID fallback.
-        console.warn('[authStore] Recovery write to Firestore failed (will use localStorage fallback):', recoveryErr)
-      }
-      authDataStatus = 'ready'
+      // users/{uid} is missing for an authenticated user (e.g. an
+      // interrupted registration, or a genuinely orphaned Auth account).
+      // SEC-004: this used to silently create a local admin+company
+      // fallback here — any Firestore hiccup (or even a normal first
+      // sign-in before registration finished) granted admin over a brand
+      // new company. Company/profile creation is now EXCLUSIVELY the
+      // server `createCompany` callable (src/lib/companyApi.ts) — there is
+      // no safe local substitute. Surface setup_incomplete so the UI can
+      // offer authStore.completeCompanySetup() as a safe retry instead.
+      currentUser = null; currentCompany = null; companyUsers = []
+      allUserCompanies = []
+      activeCompanyId = null
+      localStorage.removeItem(LS_ACTIVE_COMPANY)
+      authDataStatus = 'setup_incomplete'
       lastDataError = null
       notify()
       return
@@ -298,11 +346,16 @@ const DEFAULT_CATEGORIES = [
 export const authStore = {
 
   // ── Register new company owner ────────────────────────────────────────────
+  // SEC-004: company/profile creation happens EXCLUSIVELY server-side (see
+  // functions/src/index.ts createCompany). This only (1) creates the
+  // Firebase Auth user, (2) sends the verification email, then delegates to
+  // completeCompanySetup() — which also powers the UI's retry path, so a
+  // network/server failure here and a retry click go through the exact same
+  // code (and the exact same idempotency key).
   async register(params: {
     name: string; email: string; password: string
     companyName: string; legalType: 'ooo' | 'ip'; inn?: string
   }): Promise<{ ok: true } | { ok: false; error: AuthError }> {
-    // Step 1: Create Firebase Auth user — isolated catch so Firestore errors don't mask auth errors
     let cred: Awaited<ReturnType<typeof createUserWithEmailAndPassword>>
     try {
       _registrationInProgress = true
@@ -319,52 +372,62 @@ export const authStore = {
       return { ok: false, error: 'invalid_credentials' }
     }
 
-    const uid = cred.user.uid
-    const now = new Date().toISOString()
-    // crypto.randomUUID() вместо Date.now() — ID компании раньше был
-    // временной меткой в миллисекундах, то есть перечисляемым/угадываемым.
-    // В сочетании с открытыми Firestore-правилами это позволяло бы читать
-    // чужие финансовые данные простым перебором.
-    const companyId = 'co_' + crypto.randomUUID()
+    // crypto.randomUUID() idempotency key — generated ONCE per registration
+    // attempt and persisted (without the password) so a retry after a
+    // network/server failure reuses it instead of minting a new one, which
+    // is what lets the server's SEC-004 bootstrap-idempotency mechanism
+    // recognize a retry as the SAME attempt.
+    savePendingSetup({
+      idempotencyKey: crypto.randomUUID(),
+      ownerName: params.name,
+      companyName: params.companyName,
+      legalType: params.legalType,
+      inn: params.inn,
+    })
 
-    const company: Company = {
-      id: companyId, name: params.companyName, legalType: params.legalType,
-      inn: params.inn, currency: 'RUB', createdAt: now, ownerId: uid,
-    }
-    const user: User = {
-      id: uid, name: params.name, email: params.email.toLowerCase(),
-      role: 'admin', companyId, createdAt: now,
-    }
-    const defaultData = {
-      accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
-      transactions: [], projects: [], rules: [],
+    return authStore.completeCompanySetup()
+  },
+
+  // ── Complete or retry the server-side company setup ───────────────────────
+  // Called by register() right after Auth user creation, and again by the
+  // UI's retry button after a setup_incomplete result. NEVER creates a new
+  // Firebase Auth user and never touches the password — it only re-sends the
+  // SAME pending idempotency key/payload to the server `createCompany`
+  // callable. A failure here must not fall back to any local admin/company
+  // state — see loadReadyStateAfterSetup(), which only ever reads the
+  // canonical Firestore documents the server itself wrote.
+  async completeCompanySetup(): Promise<{ ok: true } | { ok: false; error: AuthError }> {
+    const pending = loadPendingSetup()
+    if (!auth.currentUser || !pending) {
+      _registrationInProgress = false
+      authDataStatus = 'setup_incomplete'
+      lastDataError = null
+      notify()
+      return { ok: false, error: 'setup_incomplete' }
     }
 
-    // Step 2: Write Firestore docs — errors here don't mean auth failed
     try {
-      await Promise.all([
-        setDoc(doc(db, 'users',        uid),        user),
-        setDoc(doc(db, 'companies',    companyId),  company),
-        setDoc(doc(db, 'company_data', companyId),  defaultData),
-      ])
+      const response = await callCreateCompany(pending)
+      clearPendingSetup()
+      activeCompanyId = response.companyId
+      localStorage.setItem(LS_ACTIVE_COMPANY, response.companyId)
+
+      const loaded = await loadReadyStateAfterSetup(auth.currentUser.uid, response.companyId)
+      _registrationInProgress = false
+      if (!loaded) {
+        authDataStatus = 'setup_incomplete'
+        notify()
+        return { ok: false, error: 'setup_incomplete' }
+      }
+      return { ok: true }
     } catch (e) {
-      console.error('[register] Firestore write failed (auth succeeded):', e)
-      // Auth user exists — let recovery handle it on next onAuthStateChanged
+      console.error('[register] createCompany failed (auth succeeded):', e)
+      _registrationInProgress = false
+      authDataStatus = 'setup_incomplete'
+      lastDataError = null
+      notify()
+      return { ok: false, error: 'setup_incomplete' }
     }
-
-    // Step 3: Update in-memory state and clear any stale company from localStorage
-    activeCompanyId = companyId
-    localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
-    currentUser    = user
-    currentCompany = company
-    companyUsers   = [user]
-    allUserCompanies = [company]
-    _registrationInProgress = false
-    authDataStatus = 'ready'
-    lastDataError = null
-    notify()
-
-    return { ok: true }
   },
 
   // ── Login ─────────────────────────────────────────────────────────────────
