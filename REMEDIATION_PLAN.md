@@ -544,7 +544,7 @@ writeAuditEvent
 
 ---
 
-## [-] SEC-004 — Перенести создание компании на сервер
+## [x] SEC-004 — Перенести создание компании на сервер
 
 **Ветка:** `remediation/SEC-004-create-company-function`
 
