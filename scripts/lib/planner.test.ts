@@ -5,7 +5,7 @@ import { relationKey, type LegacyExtractionResult, type Decision } from './types
 const ts = { seconds: 1, nanoseconds: 0 }
 
 function emptyExtraction(): LegacyExtractionResult {
-  return { confirmed: [], conflicts: [], orphans: [], ownerAnomalies: [] }
+  return { confirmed: [], conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [] }
 }
 
 describe('buildPlan — existing membership reconciliation', () => {
@@ -15,7 +15,10 @@ describe('buildPlan — existing membership reconciliation', () => {
       confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
     }
     const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts }]])
-    const plan = buildPlan({ extraction, decisions: [], existingMemberships: existing, existingActiveAdmins: new Map([['co_a', new Set(['u1'])]]) })
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: existing,
+      existingActiveAdmins: new Map([['co_a', new Set(['u1'])]]), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.plannedCreates).toEqual([])
     expect(plan.skipped).toEqual([{ companyId: 'co_a', uid: 'u1' }])
     expect(plan.applyAllowed).toBe(true)
@@ -27,35 +30,151 @@ describe('buildPlan — existing membership reconciliation', () => {
       confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
     }
     const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'viewer', status: 'active', createdAt: ts, updatedAt: ts }]])
-    const plan = buildPlan({ extraction, decisions: [], existingMemberships: existing, existingActiveAdmins: new Map() })
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.plannedCreates).toEqual([])
     expect(plan.unresolvedConflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'existing_membership_conflict' }])
     expect(plan.applyAllowed).toBe(false)
   })
 
-  it('a corrupted existing membership is also never overwritten', () => {
+  it('a corrupted (extra-field) existing membership is also never overwritten', () => {
     const extraction: LegacyExtractionResult = {
       ...emptyExtraction(),
       confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
     }
     const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts, extra: 1 }]])
-    const plan = buildPlan({ extraction, decisions: [], existingMemberships: existing, existingActiveAdmins: new Map() })
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.plannedCreates).toEqual([])
     expect(plan.unresolvedConflicts[0]?.reason).toBe('existing_membership_conflict')
   })
+
+  // ── Independent audit fix #2 ───────────────────────────────────────────
+  it('accept_existing resolves a differs-but-VALID existing membership (different role, otherwise well-formed active doc)', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
+    }
+    const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'accountant', status: 'active', createdAt: ts, updatedAt: ts }]])
+    const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_a', resolution: 'accept_existing', reason: 'existing role is correct', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+    const plan = buildPlan({
+      extraction, decisions, existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.skipped).toEqual([{ companyId: 'co_a', uid: 'u1' }])
+    expect(plan.unresolvedConflicts).toEqual([])
+  })
+
+  it('accept_existing NEVER resolves an existing membership with an unknown role — stays a blocking conflict', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
+    }
+    const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'superadmin', status: 'active', createdAt: ts, updatedAt: ts }]])
+    const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_a', resolution: 'accept_existing', reason: 'trying to force it', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+    const plan = buildPlan({
+      extraction, decisions, existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.skipped).toEqual([])
+    expect(plan.unresolvedConflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'existing_membership_conflict' }])
+    expect(plan.applyAllowed).toBe(false)
+  })
+
+  it('accept_existing NEVER resolves an existing membership with a DISABLED (inactive) status', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
+    }
+    const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'admin', status: 'disabled', createdAt: ts, updatedAt: ts }]])
+    const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_a', resolution: 'accept_existing', reason: 'trying to force it', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+    const plan = buildPlan({
+      extraction, decisions, existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.skipped).toEqual([])
+    expect(plan.unresolvedConflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'existing_membership_conflict' }])
+  })
+
+  it('accept_existing NEVER resolves an existing membership with a uid mismatch', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
+    }
+    const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'someone_else', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts }]])
+    const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_a', resolution: 'accept_existing', reason: 'trying to force it', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+    const plan = buildPlan({
+      extraction, decisions, existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.unresolvedConflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'existing_membership_conflict' }])
+  })
+
+  it('accept_existing NEVER resolves an existing membership with missing timestamps', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
+    }
+    const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'viewer', status: 'active' }]])
+    const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_a', resolution: 'accept_existing', reason: 'trying to force it', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+    const plan = buildPlan({
+      extraction, decisions, existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.unresolvedConflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'existing_membership_conflict' }])
+  })
 })
 
-describe('buildPlan — last-admin-per-company gate', () => {
-  it('a company with no projected active admin blocks the ENTIRE apply, before any writes', () => {
+describe('buildPlan — last-admin gate covers EVERY existing company (independent audit fix #1)', () => {
+  it('a company with NO relations at all and no admin blocks apply, even though nothing else touches it', () => {
+    const plan = buildPlan({
+      extraction: emptyExtraction(), decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_untouched']),
+    })
+    expect(plan.companiesWithoutAdmin).toEqual(['co_untouched'])
+    expect(plan.applyAllowed).toBe(false)
+  })
+
+  it('a company with an existing but CORRUPTED admin document does not pass the gate', () => {
+    // existingActiveAdmins is computed upstream (firestoreReaders.ts) using
+    // the strict validator — a corrupted admin never makes it into this
+    // map in the first place. Simulate that here: the map has no entry for
+    // co_a even though a (corrupted) admin-shaped doc exists in
+    // existingMemberships, proving the gate relies on the STRICT set, not
+    // on existingMemberships directly.
+    const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts, extra: 'corrupt' }]])
+    const plan = buildPlan({
+      extraction: emptyExtraction(), decisions: [], existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.companiesWithoutAdmin).toEqual(['co_a'])
+    expect(plan.applyAllowed).toBe(false)
+  })
+
+  it('a company with no legacy relation but a valid existing admin passes the gate', () => {
+    const plan = buildPlan({
+      extraction: emptyExtraction(), decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map([['co_a', new Set(['u1'])]]), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.companiesWithoutAdmin).toEqual([])
+    expect(plan.applyAllowed).toBe(true)
+  })
+
+  it('a company with only a viewer and no admin blocks the ENTIRE apply, before any writes', () => {
     const extraction: LegacyExtractionResult = {
       ...emptyExtraction(),
       confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'viewer', sources: ['users.home'] }],
     }
-    const plan = buildPlan({ extraction, decisions: [], existingMemberships: new Map(), existingActiveAdmins: new Map() })
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.companiesWithoutAdmin).toEqual(['co_a'])
     expect(plan.applyAllowed).toBe(false)
-    // The viewer relation itself is still a valid, non-conflicting planned create —
-    // it's the WHOLE apply that is blocked, not this one relation individually.
     expect(plan.plannedCreates).toEqual([{ companyId: 'co_a', uid: 'u1', role: 'viewer', status: 'active' }])
   })
 
@@ -64,7 +183,10 @@ describe('buildPlan — last-admin-per-company gate', () => {
       ...emptyExtraction(),
       confirmed: [{ companyId: 'co_a', uid: 'u2', role: 'viewer', sources: ['users.home'] }],
     }
-    const plan = buildPlan({ extraction, decisions: [], existingMemberships: new Map(), existingActiveAdmins: new Map([['co_a', new Set(['u1'])]]) })
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map([['co_a', new Set(['u1'])]]), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.companiesWithoutAdmin).toEqual([])
     expect(plan.applyAllowed).toBe(true)
   })
@@ -74,7 +196,10 @@ describe('buildPlan — last-admin-per-company gate', () => {
       ...emptyExtraction(),
       confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }],
     }
-    const plan = buildPlan({ extraction, decisions: [], existingMemberships: new Map(), existingActiveAdmins: new Map() })
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.companiesWithoutAdmin).toEqual([])
     expect(plan.applyAllowed).toBe(true)
   })
@@ -87,7 +212,10 @@ describe('buildPlan — manual decisions', () => {
       conflicts: [{ companyId: 'co_a', uid: 'u1', reason: 'role_mismatch', observedRoles: ['admin', 'viewer'] }],
     }
     const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_a', resolution: 'confirm_role', role: 'admin', reason: 'checked with owner', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
-    const plan = buildPlan({ extraction, decisions, existingMemberships: new Map(), existingActiveAdmins: new Map() })
+    const plan = buildPlan({
+      extraction, decisions, existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.unresolvedConflicts).toEqual([])
     expect(plan.plannedCreates).toEqual([{ companyId: 'co_a', uid: 'u1', role: 'admin', status: 'active' }])
     expect(plan.applyAllowed).toBe(true)
@@ -99,7 +227,10 @@ describe('buildPlan — manual decisions', () => {
       conflicts: [{ companyId: 'co_a', uid: 'u1', reason: 'invalid_role' }],
     }
     const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_a', resolution: 'exclude', reason: 'ex-employee', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
-    const plan = buildPlan({ extraction, decisions, existingMemberships: new Map(), existingActiveAdmins: new Map() })
+    const plan = buildPlan({
+      extraction, decisions, existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.unresolvedConflicts).toEqual([])
     expect(plan.plannedCreates).toEqual([])
   })
@@ -110,7 +241,10 @@ describe('buildPlan — manual decisions', () => {
       conflicts: [{ companyId: 'co_a', uid: 'u1', reason: 'role_mismatch', observedRoles: ['admin', 'viewer'] }],
     }
     const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_a', resolution: 'accept_existing', reason: 'n/a', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
-    const plan = buildPlan({ extraction, decisions, existingMemberships: new Map(), existingActiveAdmins: new Map() })
+    const plan = buildPlan({
+      extraction, decisions, existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.unresolvedConflicts).toHaveLength(1)
     expect(plan.applyAllowed).toBe(false)
   })
@@ -120,11 +254,17 @@ describe('buildPlan — manual decisions', () => {
       ...emptyExtraction(),
       orphans: [{ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' }],
     }
-    const blocked = buildPlan({ extraction, decisions: [], existingMemberships: new Map(), existingActiveAdmins: new Map() })
+    const blocked = buildPlan({
+      extraction, decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(),
+    })
     expect(blocked.applyAllowed).toBe(false)
 
     const decisions: Decision[] = [{ uid: 'u1', companyId: 'co_ghost', resolution: 'exclude', reason: 'known dangling reference', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
-    const acknowledged = buildPlan({ extraction, decisions, existingMemberships: new Map(), existingActiveAdmins: new Map() })
+    const acknowledged = buildPlan({
+      extraction, decisions, existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(),
+    })
     expect(acknowledged.unresolvedOrphans).toEqual([])
     expect(acknowledged.applyAllowed).toBe(true)
   })
@@ -134,8 +274,65 @@ describe('buildPlan — manual decisions', () => {
       ...emptyExtraction(),
       ownerAnomalies: [{ companyId: 'co_a', uid: 'owner1', reason: 'owner_without_admin_membership' }],
     }
-    const plan = buildPlan({ extraction, decisions: [], existingMemberships: new Map(), existingActiveAdmins: new Map() })
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
     expect(plan.applyAllowed).toBe(false)
     expect(plan.unresolvedOwnerAnomalies).toHaveLength(1)
+  })
+})
+
+describe('buildPlan — unknown users (independent audit fix #6)', () => {
+  it('a user with no usable relation is surfaced as unknown', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      unknownUsers: [{ uid: 'u_orphan', reason: 'no_usable_relations' }],
+    }
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(),
+    })
+    expect(plan.unknownUsers).toEqual([{ uid: 'u_orphan', reason: 'no_usable_relations' }])
+  })
+
+  it('a user already covered by a valid existing canonical membership is NOT reported as unknown', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      unknownUsers: [{ uid: 'u_covered', reason: 'no_usable_relations' }],
+    }
+    const existing = new Map([[relationKey('co_a', 'u_covered'), { uid: 'u_covered', role: 'viewer', status: 'active', createdAt: ts, updatedAt: ts }]])
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.unknownUsers).toEqual([])
+  })
+
+  it('a user with only a CORRUPTED existing membership is still reported as unknown', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      unknownUsers: [{ uid: 'u_corrupt', reason: 'no_usable_relations' }],
+    }
+    const existing = new Map([[relationKey('co_a', 'u_corrupt'), { uid: 'u_corrupt', role: 'viewer', status: 'invited', createdAt: ts, updatedAt: ts }]])
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']),
+    })
+    expect(plan.unknownUsers).toEqual([{ uid: 'u_corrupt', reason: 'no_usable_relations' }])
+  })
+})
+
+describe('buildPlan — malformed claims pass through informationally', () => {
+  it('malformedClaims from extraction are carried into the plan unchanged', () => {
+    const extraction: LegacyExtractionResult = {
+      ...emptyExtraction(),
+      malformedClaims: [{ uid: 'u1', reason: 'malformed_companies_entry' }],
+    }
+    const plan = buildPlan({
+      extraction, decisions: [], existingMemberships: new Map(),
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(),
+    })
+    expect(plan.malformedClaims).toEqual([{ uid: 'u1', reason: 'malformed_companies_entry' }])
   })
 })

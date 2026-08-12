@@ -14,6 +14,12 @@ against the **Firestore Emulator only** (SEC-005 Phase A). Staging rehearsal
 and production execution are **not authorized and have not been run** — see
 "Future staging rehearsal and production execution" at the end.
 
+**This document was updated after an independent review returned
+`REVIEW_RESULT: CHANGES REQUIRED`** — see "Independent audit fixes" near the
+end for the 7 categories of fixes applied. The sections above/below that
+already reflect the fixed behavior (existing-membership classification,
+path-safety scope, rollback precondition, partial-write-failure proof).
+
 ## Data model — legacy → canonical mapping
 
 | Legacy source | Canonical target |
@@ -54,9 +60,15 @@ canonical document created is always:
   - `owner_role_not_admin` — `companies/{companyId}.ownerId` has a confirmed
     membership claim, but it is not `admin`.
   - `existing_membership_conflict` — an existing
-    `companies/{companyId}/members/{uid}` document exists and does **not**
-    exactly match the candidate (different role/status, corrupted schema,
-    uid mismatch, or extra fields).
+    `companies/{companyId}/members/{uid}` document exists and is **not** an
+    exact match. This includes both cases: the document is strictly valid
+    but has a *different* role (`differs_but_valid`), or it fails strict
+    validation entirely — unknown role, `status !== 'active'`, uid mismatch,
+    missing/malformed timestamps, or extra/unexpected fields
+    (`invalid`, `scripts/lib/membershipValidation.ts`). **Only the
+    `differs_but_valid` case may ever be resolved by an `accept_existing`
+    decision** — an `invalid` existing document remains a blocking conflict
+    regardless of decision (see "Independent audit fixes" below).
 - **Orphan** — a relation that references something that doesn't exist:
   - `missing_company` — a legacy field names a `companyId` with no
     `companies/{companyId}` document.
@@ -116,8 +128,13 @@ Resolutions:
 - `confirm_role` — requires `role` (`viewer`|`accountant`|`admin`). Resolves
   a conflict or owner anomaly by creating that membership. **Cannot** target
   an orphan (a decision can never create a missing company or user).
-- `accept_existing` — only meaningful for an `existing_membership_conflict`:
-  treats the existing document as canonical; nothing is written.
+- `accept_existing` — only meaningful for an `existing_membership_conflict`
+  that is `differs_but_valid` (a strictly-schema-valid, active document with
+  merely a different role): treats the existing document as canonical;
+  nothing is written. **Never** resolves an `invalid` existing document
+  (unknown role, disabled/non-active status, uid mismatch, missing
+  timestamps, or extra fields) — that stays a blocking conflict no matter
+  what the decision says.
 - `exclude` — acknowledges a conflict/orphan/owner-anomaly; no membership is
   ever created for that pair.
 
@@ -302,35 +319,100 @@ Each planned create is attempted independently and its outcome (success or
 failure) is recorded individually in `createdPaths`/`writeFailures` — the
 report **never claims** the whole migration was atomic. If N of M planned
 creates succeed, the report shows exactly which N paths were created and
-which failed with what error, and the exit code is non-zero. **Known
-limitation of this cycle**: partial-write-failure was validated by design/code
-review only — a genuine mid-batch Firestore write failure was not exercised
-against the real emulator in this cycle (see `docs/remediation/reports/SEC-005.md`,
-"Известные ограничения").
+which failed with what error, and the exit code is non-zero.
+
+The observed checksum (`scripts/lib/observedState.ts`,
+`computeObservedState()`) is computed **exclusively from documents actually
+read back** after the writes — a target relation with no corresponding
+read-back entry is recorded in `missing[]` and contributes a `'MISSING'`
+sentinel to the checksum input, **never** the expected/target value. This
+means a partial write failure necessarily produces a non-matching
+`observedChecksum`, a non-zero exit code (`mode === 'apply' &&
+observedChecksum !== targetChecksum` → exit 1), and an honest `missing[]`
+list in the report — proven directly at the unit level
+(`scripts/lib/observedState.test.ts`, "partial write failure" case). A
+genuine mid-batch Firestore write failure is still not exercised as a live
+race against the real emulator in this cycle (single synchronous CLI
+process, no injection point) — see `docs/remediation/reports/SEC-005.md`,
+"Известные ограничения" for why the unit-level proof is treated as
+sufficient (the same function is used for both apply and verify).
 
 ## Rollback
 
-`--mode rollback-from-report --from-report <apply-report.json>` deletes
-**only** documents listed in that report's `rollbackManifest`, and only if,
-right now:
+`--mode rollback-from-report --from-report <apply-report.json>` first
+runtime-validates the **entire source report** before touching Firestore at
+all (`scripts/lib/rollbackValidation.ts`, `validateSourceReportForRollback`):
+correct `schemaVersion`, `mode === 'apply'`, matching `environment`/`projectId`,
+every `rollbackManifest` entry using the exact canonical path
+`companies/{companyId}/members/{uid}` with no duplicate pairs, and every
+entry cross-referenced against both `createdPaths` (must have matching
+`createTimeIso`/`updateTimeIso`) and `plannedCreates` (must have a known
+`role` and `status === 'active'`). **Any single structural problem — a
+tampered report, wrong-project report, or a non-apply report — rejects the
+entire rollback with zero deletions attempted.**
+
+Only once the source report validates does the tool attempt deletions, one
+per manifest entry, and only if, right now:
 1. the document still exists;
-2. `uid`/`status` still match what was created;
+2. `uid`/`role`/`status` still match what was created;
 3. its Firestore `createTime`/`updateTime` metadata still exactly match
-   what was recorded at apply time (proves it was never modified since).
+   what was recorded at apply time (proves it was never modified since);
+4. the delete itself succeeds under a Firestore `lastUpdateTime` precondition
+   (`ref.delete({ lastUpdateTime: snap.updateTime })`) — closing the race
+   window between the pre-delete read and the delete call itself: a
+   concurrent modification landing in that exact window causes the
+   precondition to fail and the deletion to be refused, not silently lost.
 
 Any mismatch refuses that specific deletion (never a partial "best effort"
 delete) and records it as a conflict in the rollback report. Verified
 against the real emulator: a document modified after backfill is correctly
-refused, never deleted.
+refused, never deleted; a tampered/wrong-project source report is refused
+before any Firestore I/O.
 
 ## No PII in Git
 
 The full report (uid/companyId are treated as sensitive identifiers) and
-any decisions file are **never** committed — `--report-path` and
-`--decisions-file` must be absolute paths OUTSIDE this repository
-checkout (`scripts/lib/report.ts` refuses any path inside the repo). Only
-safe aggregates (mode, environment, projectId, counts, checksums) are ever
-printed to stdout. `.gitignore` additionally blocks the conventional local
-filenames (`*.membership-backfill-report.json`, `/migration-reports/`) as
-defense-in-depth, in case an operator forgets `--report-path`'s repo-outside
-requirement.
+any decisions file are **never** committed. `--report-path`,
+`--decisions-file`, and `--from-report` **all** go through the same shared
+check (`scripts/lib/pathSafety.ts`, `assertPathOutsideRepo`) — resolving
+symlinked ancestors and comparing case-insensitively on Windows/macOS — and
+this check runs **immediately after CLI argument parsing, before any
+credential acquisition or Firestore I/O**: an invalid path for any of the
+three flags leaves zero writes and zero reads. Only safe aggregates (mode,
+environment, projectId, counts, checksums) are ever printed to stdout.
+`.gitignore` additionally blocks the conventional local filenames
+(`*.membership-backfill-report.json`, `/migration-reports/`) as
+defense-in-depth, in case an operator forgets the repo-outside requirement.
+
+## Independent audit fixes
+
+An independent review of this tool returned `REVIEW_RESULT: CHANGES
+REQUIRED` with 7 categories of blocking findings. All 7 were fixed in a
+follow-up commit on this same branch; the full technical writeup (per-fix
+rationale, new modules, and the new red→green test list) is in
+`docs/remediation/reports/SEC-005.md`, section "Исправления по итогам
+независимого аудита". Summary:
+
+1. The last-admin gate now checks **every existing company**, not only
+   companies with a confirmed legacy relation, and never counts a
+   structurally-corrupted document as a protecting admin.
+2. `accept_existing` now only ever resolves a strictly-schema-valid, active,
+   role-differing existing membership — never an invalid one.
+3. Rollback now runtime-validates the entire source report before any I/O
+   and closes the read→delete race with a Firestore `lastUpdateTime`
+   precondition.
+4. The observed checksum is computed exclusively from actually-read
+   documents, never substituting expected values for missing ones.
+5. All three path flags (`--report-path`, `--decisions-file`,
+   `--from-report`) are validated as outside-the-repo before any credential
+   acquisition or Firestore I/O, not just `--report-path` after I/O began.
+6. Users with no usable legacy relation are surfaced in a new `unknownUsers`
+   list instead of silently disappearing; malformed `companies[]` entries
+   are reflected in the report; a pair with both a valid and an invalid role
+   claim becomes a `mixed_role_validity` conflict instead of an
+   auto-confirmed relation.
+7. `readAllExistingMemberships()` now validates the full Firestore path
+   shape and only ever accepts documents at exactly
+   `companies/{companyId}/members/{uid}` — a foreign or nested `members`
+   document elsewhere in Firestore can no longer influence planning,
+   checksums, or the admin gate.

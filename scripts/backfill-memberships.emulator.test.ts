@@ -87,7 +87,7 @@ function uniqueId(label: string): string {
   return `${label}_${randomUUID().replace(/-/g, '')}`
 }
 
-describe('backfill-memberships CLI — real Firestore Emulator', () => {
+describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_000 }, () => {
   it('no --mode flag defaults to dry-run and writes zero documents', async () => {
     const uid = uniqueId('u'); const companyId = uniqueId('co')
     await seedCompany(companyId)
@@ -288,5 +288,181 @@ describe('backfill-memberships CLI — real Firestore Emulator', () => {
 
     expect(rollbackResult.code).toBe(1)
     expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
+  })
+
+  // ── Independent audit fix #1 ─────────────────────────────────────────────
+  it('a company with NO relations at all still blocks apply if it has no admin', async () => {
+    const companyId = uniqueId('co')
+    await seedCompany(companyId) // nobody references this company at all
+
+    const result = runCli(baseArgs('apply'))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.counts.created).toBe(0)
+  })
+
+  it('a CORRUPTED existing "admin" document does not satisfy the last-admin gate', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    const now = Timestamp.now()
+    // Extra field makes this document invalid per the strict validator —
+    // it must never count as a protecting admin.
+    await seedExistingMembership(companyId, uid, { uid, role: 'admin', status: 'active', createdAt: now, updatedAt: now, tampered: true })
+
+    const result = runCli(baseArgs('apply'))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.counts.created).toBe(0)
+  })
+
+  // ── Independent audit fix #2 ─────────────────────────────────────────────
+  it('accept_existing does NOT resolve a corrupted existing membership (extra field)', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const now = Timestamp.now()
+    await seedExistingMembership(companyId, uid, { uid, role: 'admin', status: 'active', createdAt: now, updatedAt: now, hacked: true })
+    const decisions = decisionsFile([{ uid, companyId, resolution: 'accept_existing', reason: 'trying to force it through', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+
+    const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
+
+    expect(result.code).toBe(1)
+  })
+
+  it('accept_existing does NOT resolve a DISABLED existing membership', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const now = Timestamp.now()
+    await seedExistingMembership(companyId, uid, { uid, role: 'admin', status: 'disabled', createdAt: now, updatedAt: now })
+    const decisions = decisionsFile([{ uid, companyId, resolution: 'accept_existing', reason: 'trying to force it through', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+
+    const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
+
+    expect(result.code).toBe(1)
+  })
+
+  it('accept_existing DOES resolve a strictly-valid existing membership with a merely different role', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const now = Timestamp.now()
+    await seedExistingMembership(companyId, uid, { uid, role: 'accountant', status: 'active', createdAt: now, updatedAt: now })
+    const decisions = decisionsFile([{ uid, companyId, resolution: 'accept_existing', reason: 'existing role is correct, legacy is stale', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+
+    // NOTE: this company now has zero admin (existing role is accountant) —
+    // the last-admin gate still legitimately blocks apply. This test only
+    // proves accept_existing itself is accepted for the relation in
+    // question (no existing_membership_conflict for that pair), by
+    // inspecting the report's conflicts list directly.
+    const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
+    expect(result.report?.conflicts.some(c => c.reason === 'existing_membership_conflict')).toBe(false)
+  })
+
+  // ── Independent audit fix #3 ─────────────────────────────────────────────
+  it('a tampered rollback source report (wrong projectId) is rejected without deleting anything', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const applyReportPath = reportPath()
+    runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', applyReportPath, '--mode', 'apply'])
+    expect(await getMembership(companyId, uid)).toBeDefined()
+
+    const tampered = JSON.parse(readFileSync(applyReportPath, 'utf8')) as MembershipBackfillReport
+    ;(tampered as unknown as Record<string, unknown>).projectId = 'a-different-project'
+    const tamperedPath = reportPath()
+    writeFileSync(tamperedPath, JSON.stringify(tampered))
+
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath])
+
+    expect(rollbackResult.code).toBe(2)
+    expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
+  })
+
+  it('a rollback source report with mode !== apply is rejected without deleting anything', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const applyReportPath = reportPath()
+    runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', applyReportPath, '--mode', 'apply'])
+
+    const tampered = JSON.parse(readFileSync(applyReportPath, 'utf8')) as MembershipBackfillReport
+    ;(tampered as unknown as Record<string, unknown>).mode = 'dry-run'
+    const tamperedPath = reportPath()
+    writeFileSync(tamperedPath, JSON.stringify(tampered))
+
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath])
+
+    expect(rollbackResult.code).toBe(2)
+    expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
+  })
+
+  // ── Independent audit fix #5 ─────────────────────────────────────────────
+  it('an invalid (in-repo) --report-path is refused and leaves zero writes', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const inRepoPath = join(REPO_ROOT, 'docs', `sec005-should-not-be-written-${randomUUID()}.json`)
+
+    const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', inRepoPath, '--mode', 'apply'])
+
+    expect(result.code).toBe(2)
+    expect(existsSync(inRepoPath)).toBe(false)
+    expect(await getMembership(companyId, uid)).toBeUndefined()
+  })
+
+  it('a --decisions-file INSIDE the repository is rejected before any Firestore I/O', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const inRepoDecisions = join(REPO_ROOT, 'package.json') // any real file inside the repo
+
+    const result = runCli(baseArgs('apply', ['--decisions-file', inRepoDecisions]))
+
+    expect(result.code).toBe(2)
+    expect(await getMembership(companyId, uid)).toBeUndefined()
+  })
+
+  // ── Independent audit fix #6 ─────────────────────────────────────────────
+  it('a user with no usable legacy relation is surfaced as unknown, not silently ignored', async () => {
+    const uid = uniqueId('u')
+    await seedUser(uid, { name: 'no legacy relation at all' })
+
+    const result = runCli(baseArgs('dry-run'))
+
+    expect(result.report?.unknownUsers).toContainEqual({ uid, reason: 'no_usable_relations' })
+    expect(result.report?.counts.unknownUsers).toBeGreaterThanOrEqual(1)
+  })
+
+  it('a mixed valid+invalid role claim for the same pair becomes a conflict, not an auto-confirmed relation', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin', companies: [{ companyId, role: 'not-a-real-role' }] })
+
+    const result = runCli(baseArgs('apply'))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.conflicts.some(c => c.reason === 'mixed_role_validity')).toBe(true)
+    expect(await getMembership(companyId, uid)).toBeUndefined()
+  })
+
+  // ── Independent audit fix #7 ─────────────────────────────────────────────
+  it('a "members" document NOT nested directly under companies/{companyId} is ignored entirely', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    // A foreign 'members' subcollection nested one level too deep — same
+    // collectionGroup id ('members'), wrong overall path shape.
+    await db.collection('companies').doc(companyId).collection('not_members_directly').doc('x').collection('members').doc(uid).set({
+      uid, role: 'admin', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+    })
+
+    const result = runCli(baseArgs('apply'))
+
+    // The foreign document must not be picked up as an "existing" admin
+    // membership, so the real (correct) path still needed a create.
+    expect(result.code).toBe(0)
+    expect(result.report?.counts.created).toBe(1)
+    expect(result.report?.counts.existingMembershipsRead).toBe(0)
   })
 })

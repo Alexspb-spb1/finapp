@@ -4,12 +4,13 @@
 // identifiers per task spec §8 — and is written ONLY to an explicit
 // absolute path OUTSIDE the repository (validated by the CLI). Never
 // written into the repo, never printed to stdout in full.
-import { isAbsolute, dirname } from 'node:path'
+import { dirname } from 'node:path'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import type {
-  ConflictRecord, OrphanRecord, OwnerAnomalyRecord, PlannedCreate,
+  ConflictRecord, OrphanRecord, OwnerAnomalyRecord, PlannedCreate, UnknownUserRecord, MalformedClaimRecord,
 } from './types.ts'
 import type { Environment } from './firebaseAdmin.ts'
+import { assertPathOutsideRepo } from './pathSafety.ts'
 
 export const REPORT_SCHEMA_VERSION = 1
 
@@ -28,6 +29,8 @@ export interface ReportCounts {
   missingCompanies: number
   missingUsers: number
   ownerWithoutAdminMembership: number
+  unknownUsers: number
+  malformedClaims: number
   unresolved: number
 }
 
@@ -76,6 +79,8 @@ export interface MembershipBackfillReport {
   conflicts: ConflictRecord[]
   orphans: OrphanRecord[]
   ownerAnomalies: OwnerAnomalyRecord[]
+  unknownUsers: UnknownUserRecord[]
+  malformedClaims: MalformedClaimRecord[]
   plannedCreates: PlannedCreate[]
   createdPaths: CreatedPathRecord[]
   writeFailures: WriteFailureRecord[]
@@ -83,19 +88,12 @@ export interface MembershipBackfillReport {
   rollbackManifest: RollbackManifestEntry[]
 }
 
-export class ReportPathError extends Error {}
-
-/** Refuses any report path that is not absolute, or that resolves inside
- * this repository checkout — the full report must never land in Git. */
+/** Refuses any report path that is not absolute, or that resolves (after
+ * symlink resolution) inside this repository checkout — the full report
+ * must never land in Git. Thin wrapper over the shared
+ * assertPathOutsideRepo() (also used for --decisions-file/--from-report). */
 export function assertSafeReportPath(reportPath: string, repoRoot: string): void {
-  if (!isAbsolute(reportPath)) {
-    throw new ReportPathError('--report-path must be an absolute path.')
-  }
-  const normalizedRepo = repoRoot.replace(/\\/g, '/').replace(/\/$/, '')
-  const normalizedReport = reportPath.replace(/\\/g, '/')
-  if (normalizedReport === normalizedRepo || normalizedReport.startsWith(`${normalizedRepo}/`)) {
-    throw new ReportPathError('--report-path must be OUTSIDE the repository checkout.')
-  }
+  assertPathOutsideRepo('--report-path', reportPath, repoRoot)
 }
 
 export function writeReport(reportPath: string, repoRoot: string, report: MembershipBackfillReport): void {

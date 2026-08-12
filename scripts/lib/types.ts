@@ -68,6 +68,7 @@ export interface ConfirmedRelation {
 export type ConflictReason =
   | 'role_mismatch'
   | 'invalid_role'
+  | 'mixed_role_validity'
   | 'user_id_mismatch'
   | 'owner_role_not_admin'
   | 'existing_membership_conflict'
@@ -94,12 +95,30 @@ export interface OwnerAnomalyRecord {
   reason: 'owner_without_admin_membership'
 }
 
+/** A users/{uid} document with NO usable legacy relation claim at all (no
+ * valid `companyId`/`companies[]` entry could even be attempted) — reported
+ * so it is never silently invisible. Independent audit fix #6. */
+export interface UnknownUserRecord {
+  uid: string
+  reason: 'no_usable_relations'
+}
+
+/** A `users/{uid}.companies[]` array entry that could not even be parsed
+ * into a claim (not an object, or missing a usable `companyId`) — reported
+ * rather than silently dropped. Independent audit fix #6. */
+export interface MalformedClaimRecord {
+  uid: string
+  reason: 'malformed_companies_entry'
+}
+
 /** Output of the pure legacy-mapping stage — before decisions/existing-membership reconciliation. */
 export interface LegacyExtractionResult {
   confirmed: ConfirmedRelation[]
   conflicts: ConflictRecord[]
   orphans: OrphanRecord[]
   ownerAnomalies: OwnerAnomalyRecord[]
+  unknownUsers: UnknownUserRecord[]
+  malformedClaims: MalformedClaimRecord[]
 }
 
 // ── Manual decisions ────────────────────────────────────────────────────────
@@ -145,6 +164,12 @@ export interface PlanResult {
   unresolvedOwnerAnomalies: OwnerAnomalyRecord[]
   /** Companies whose PROJECTED final state (existing active admins + planned admin creates) has zero active admin. */
   companiesWithoutAdmin: string[]
+  /** Users with no usable legacy claim AND no existing valid canonical
+   * membership anywhere — informational, does not block apply (a Decision
+   * cannot target a bare uid without a companyId). Independent audit fix #6. */
+  unknownUsers: UnknownUserRecord[]
+  /** Malformed `companies[]` entries — informational, does not block apply. */
+  malformedClaims: MalformedClaimRecord[]
   /** True only when the plan may safely proceed to apply. */
   applyAllowed: boolean
 }

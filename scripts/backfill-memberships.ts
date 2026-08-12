@@ -23,7 +23,13 @@ import { validateDecisions } from './lib/decisions.ts'
 import { buildPlan } from './lib/planner.ts'
 import { readAllUsers, readAllCompanies, readAllExistingMemberships, computeExistingActiveAdmins } from './lib/firestoreReaders.ts'
 import { computeRelationSetChecksum, computeDecisionsChecksum, canonicalStringify, sha256Hex, sortRelations } from './lib/checksum.ts'
-import { writeReport, printSafeSummary, REPORT_SCHEMA_VERSION, type MembershipBackfillReport, type ReportCounts, type CreatedPathRecord, type WriteFailureRecord } from './lib/report.ts'
+import { assertPathOutsideRepo, UnsafePathError } from './lib/pathSafety.ts'
+import { validateSourceReportForRollback } from './lib/rollbackValidation.ts'
+import { computeObservedState, type TargetRelation } from './lib/observedState.ts'
+import {
+  writeReport, printSafeSummary, REPORT_SCHEMA_VERSION,
+  type MembershipBackfillReport, type ReportCounts, type CreatedPathRecord, type WriteFailureRecord,
+} from './lib/report.ts'
 import { relationKey, type Decision, type ConfirmedRelation } from './lib/types.ts'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -59,7 +65,8 @@ function emptyCounts(): ReportCounts {
   return {
     usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
     confirmedRelations: 0, plannedCreates: 0, created: 0, skipped: 0, conflicts: 0,
-    missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0, unresolved: 0,
+    missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
+    unknownUsers: 0, malformedClaims: 0, unresolved: 0,
   }
 }
 
@@ -75,6 +82,20 @@ async function main(): Promise<number> {
     opts = parseCliArgs(args)
   } catch (err) {
     if (err instanceof CliArgError) { console.error(`Argument error: ${err.message}`); return 2 }
+    throw err
+  }
+
+  // Independent audit fix #5: every path this tool will ever read from or
+  // write to outside Firestore itself is validated as an absolute path
+  // OUTSIDE the repository checkout BEFORE any credential acquisition or
+  // Firestore I/O — including --decisions-file and --from-report, not just
+  // --report-path. A single invalid path here means ZERO writes happen.
+  try {
+    assertPathOutsideRepo('--report-path', opts.reportPath!, REPO_ROOT)
+    if (opts.decisionsFile) assertPathOutsideRepo('--decisions-file', opts.decisionsFile, REPO_ROOT)
+    if (opts.fromReport) assertPathOutsideRepo('--from-report', opts.fromReport, REPO_ROOT)
+  } catch (err) {
+    if (err instanceof UnsafePathError) { console.error(`Path safety: ${err.message}`); return 2 }
     throw err
   }
 
@@ -127,10 +148,11 @@ async function main(): Promise<number> {
     readAllUsers(db), readAllCompanies(db), readAllExistingMemberships(db),
   ])
   const existingActiveAdmins = computeExistingActiveAdmins(existingMemberships)
+  const allCompanyIds = new Set(companies.map(c => c.docId))
   const extraction = extractLegacyRelations(users, companies)
-  const plan = buildPlan({ extraction, decisions: decisionsResult.decisions, existingMemberships, existingActiveAdmins })
+  const plan = buildPlan({ extraction, decisions: decisionsResult.decisions, existingMemberships, existingActiveAdmins, allCompanyIds })
 
-  const targetRelations = [
+  const targetRelations: TargetRelation[] = [
     ...plan.plannedCreates.map(c => ({ companyId: c.companyId, uid: c.uid, role: c.role, status: c.status })),
     ...plan.skipped.map(s => {
       const existing = existingMemberships.get(relationKey(s.companyId, s.uid))
@@ -153,12 +175,16 @@ async function main(): Promise<number> {
     missingCompanies: extraction.orphans.filter(o => o.reason === 'missing_company').length,
     missingUsers: extraction.orphans.filter(o => o.reason === 'missing_user').length,
     ownerWithoutAdminMembership: plan.unresolvedOwnerAnomalies.length,
+    unknownUsers: plan.unknownUsers.length,
+    malformedClaims: plan.malformedClaims.length,
     unresolved: plan.unresolvedConflicts.length + plan.unresolvedOrphans.length + plan.unresolvedOwnerAnomalies.length + plan.companiesWithoutAdmin.length,
   }
 
   const createdPaths: CreatedPathRecord[] = []
   const writeFailures: WriteFailureRecord[] = []
   let observedChecksum: string | null = null
+  let missing: { companyId: string; uid: string }[] = []
+  let differing: { companyId: string; uid: string }[] = []
 
   if (opts.mode === 'apply') {
     if (!plan.applyAllowed) {
@@ -187,25 +213,22 @@ async function main(): Promise<number> {
           writeFailures.push({ companyId: create.companyId, uid: create.uid, error: err instanceof Error ? err.message : 'unknown error' })
         }
       }
+      // Independent audit fix #4: read back REAL current state — a document
+      // that failed to write is a genuine MISSING entry in this checksum,
+      // never silently treated as if it had the expected role/status.
       const readBack = await readAllExistingMemberships(db)
-      observedChecksum = computeRelationSetChecksum([
-        ...plan.plannedCreates.map(c => {
-          const data = readBack.get(relationKey(c.companyId, c.uid))
-          return { companyId: c.companyId, uid: c.uid, role: (data?.role as string) ?? c.role, status: (data?.status as string) ?? c.status }
-        }),
-        ...plan.skipped.map(s => {
-          const data = readBack.get(relationKey(s.companyId, s.uid))
-          return { companyId: s.companyId, uid: s.uid, role: (data?.role as string) ?? 'unknown', status: (data?.status as string) ?? 'unknown' }
-        }),
-      ])
+      const observed = computeObservedState(targetRelations, readBack)
+      observedChecksum = observed.observedChecksum
+      missing = observed.missing
+      differing = observed.differing
     }
   }
 
   if (opts.mode === 'verify') {
-    observedChecksum = computeRelationSetChecksum(targetRelations.map(r => {
-      const data = existingMemberships.get(relationKey(r.companyId, r.uid))
-      return { companyId: r.companyId, uid: r.uid, role: (data?.role as string) ?? 'MISSING', status: (data?.status as string) ?? 'MISSING' }
-    }))
+    const observed = computeObservedState(targetRelations, existingMemberships)
+    observedChecksum = observed.observedChecksum
+    missing = observed.missing
+    differing = observed.differing
   }
 
   const report: MembershipBackfillReport = {
@@ -225,14 +248,16 @@ async function main(): Promise<number> {
     conflicts: plan.unresolvedConflicts,
     orphans: plan.unresolvedOrphans,
     ownerAnomalies: plan.unresolvedOwnerAnomalies,
+    unknownUsers: plan.unknownUsers,
+    malformedClaims: plan.malformedClaims,
     plannedCreates: plan.plannedCreates,
     createdPaths,
     writeFailures,
     verification: {
       performed: opts.mode === 'verify',
-      matchesTarget: opts.mode === 'verify' ? observedChecksum === targetChecksum : false,
-      missing: opts.mode === 'verify' ? targetRelations.filter(r => !existingMemberships.has(relationKey(r.companyId, r.uid))).map(r => ({ companyId: r.companyId, uid: r.uid })) : [],
-      differing: [],
+      matchesTarget: observedChecksum !== null && observedChecksum === targetChecksum,
+      missing,
+      differing,
     },
     rollbackManifest: createdPaths.map(c => ({ companyId: c.companyId, uid: c.uid, path: c.path })),
   }
@@ -242,8 +267,41 @@ async function main(): Promise<number> {
 
   if (opts.mode === 'apply' && !plan.applyAllowed) return 1
   if (opts.mode === 'apply' && writeFailures.length > 0) return 1
+  if (opts.mode === 'apply' && observedChecksum !== targetChecksum) return 1
   if (opts.mode === 'verify' && !report.verification.matchesTarget) return 1
   return 0
+}
+
+/** Deletes ONE rollback entry using Firestore's `lastUpdateTime` delete
+ * precondition (independent audit fix #3) — the get()-then-delete() gap is
+ * closed atomically: if the document changes between our read and the
+ * delete call, the precondition fails and the delete is refused, never
+ * silently succeeding against a document that changed underneath it. */
+async function rollbackOneEntry(
+  db: import('firebase-admin/firestore').Firestore,
+  entry: import('./lib/rollbackValidation.ts').ValidatedRollbackEntry,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const ref = db.collection('companies').doc(entry.companyId).collection('members').doc(entry.uid)
+  const snap = await ref.get()
+  if (!snap.exists) return { ok: false, reason: 'document no longer exists' }
+  const data = snap.data()!
+  if (data.uid !== entry.uid) return { ok: false, reason: 'uid no longer matches' }
+  if (data.role !== entry.expectedRole) return { ok: false, reason: 'role no longer matches the backfill run' }
+  if (data.status !== entry.expectedStatus) return { ok: false, reason: 'status changed since the backfill run' }
+  const createTimeIso = snap.createTime?.toDate().toISOString()
+  const updateTimeIso = snap.updateTime?.toDate().toISOString()
+  if (createTimeIso !== entry.createTimeIso) return { ok: false, reason: 'createTime metadata no longer matches the backfill run' }
+  if (updateTimeIso !== entry.updateTimeIso) return { ok: false, reason: 'document was modified after the backfill run' }
+
+  try {
+    await ref.delete({ lastUpdateTime: snap.updateTime! })
+    return { ok: true }
+  } catch {
+    // The lastUpdateTime precondition failed — the document was modified
+    // (or deleted+recreated) in the window between our read and this
+    // delete call. Refuse, never delete.
+    return { ok: false, reason: 'concurrent modification detected at delete time' }
+  }
 }
 
 async function runRollback(
@@ -255,37 +313,53 @@ async function runRollback(
   startedAt: string,
   reportPath: string,
 ): Promise<number> {
-  let sourceReport: MembershipBackfillReport
+  let sourceReportRaw: unknown
   try {
-    sourceReport = JSON.parse(readFileSync(fromReportPath, 'utf8')) as MembershipBackfillReport
+    sourceReportRaw = JSON.parse(readFileSync(fromReportPath, 'utf8'))
   } catch {
     console.error('Failed to read/parse --from-report.')
+    return 2
+  }
+
+  // Independent audit fix #3: full runtime validation of the source report
+  // (schemaVersion, mode==='apply', environment/project match, unique
+  // canonical manifest paths, cross-referenced against createdPaths AND
+  // plannedCreates) BEFORE any Firestore read/delete is attempted. Any
+  // structural problem rejects the entire rollback — zero deletions.
+  const validated = validateSourceReportForRollback(sourceReportRaw, { environment, projectId })
+  if (!validated.ok) {
+    console.error(`Rollback refused: source report failed validation:\n${validated.errors.map(e => `  ${e}`).join('\n')}`)
+    const report: MembershipBackfillReport = {
+      schemaVersion: REPORT_SCHEMA_VERSION,
+      mode: 'rollback-from-report',
+      environment,
+      projectId,
+      sourceGitSha: readSourceGitSha(),
+      runId,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      counts: emptyCounts(),
+      sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null,
+      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [],
+      plannedCreates: [], createdPaths: [], writeFailures: [],
+      verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
+      rollbackManifest: [],
+    }
+    writeReport(reportPath, REPO_ROOT, report)
+    printSafeSummary(report)
     return 2
   }
 
   const removed: { companyId: string; uid: string; path: string }[] = []
   const refused: { companyId: string; uid: string; path: string; reason: string }[] = []
 
-  for (const entry of sourceReport.rollbackManifest) {
-    const createdRecord = sourceReport.createdPaths.find(c => c.companyId === entry.companyId && c.uid === entry.uid)
-    const ref = db.collection('companies').doc(entry.companyId).collection('members').doc(entry.uid)
-    const snap = await ref.get()
-    if (!snap.exists) { refused.push({ ...entry, reason: 'document no longer exists' }); continue }
-    const data = snap.data()!
-    if (data.uid !== entry.uid) { refused.push({ ...entry, reason: 'uid no longer matches' }); continue }
-    if (data.status !== 'active') { refused.push({ ...entry, reason: 'status changed since backfill' }); continue }
-    const createTimeIso = snap.createTime?.toDate().toISOString()
-    const updateTimeIso = snap.updateTime?.toDate().toISOString()
-    if (!createdRecord?.createTimeIso || createTimeIso !== createdRecord.createTimeIso) {
-      refused.push({ ...entry, reason: 'createTime metadata no longer matches the backfill run - possibly recreated' }); continue
-    }
-    if (!createdRecord?.updateTimeIso || updateTimeIso !== createdRecord.updateTimeIso) {
-      refused.push({ ...entry, reason: 'document was modified after the backfill run' }); continue
-    }
-    await ref.delete()
-    removed.push(entry)
+  for (const entry of validated.entries) {
+    const result = await rollbackOneEntry(db, entry)
+    if (result.ok) removed.push({ companyId: entry.companyId, uid: entry.uid, path: entry.path })
+    else refused.push({ companyId: entry.companyId, uid: entry.uid, path: entry.path, reason: result.reason })
   }
 
+  const sourceReport = sourceReportRaw as MembershipBackfillReport
   const report: MembershipBackfillReport = {
     schemaVersion: REPORT_SCHEMA_VERSION,
     mode: 'rollback-from-report',
@@ -303,6 +377,8 @@ async function runRollback(
     conflicts: refused.map(r => ({ companyId: r.companyId, uid: r.uid, reason: 'existing_membership_conflict' as const })),
     orphans: [],
     ownerAnomalies: [],
+    unknownUsers: [],
+    malformedClaims: [],
     plannedCreates: [],
     createdPaths: [],
     writeFailures: [],

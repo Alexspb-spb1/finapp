@@ -135,12 +135,53 @@ describe('extractLegacyRelations — internal id mismatch', () => {
   })
 })
 
-describe('extractLegacyRelations — malformed companies[] entries', () => {
-  it('ignores a companies[] entry with no companyId rather than crashing or guessing', () => {
+describe('extractLegacyRelations — malformed companies[] entries (independent audit fix #6)', () => {
+  it('does not crash or guess on a companies[] entry with no companyId — and reports it, never silently drops it', () => {
     const result = extractLegacyRelations(
       [user('u1', { companyId: 'co_a', role: 'admin', companies: [{ role: 'viewer' }, 'not-an-object', null] })],
       [company('co_a')],
     )
     expect(result.confirmed).toEqual([{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }])
+    expect(result.malformedClaims).toEqual([{ uid: 'u1', reason: 'malformed_companies_entry' }])
+  })
+
+  it('a user whose ONLY companies[] entries are malformed still gets a malformedClaims record', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { companies: [{ role: 'viewer' }] })],
+      [],
+    )
+    expect(result.malformedClaims).toEqual([{ uid: 'u1', reason: 'malformed_companies_entry' }])
+  })
+})
+
+describe('extractLegacyRelations — mixed valid+invalid role claims for the same pair (independent audit fix #6)', () => {
+  it('a pair with one VALID and one INVALID role claim becomes a conflict, never an auto-confirmed relation', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { companyId: 'co_a', role: 'admin', companies: [{ companyId: 'co_a', role: 'not-a-real-role' }] })],
+      [company('co_a')],
+    )
+    expect(result.confirmed).toEqual([])
+    expect(result.conflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'mixed_role_validity' }])
+  })
+})
+
+describe('extractLegacyRelations — users with no usable relation at all (independent audit fix #6)', () => {
+  it('a user document with neither companyId nor companies[] is reported as an unknown user', () => {
+    const result = extractLegacyRelations([user('u1', { name: 'no legacy relation at all' })], [])
+    expect(result.unknownUsers).toEqual([{ uid: 'u1', reason: 'no_usable_relations' }])
+    expect(result.confirmed).toEqual([])
+    expect(result.conflicts).toEqual([])
+    expect(result.orphans).toEqual([])
+  })
+
+  it('a user document with only malformed companies[] entries (no companyId, no valid entries) is ALSO an unknown user', () => {
+    const result = extractLegacyRelations([user('u1', { companies: ['not-an-object'] })], [])
+    expect(result.unknownUsers).toEqual([{ uid: 'u1', reason: 'no_usable_relations' }])
+  })
+
+  it('a user with at least one usable claim (even if it becomes an orphan) is NOT reported as unknown', () => {
+    const result = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'admin' })], [])
+    expect(result.unknownUsers).toEqual([])
+    expect(result.orphans).toEqual([{ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' }])
   })
 })
