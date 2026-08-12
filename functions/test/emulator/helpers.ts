@@ -125,3 +125,57 @@ export async function callAuthzProbeRaw(payload: unknown): Promise<unknown> {
   const result = await callable(payload)
   return result.data
 }
+
+/** Calls the real `createCompany` callable through the Functions Emulator, using whichever user is currently signed in on the client auth instance. */
+export async function callCreateCompany(payload: unknown): Promise<unknown> {
+  const callable = httpsCallable(getClientFunctions(), 'createCompany')
+  const result = await callable(payload)
+  return result.data
+}
+
+/** Reads companies/{companyId}/members/{uid} directly via the Admin SDK, for assertions in createCompany tests. */
+export async function getMembershipDoc(companyId: string, uid: string): Promise<Record<string, unknown> | undefined> {
+  const snap = await db.collection('companies').doc(companyId).collection('members').doc(uid).get()
+  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined
+}
+
+/** Reads companies/{companyId} directly via the Admin SDK. */
+export async function getCompanyDoc(companyId: string): Promise<Record<string, unknown> | undefined> {
+  const snap = await db.collection('companies').doc(companyId).get()
+  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined
+}
+
+/** Reads company_data/{companyId} directly via the Admin SDK. */
+export async function getCompanyDataDoc(companyId: string): Promise<Record<string, unknown> | undefined> {
+  const snap = await db.collection('company_data').doc(companyId).get()
+  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined
+}
+
+/** Reads users/{uid} directly via the Admin SDK. */
+export async function getUserDoc(uid: string): Promise<Record<string, unknown> | undefined> {
+  const snap = await db.collection('users').doc(uid).get()
+  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined
+}
+
+/** Counts companies owned by a given uid — used to assert "exactly one company" across retries/concurrency. */
+export async function countCompaniesOwnedBy(uid: string): Promise<number> {
+  const snap = await db.collection('companies').where('ownerId', '==', uid).get()
+  return snap.size
+}
+
+/** Writes an arbitrary raw users/{uid} document directly via the Admin SDK — for the "existing legacy profile without a bootstrap receipt" scenario. */
+export async function seedRawUserDoc(uid: string, raw: Record<string, unknown>): Promise<void> {
+  await db.collection('users').doc(uid).set(raw)
+}
+
+/** Reads the SEC-004 bootstrap receipt (user_bootstrap/{uid}) directly via the Admin SDK. */
+export async function getBootstrapReceipt(uid: string): Promise<Record<string, unknown> | undefined> {
+  const snap = await db.collection('user_bootstrap').doc(uid).get()
+  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined
+}
+
+/** Counts companies/{companyId}/audit_events documents — used to assert exactly-once audit writes across retries. */
+export async function countAuditEvents(companyId: string): Promise<number> {
+  const snap = await db.collection('companies').doc(companyId).collection('audit_events').get()
+  return snap.size
+}

@@ -1,13 +1,57 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { TrendingUp, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react'
-import { authStore } from '../store/authStore'
+import { authStore, subscribeAuth } from '../store/authStore'
+import { resolveRegistrationRecovery } from './registrationRecovery'
 
-type Step = 'account' | 'company'
+type Step = 'account' | 'company' | 'setup_incomplete'
 
 export default function Register() {
   const navigate = useNavigate()
-  const [step, setStep] = useState<Step>('account')
+  // Independent audit fix #2: an already-authenticated user can land here
+  // directly (via ProtectedRoute's setup_incomplete redirect) without ever
+  // going through steps 'account'/'company' — initialize straight into the
+  // resumable screen when that's already the case, and keep tracking it
+  // (subscribeAuth below) in case status changes after mount/reload.
+  const [step, setStep] = useState<Step>(
+    () => authStore.getAuthDataStatus() === 'setup_incomplete' ? 'setup_incomplete' : 'account',
+  )
+  const [hasResumable, setHasResumable] = useState(() => authStore.getResumableSetupSummary() !== null)
+
+  // Independent audit fix (second round): closes the reload-recovery gap —
+  // a user whose canonical profile/company loaded successfully into
+  // `ready` (e.g. after reloading past a transient setup_incomplete) must
+  // be sent home, not left stranded on this form. resolveRegistrationRecovery()
+  // is the single source of truth for that decision (see registrationRecovery.ts).
+  //
+  // Subscribe FIRST, then immediately sync once with the CURRENT state —
+  // syncing only from future subscribeAuth events would miss a state
+  // change that already happened between authStore module init and this
+  // effect running (the classic render/effect gap).
+  useEffect(() => {
+    function sync() {
+      const action = resolveRegistrationRecovery({
+        status: authStore.getAuthDataStatus(),
+        hasCanonicalUser: authStore.getCurrentUser() !== null,
+        hasCanonicalCompany: authStore.getCurrentCompany() !== null,
+        hasResumablePending: authStore.getResumableSetupSummary() !== null,
+      })
+      if (action.type === 'navigate_home') {
+        navigate('/', { replace: true })
+      } else if (action.type === 'show_retry') {
+        setStep('setup_incomplete')
+        setHasResumable(true)
+      } else if (action.type === 'show_re_entry') {
+        setStep('setup_incomplete')
+        setHasResumable(false)
+      }
+      // 'wait' (loading) and 'none' (signed_out/data_error) — stay put,
+      // never a false navigate to home.
+    }
+    const unsub = subscribeAuth(sync)
+    sync()
+    return () => { unsub() }
+  }, [navigate])
 
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -56,8 +100,46 @@ export default function Register() {
     } else if (result.error === 'email_taken') {
       setStep('account')
       setError('Пользователь с таким email уже существует')
+    } else if (result.error === 'setup_incomplete') {
+      // Аккаунт создан, но серверное создание компании не завершилось —
+      // НЕ переходим на главную и НЕ создаём никакого локального fallback
+      // (SEC-004). Показываем отдельный экран с безопасным повтором,
+      // который использует тот же идемпотентный запрос, а не создаёт
+      // второго пользователя Auth.
+      setStep('setup_incomplete')
     } else {
       setError('Ошибка регистрации. Попробуйте ещё раз.')
+    }
+  }
+
+  async function handleRetrySetup() {
+    setError('')
+    setLoading(true)
+    const result = await authStore.completeCompanySetup()
+    setLoading(false)
+
+    if (result.ok) {
+      navigate('/', { replace: true })
+    } else {
+      setError('Не удалось завершить создание компании. Попробуйте ещё раз.')
+    }
+  }
+
+  // Independent audit fix #2: reached when there is no usable pending-setup
+  // record for the current uid (cleared storage, different device/browser).
+  // Re-collects ONLY name/company data — never the password, never a new
+  // Firebase Auth user — and delegates to authStore.startCompanySetup().
+  async function handleStartSetup(e: React.FormEvent) {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    const result = await authStore.startCompanySetup({ ownerName: name, companyName, legalType, inn: inn || undefined })
+    setLoading(false)
+
+    if (result.ok) {
+      navigate('/', { replace: true })
+    } else {
+      setError('Не удалось завершить создание компании. Попробуйте ещё раз.')
     }
   }
 
@@ -98,7 +180,89 @@ export default function Register() {
         </div>
 
         <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
-          {step === 'account' ? (
+          {step === 'setup_incomplete' ? (
+            <>
+              <h2 className="text-lg font-semibold text-white mb-1">Аккаунт создан, компания — нет</h2>
+              <p className="text-slate-400 text-sm mb-6">
+                Ваш аккаунт создан, но настройка компании на сервере не завершилась. Это можно безопасно повторить —
+                пароль вводить снова не нужно.
+              </p>
+
+              {error && (
+                <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl px-4 py-3 text-sm mb-4">
+                  <AlertCircle size={16} className="shrink-0" /> {error}
+                </div>
+              )}
+
+              {hasResumable ? (
+                <button type="button" onClick={handleRetrySetup} disabled={loading}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                  {loading && (
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                  )}
+                  {loading ? 'Повторяем...' : 'Повторить создание компании'}
+                </button>
+              ) : (
+                // Нет сохранённого pending-состояния для текущего пользователя
+                // (другое устройство/браузер, очищенный localStorage) — просим
+                // заново заполнить только имя/данные компании. Пароль здесь не
+                // запрашивается и createUserWithEmailAndPassword не вызывается
+                // (authStore.startCompanySetup).
+                <form onSubmit={handleStartSetup} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1.5">Ваше имя</label>
+                    <input
+                      value={name} onChange={e => setName(e.target.value)}
+                      placeholder="Иван Иванов" required
+                      className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-slate-500 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1.5">Форма организации</label>
+                    <div className="flex rounded-xl overflow-hidden border border-white/10">
+                      {(['ooo', 'ip'] as const).map(t => (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => setLegalType(t)}
+                          className={`flex-1 py-3 text-sm font-semibold transition-all ${
+                            legalType === t
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-white/5 text-slate-400 hover:bg-white/10'
+                          }`}
+                        >
+                          {t === 'ooo' ? 'ООО' : 'ИП'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                      {legalType === 'ooo' ? 'Название компании' : 'ФИО предпринимателя'}
+                    </label>
+                    <input
+                      value={companyName} onChange={e => setCompanyName(e.target.value)}
+                      placeholder={legalType === 'ooo' ? 'Моя Компания' : 'Иванов Иван Иванович'} required
+                      className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-slate-500 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    />
+                  </div>
+                  <button type="submit" disabled={loading}
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                    {loading && (
+                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                      </svg>
+                    )}
+                    {loading ? 'Завершаем...' : 'Завершить создание компании'}
+                  </button>
+                </form>
+              )}
+            </>
+          ) : step === 'account' ? (
             <>
               <h2 className="text-lg font-semibold text-white mb-1">Создать аккаунт</h2>
               <p className="text-slate-400 text-sm mb-6">Шаг 1 из 2 — данные пользователя</p>
