@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { TrendingUp, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { authStore, subscribeAuth } from '../store/authStore'
+import { resolveRegistrationRecovery } from './registrationRecovery'
 
 type Step = 'account' | 'company' | 'setup_incomplete'
 
@@ -17,15 +18,40 @@ export default function Register() {
   )
   const [hasResumable, setHasResumable] = useState(() => authStore.getResumableSetupSummary() !== null)
 
+  // Independent audit fix (second round): closes the reload-recovery gap —
+  // a user whose canonical profile/company loaded successfully into
+  // `ready` (e.g. after reloading past a transient setup_incomplete) must
+  // be sent home, not left stranded on this form. resolveRegistrationRecovery()
+  // is the single source of truth for that decision (see registrationRecovery.ts).
+  //
+  // Subscribe FIRST, then immediately sync once with the CURRENT state —
+  // syncing only from future subscribeAuth events would miss a state
+  // change that already happened between authStore module init and this
+  // effect running (the classic render/effect gap).
   useEffect(() => {
-    const unsub = subscribeAuth(() => {
-      if (authStore.getAuthDataStatus() === 'setup_incomplete') {
+    function sync() {
+      const action = resolveRegistrationRecovery({
+        status: authStore.getAuthDataStatus(),
+        hasCanonicalUser: authStore.getCurrentUser() !== null,
+        hasCanonicalCompany: authStore.getCurrentCompany() !== null,
+        hasResumablePending: authStore.getResumableSetupSummary() !== null,
+      })
+      if (action.type === 'navigate_home') {
+        navigate('/', { replace: true })
+      } else if (action.type === 'show_retry') {
         setStep('setup_incomplete')
-        setHasResumable(authStore.getResumableSetupSummary() !== null)
+        setHasResumable(true)
+      } else if (action.type === 'show_re_entry') {
+        setStep('setup_incomplete')
+        setHasResumable(false)
       }
-    })
+      // 'wait' (loading) and 'none' (signed_out/data_error) — stay put,
+      // never a false navigate to home.
+    }
+    const unsub = subscribeAuth(sync)
+    sync()
     return () => { unsub() }
-  }, [])
+  }, [navigate])
 
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
