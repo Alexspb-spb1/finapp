@@ -465,4 +465,196 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     expect(result.report?.counts.created).toBe(1)
     expect(result.report?.counts.existingMembershipsRead).toBe(0)
   })
+
+  // ── Independent audit (2nd round) fix #1 ─────────────────────────────────
+  it('verify returns a non-zero exit code when an existing membership is corrupted, even if role/status happen to match', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    runCli(baseArgs('apply'))
+    expect(await getMembership(companyId, uid)).toBeDefined()
+
+    // Corrupt the just-created document in place — right role/status, extra field.
+    await seedExistingMembership(companyId, uid, { uid, role: 'admin', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now(), injected: true })
+
+    const result = runCli(baseArgs('verify'))
+
+    // A fresh verify re-plans from scratch: the corrupted document is
+    // re-classified by classifyExistingMembership() as 'invalid' BEFORE it
+    // could ever become a target relation, so it surfaces as a blocking
+    // existing_membership_conflict (not as an observedState `differing`
+    // entry, which only ever applies to relations that WERE part of the
+    // target). Either way, verify must refuse — proven here via the
+    // conflict route; observedState's own schema-strict `differing` path is
+    // proven directly and exhaustively in observedState.test.ts.
+    expect(result.code).toBe(1)
+    expect(result.report?.verification.matchesTarget).toBe(false)
+    expect(result.report?.conflicts).toContainEqual({ companyId, uid, reason: 'existing_membership_conflict' })
+  })
+
+  it('verify cannot pass with an unresolved conflict, even when target and observed are both empty (no false PASS via empty-checksum equality)', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    // Two different valid roles for the same pair -> unresolved role_mismatch conflict.
+    // Nothing is ever planned for this pair, so target relations stay empty
+    // and nothing was ever applied, so observed relations stay empty too —
+    // an empty-array checksum would trivially "match" without the
+    // plan.applyAllowed gate.
+    await seedUser(uid, { companyId, role: 'admin', companies: [{ companyId, role: 'viewer' }] })
+
+    const result = runCli(baseArgs('verify'))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.verification.matchesTarget).toBe(false)
+    expect(result.report?.conflicts.some(c => c.reason === 'role_mismatch')).toBe(true)
+  })
+
+  // ── Independent audit (2nd round) fix #2 ─────────────────────────────────
+  it('a plain {seconds,nanoseconds} admin document (not a real Timestamp) does not satisfy the last-admin gate', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    // A hand-crafted JSON-shaped "Timestamp" — exactly what a real Timestamp
+    // serializes to, but never actually written by the Admin SDK's own
+    // Timestamp type. Firestore happily stores it as a plain map.
+    const fakeTs = { seconds: 1700000000, nanoseconds: 0 }
+    await seedExistingMembership(companyId, uid, { uid, role: 'admin', status: 'active', createdAt: fakeTs, updatedAt: fakeTs })
+
+    const result = runCli(baseArgs('apply'))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.counts.created).toBe(0)
+  })
+
+  // ── Independent audit (2nd round) fix #3 ─────────────────────────────────
+  it('an unknown user (no usable legacy relation) blocks BOTH apply and verify until acknowledged', async () => {
+    const uid = uniqueId('u')
+    await seedUser(uid, { name: 'no legacy relation at all' })
+
+    const applyResult = runCli(baseArgs('apply'))
+    expect(applyResult.code).toBe(1)
+    expect(applyResult.report?.unknownUsers).toContainEqual({ uid, reason: 'no_usable_relations' })
+
+    const verifyResult = runCli(baseArgs('verify'))
+    expect(verifyResult.code).toBe(1)
+    expect(verifyResult.report?.verification.matchesTarget).toBe(false)
+  })
+
+  it('a user-level exclude decision unblocks apply for an acknowledged unknown user', async () => {
+    const uid = uniqueId('u')
+    await seedUser(uid, { name: 'no legacy relation at all' })
+    const decisions = decisionsFile([{ uid, resolution: 'exclude', reason: 'confirmed dead account', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+
+    const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
+
+    expect(result.code).toBe(0)
+    expect(result.report?.unknownUsers).toEqual([])
+  })
+
+  it('a malformed companies[] entry blocks apply until acknowledged', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    // A usable primary claim PLUS a malformed companies[] entry — this user
+    // is not "unknown" (has a usable claim), but the malformed entry alone
+    // must still block apply.
+    await seedUser(uid, { companyId, role: 'admin', companies: [{ role: 'viewer' }] }) // missing companyId in the entry
+
+    const result = runCli(baseArgs('apply'))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.malformedClaims).toContainEqual({ uid, reason: 'malformed_companies_entry' })
+    expect(await getMembership(companyId, uid)).toBeUndefined()
+  })
+
+  // ── Independent audit (2nd round) fix #4 ─────────────────────────────────
+  it('an id-mismatched user with NO usable claims is surfaced as unknown, not silently dropped', async () => {
+    const uid = uniqueId('u')
+    await seedUser(uid, { id: 'someone_else', name: 'id mismatch, no companyId/companies[] at all' })
+
+    const result = runCli(baseArgs('dry-run'))
+
+    expect(result.report?.unknownUsers).toContainEqual({ uid, reason: 'no_usable_relations' })
+  })
+
+  it('a user_id_mismatch claim referencing a MISSING company cannot be resolved via confirm_role — stays a missing_company orphan', async () => {
+    const uid = uniqueId('u'); const ghostCompanyId = uniqueId('co_ghost')
+    await seedUser(uid, { id: 'someone_else', companyId: ghostCompanyId, role: 'admin' })
+    const decisions = decisionsFile([{ uid, companyId: ghostCompanyId, resolution: 'confirm_role', role: 'admin', reason: 'trying to force it through anyway', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+
+    const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.orphans).toContainEqual({ companyId: ghostCompanyId, uid, reason: 'missing_company' })
+    expect(await getMembership(ghostCompanyId, uid)).toBeUndefined()
+  })
+
+  // ── Independent audit (2nd round) fix #5 ─────────────────────────────────
+  it('changing a confirm_role decision from admin to viewer changes decisionsChecksum in the real report', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin', companies: [{ companyId, role: 'viewer' }] })
+
+    const adminDecisions = decisionsFile([{ uid, companyId, resolution: 'confirm_role', role: 'admin', reason: 'checked with owner', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const viewerDecisions = decisionsFile([{ uid, companyId, resolution: 'confirm_role', role: 'viewer', reason: 'checked with owner', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+
+    const adminResult = runCli(baseArgs('dry-run', ['--decisions-file', adminDecisions]))
+    const viewerResult = runCli(baseArgs('dry-run', ['--decisions-file', viewerDecisions]))
+
+    expect(adminResult.report?.decisionsChecksum).not.toBe(viewerResult.report?.decisionsChecksum)
+  })
+
+  // ── Independent audit (2nd round) fix #6 ─────────────────────────────────
+  it('a companyId/uid pair containing "::" does not collide with a different pair across the pipeline end-to-end', async () => {
+    const uid = `u::${uniqueId('x')}`
+    const companyId = `co::${uniqueId('y')}`
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+
+    const result = runCli(baseArgs('apply'))
+
+    expect(result.code).toBe(0)
+    expect(result.report?.counts.created).toBe(1)
+    const membership = await getMembership(companyId, uid)
+    expect(membership).toMatchObject({ uid, role: 'admin', status: 'active' })
+  })
+
+  // ── Independent audit (2nd round) fix #7 ─────────────────────────────────
+  // NOTE: a full re-planning `verify` run re-classifies ANY schema-corrupted
+  // existing document as 'invalid' in classifyExistingMembership() BEFORE it
+  // could ever reach a target relation — so end-to-end it surfaces as an
+  // existing_membership_conflict, not as computeObservedState's `differing`
+  // (which only applies to a relation that WAS part of the target). Both
+  // routes are legitimate and both make verify refuse; observedState's own
+  // schema-strict `differing`/checksum behavior is proven directly and
+  // exhaustively at the unit level in observedState.test.ts.
+  it('an observed membership with the correct role/status but a WRONG uid does not pass verify', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    runCli(baseArgs('apply'))
+
+    // Overwrite with a document that has the right role/status but a
+    // corrupted uid field — simulating a document tampered with directly.
+    await seedExistingMembership(companyId, uid, { uid: 'someone_else', role: 'admin', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now() })
+
+    const result = runCli(baseArgs('verify'))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.verification.matchesTarget).toBe(false)
+    expect(result.report?.conflicts).toContainEqual({ companyId, uid, reason: 'existing_membership_conflict' })
+  })
+
+  it('an observed membership with the correct role/status but an EXTRA field does not pass verify', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    runCli(baseArgs('apply'))
+
+    await seedExistingMembership(companyId, uid, { uid, role: 'admin', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now(), backdoor: true })
+
+    const result = runCli(baseArgs('verify'))
+
+    expect(result.code).toBe(1)
+    expect(result.report?.verification.matchesTarget).toBe(false)
+    expect(result.report?.conflicts).toContainEqual({ companyId, uid, reason: 'existing_membership_conflict' })
+  })
 })

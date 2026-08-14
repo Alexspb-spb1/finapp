@@ -8,6 +8,7 @@
 // server-assigned and not part of "did the intended set of relations get
 // created", which is what this checksum is meant to prove.
 import { createHash } from 'node:crypto'
+import type { Decision } from './types.ts'
 
 /** Recursively sorts object keys so two structurally-equal values with
  * different key insertion order serialize identically. Arrays keep their
@@ -37,6 +38,15 @@ export interface LogicalRelation {
   role: string
   status: string
   invitedBy?: string
+  /** Independent audit fix #7 (2nd round): whether the document this
+   * relation was derived from passed strict canonical-schema validation
+   * (see membershipValidation.ts's isStrictlyValidActiveMembership). Target
+   * relations (the intended state) are always schema-valid by construction
+   * and omit this field (defaults to `true`); OBSERVED relations set it
+   * explicitly so a document with matching role/status but a corrupted
+   * schema (wrong uid, missing/fake timestamps, extra fields) still
+   * produces a checksum that differs from the target's. */
+  schemaValid?: boolean
 }
 
 /** Sorts by companyId then uid — the ONE fixed order every checksum in this
@@ -60,18 +70,34 @@ export function computeRelationSetChecksum(relations: readonly LogicalRelation[]
     role: r.role,
     status: r.status,
     invitedBy: r.invitedBy ?? null,
+    schemaValid: r.schemaValid ?? true,
   }))
   return sha256Hex(canonicalStringify(canonical))
 }
 
-/** Checksum over the raw decisions array (order-independent — sorted by
- * companyId,uid,resolution before hashing) — used to prove which decisions
- * file content backed a given run without embedding the file itself. */
-export function computeDecisionsChecksum(decisions: readonly { companyId: string; uid: string; resolution: string }[]): string {
-  const sorted = [...decisions].sort((a, b) => {
-    const ka = `${a.companyId} ${a.uid} ${a.resolution}`
-    const kb = `${b.companyId} ${b.uid} ${b.resolution}`
-    return ka < kb ? -1 : ka > kb ? 1 : 0
-  })
+/** Checksum over the FULL normalized decision — independent audit fix #5
+ * (2nd round): every field that can change the meaning of a decision
+ * (`uid`, `companyId`, `resolution`, `role`, `reason`, `reviewedBy`,
+ * `reviewedAt`) is included explicitly; changing ANY one of them changes
+ * the checksum. Sorting is by the canonical JSON representation of each
+ * normalized decision itself (not a partial composite key), so it is fully
+ * deterministic and order-independent even when many decisions share the
+ * same (companyId, uid, resolution) — which cannot happen for a valid
+ * decisions file (duplicates are rejected), but the checksum must not rely
+ * on that invariant to stay well-defined. */
+export function computeDecisionsChecksum(decisions: readonly Decision[]): string {
+  const canonical = decisions.map(d => ({
+    uid: d.uid,
+    companyId: d.companyId ?? null,
+    resolution: d.resolution,
+    role: d.role ?? null,
+    reason: d.reason,
+    reviewedBy: d.reviewedBy,
+    reviewedAt: d.reviewedAt,
+  }))
+  const sorted = canonical
+    .map(c => canonicalStringify(c))
+    .sort()
+    .map(s => JSON.parse(s) as unknown)
   return sha256Hex(canonicalStringify(sorted))
 }

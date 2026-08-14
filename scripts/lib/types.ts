@@ -41,21 +41,34 @@ export interface RelationSource {
   role: Role
 }
 
-// Built via String.fromCharCode (not a literal in source) so the exact
-// delimiter character is unambiguous no matter how this file is edited or
-// re-encoded — two ASCII colons, never producible by a Firestore document ID.
-const RELATION_KEY_DELIMITER = String.fromCharCode(58, 58)
-
-/** A relation pair key with an explicit, unambiguous delimiter — companyId
- * and uid can never collide across it. Always use this (and splitRelationKey)
- * rather than hand-building "companyId+uid" strings. */
+// Independent audit (2nd round) fix #6: a hand-built delimiter — even a
+// carefully chosen one like "::" — is never truly collision-free, because
+// companyId/uid come from untrusted legacy Firestore data and can contain
+// ANY string content, including the delimiter itself, embedded NUL bytes,
+// whitespace, or arbitrary Unicode. `relationKey('co::a', 'u1')` and
+// `relationKey('co', ':a::u1')` must never be able to produce the same key.
+//
+// JSON.stringify of a 2-element string tuple is collision-free BY
+// CONSTRUCTION: JSON string encoding escapes every character that could
+// make the array boundary ambiguous (quotes, backslashes, control
+// characters), so two different (companyId, uid) pairs can never serialize
+// to the same JSON text. splitRelationKey() strictly re-validates the
+// parsed shape (exactly a 2-element string array) rather than trusting it.
 export function relationKey(companyId: string, uid: string): string {
-  return companyId + RELATION_KEY_DELIMITER + uid
+  return JSON.stringify([companyId, uid])
 }
 
 export function splitRelationKey(key: string): [companyId: string, uid: string] {
-  const parts = key.split(RELATION_KEY_DELIMITER)
-  return [parts[0] ?? '', parts[1] ?? '']
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(key)
+  } catch {
+    throw new Error(`splitRelationKey: not a valid relation key (invalid JSON): ${key}`)
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 2 || typeof parsed[0] !== 'string' || typeof parsed[1] !== 'string') {
+    throw new Error(`splitRelationKey: not a valid relation key (expected a 2-element string tuple): ${key}`)
+  }
+  return [parsed[0], parsed[1]]
 }
 
 export interface ConfirmedRelation {
@@ -127,7 +140,12 @@ export type DecisionResolution = 'confirm_role' | 'accept_existing' | 'exclude'
 
 export interface Decision {
   uid: string
-  companyId: string
+  /** Omitted ONLY for a "user-level" decision (independent audit 2nd round
+   * fix #3) — acknowledges an `unknownUsers`/`malformedClaims` entry, which
+   * is keyed by uid alone (no companyId exists to target). A companyId-less
+   * decision must have `resolution === 'exclude'` — `confirm_role` and
+   * `accept_existing` always require a specific (companyId, uid) relation. */
+  companyId?: string
   resolution: DecisionResolution
   reason: string
   reviewedBy: string
@@ -164,11 +182,15 @@ export interface PlanResult {
   unresolvedOwnerAnomalies: OwnerAnomalyRecord[]
   /** Companies whose PROJECTED final state (existing active admins + planned admin creates) has zero active admin. */
   companiesWithoutAdmin: string[]
-  /** Users with no usable legacy claim AND no existing valid canonical
-   * membership anywhere — informational, does not block apply (a Decision
-   * cannot target a bare uid without a companyId). Independent audit fix #6. */
+  /** UNRESOLVED users with no usable legacy claim AND no existing valid
+   * canonical membership anywhere. Independent audit fix #6 (1st round)
+   * surfaced these; independent audit fix #3 (2nd round) made them
+   * BLOCKING — apply/verify may not proceed while this is non-empty. A
+   * user-level `exclude` decision (Decision with no `companyId`, matching
+   * `uid`) acknowledges and removes an entry from this list. */
   unknownUsers: UnknownUserRecord[]
-  /** Malformed `companies[]` entries — informational, does not block apply. */
+  /** UNRESOLVED malformed `companies[]` entries — same blocking/acknowledgement
+   * model as `unknownUsers` above (2nd round fix #3). */
   malformedClaims: MalformedClaimRecord[]
   /** True only when the plan may safely proceed to apply. */
   applyAllowed: boolean

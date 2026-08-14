@@ -84,9 +84,29 @@ export function extractLegacyRelations(
       const malformed = { count: 0 }
       const claims = extractRawClaims(user.data, malformed)
       if (malformed.count > 0) malformedClaims.push({ uid: user.docId, reason: 'malformed_companies_entry' })
+
+      // Independent audit fix #4 (2nd round): a claim under an id-mismatched
+      // document that points at a company which does NOT exist must stay a
+      // `missing_company` ORPHAN, not a `user_id_mismatch` CONFLICT — orphans
+      // can only ever be acknowledged via `exclude` (planner.ts never lets a
+      // decision create a membership under a nonexistent company), whereas a
+      // conflict could previously be waved through with `confirm_role` even
+      // though the target company never existed.
       const seenCompanyIds = new Set(claims.map(c => c.companyId))
       for (const companyId of seenCompanyIds) {
-        conflicts.push({ companyId, uid: user.docId, reason: 'user_id_mismatch' })
+        if (companyIds.has(companyId)) {
+          conflicts.push({ companyId, uid: user.docId, reason: 'user_id_mismatch' })
+        } else {
+          orphans.push({ companyId, uid: user.docId, reason: 'missing_company' })
+        }
+      }
+
+      // Independent audit fix #3 (2nd round): an id-mismatched document with
+      // NO usable claims at all (no companyId, no companies[] entries) must
+      // never silently vanish — same "unknown user" treatment as a
+      // normal (non-mismatched) user with zero usable relations.
+      if (seenCompanyIds.size === 0) {
+        unknownUsers.push({ uid: user.docId, reason: 'no_usable_relations' })
       }
       continue
     }

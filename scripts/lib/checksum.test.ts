@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { canonicalStringify, sha256Hex, computeRelationSetChecksum, computeDecisionsChecksum, sortRelations } from './checksum.ts'
+import type { Decision } from './types.ts'
+
+function decision(overrides: Partial<Decision> = {}): Decision {
+  return {
+    uid: 'u1', companyId: 'co_a', resolution: 'exclude',
+    reason: 'reviewed manually', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
 
 describe('canonicalStringify', () => {
   it('is identical regardless of key insertion order', () => {
@@ -65,12 +74,55 @@ describe('computeRelationSetChecksum — order independence (task requirement)',
 
 describe('computeDecisionsChecksum', () => {
   it('is order-independent', () => {
-    const a = [{ companyId: 'co_a', uid: 'u1', resolution: 'exclude' }, { companyId: 'co_b', uid: 'u2', resolution: 'confirm_role' }]
+    const a = [decision({ companyId: 'co_a', uid: 'u1' }), decision({ companyId: 'co_b', uid: 'u2', resolution: 'confirm_role', role: 'admin' })]
     const b = [a[1]!, a[0]!]
     expect(computeDecisionsChecksum(a)).toBe(computeDecisionsChecksum(b))
   })
 
   it('is deterministic for an empty array', () => {
     expect(computeDecisionsChecksum([])).toBe(computeDecisionsChecksum([]))
+  })
+
+  // ── Independent audit fix #5 (2nd round) ────────────────────────────────
+  it('changing confirm_role.role (admin -> viewer) changes the checksum', () => {
+    const a = [decision({ resolution: 'confirm_role', role: 'admin' })]
+    const b = [decision({ resolution: 'confirm_role', role: 'viewer' })]
+    expect(computeDecisionsChecksum(a)).not.toBe(computeDecisionsChecksum(b))
+  })
+
+  it('changing reason changes the checksum', () => {
+    const a = [decision({ reason: 'reason A' })]
+    const b = [decision({ reason: 'reason B' })]
+    expect(computeDecisionsChecksum(a)).not.toBe(computeDecisionsChecksum(b))
+  })
+
+  it('changing reviewedBy changes the checksum', () => {
+    const a = [decision({ reviewedBy: 'alice' })]
+    const b = [decision({ reviewedBy: 'bob' })]
+    expect(computeDecisionsChecksum(a)).not.toBe(computeDecisionsChecksum(b))
+  })
+
+  it('changing reviewedAt changes the checksum', () => {
+    const a = [decision({ reviewedAt: '2026-01-01T00:00:00.000Z' })]
+    const b = [decision({ reviewedAt: '2026-01-02T00:00:00.000Z' })]
+    expect(computeDecisionsChecksum(a)).not.toBe(computeDecisionsChecksum(b))
+  })
+
+  it('changing companyId changes the checksum', () => {
+    const a = [decision({ companyId: 'co_a' })]
+    const b = [decision({ companyId: 'co_b' })]
+    expect(computeDecisionsChecksum(a)).not.toBe(computeDecisionsChecksum(b))
+  })
+
+  it('changing uid changes the checksum', () => {
+    const a = [decision({ uid: 'u1' })]
+    const b = [decision({ uid: 'u2' })]
+    expect(computeDecisionsChecksum(a)).not.toBe(computeDecisionsChecksum(b))
+  })
+
+  it('a user-level decision (no companyId) produces a different checksum than the same decision WITH a companyId', () => {
+    const withCompany = [decision({ companyId: 'co_a' })]
+    const userLevel = [{ uid: 'u1', resolution: 'exclude' as const, reason: 'reviewed manually', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+    expect(computeDecisionsChecksum(withCompany)).not.toBe(computeDecisionsChecksum(userLevel))
   })
 })

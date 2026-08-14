@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { Timestamp } from 'firebase-admin/firestore'
 import { classifyExistingMembership, isStrictlyValidActiveMembership } from './membershipValidation.ts'
 
-const ts = { seconds: 1000, nanoseconds: 0 }
+// Independent audit fix #2 (2nd round): "valid" fixtures MUST use a real
+// firebase-admin/firestore Timestamp instance now — a plain
+// {seconds,nanoseconds} object is no longer accepted (see the dedicated
+// "real Timestamp enforcement" describe block below for the negative case).
+const ts = Timestamp.now()
 
 describe('classifyExistingMembership', () => {
   it('not_found when no document exists', () => {
@@ -18,7 +23,7 @@ describe('classifyExistingMembership', () => {
     expect(classifyExistingMembership('admin', 'u1', data)).toBe('exact_match')
   })
 
-  // ── Independent audit fix #2: differs_but_valid vs invalid ─────────────
+  // ── Independent audit fix #2 (1st round): differs_but_valid vs invalid ──
   it('differs_but_valid when the role differs but the document is otherwise strictly valid and active', () => {
     const data = { uid: 'u1', role: 'viewer', status: 'active', createdAt: ts, updatedAt: ts }
     expect(classifyExistingMembership('admin', 'u1', data)).toBe('differs_but_valid')
@@ -71,5 +76,23 @@ describe('isStrictlyValidActiveMembership', () => {
 
   it('false for a non-active status', () => {
     expect(isStrictlyValidActiveMembership('u1', { uid: 'u1', role: 'admin', status: 'disabled', createdAt: ts, updatedAt: ts })).toBe(false)
+  })
+})
+
+// ── Independent audit fix #2 (2nd round): real Timestamp enforcement ──────
+describe('isStrictlyValidActiveMembership — rejects anything that is not a REAL firebase-admin Timestamp', () => {
+  it('false for a plain {seconds, nanoseconds} map — the exact shape a real Timestamp serializes to, but not one', () => {
+    const plainMap = { seconds: 1000, nanoseconds: 0 }
+    expect(isStrictlyValidActiveMembership('u1', { uid: 'u1', role: 'admin', status: 'active', createdAt: plainMap, updatedAt: ts })).toBe(false)
+  })
+
+  it('false for an object with a FORGED toDate() function — duck-typing must never be enough', () => {
+    const forged = { seconds: 1000, nanoseconds: 0, toDate: () => new Date() }
+    expect(isStrictlyValidActiveMembership('u1', { uid: 'u1', role: 'admin', status: 'active', createdAt: forged, updatedAt: ts })).toBe(false)
+  })
+
+  it('true only when BOTH createdAt and updatedAt are real Timestamp instances', () => {
+    expect(isStrictlyValidActiveMembership('u1', { uid: 'u1', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts })).toBe(true)
+    expect(isStrictlyValidActiveMembership('u1', { uid: 'u1', role: 'admin', status: 'active', createdAt: ts, updatedAt: { seconds: 1, nanoseconds: 0 } })).toBe(false)
   })
 })

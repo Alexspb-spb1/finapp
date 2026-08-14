@@ -133,6 +133,36 @@ describe('extractLegacyRelations — internal id mismatch', () => {
     const result = extractLegacyRelations([user('u1', { id: 'u1', companyId: 'co_a', role: 'admin' })], [company('co_a')])
     expect(result.confirmed).toEqual([{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }])
   })
+
+  // ── Independent audit fix #4 (2nd round) ────────────────────────────────
+  it('an id-mismatched document referencing a MISSING company stays a missing_company orphan, never a user_id_mismatch conflict', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { id: 'someone_else', companyId: 'co_ghost', role: 'admin' })],
+      [], // co_ghost does not exist
+    )
+    expect(result.confirmed).toEqual([])
+    expect(result.conflicts).toEqual([])
+    expect(result.orphans).toEqual([{ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' }])
+  })
+
+  it('a mixed id-mismatched document with one claim at an existing company and one at a missing company splits correctly', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { id: 'someone_else', companyId: 'co_a', role: 'admin', companies: [{ companyId: 'co_ghost', role: 'viewer' }] })],
+      [company('co_a')],
+    )
+    expect(result.conflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'user_id_mismatch' }])
+    expect(result.orphans).toEqual([{ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' }])
+  })
+
+  it('an id-mismatched document with NO usable claims at all does not silently disappear — reported as unknown', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { id: 'someone_else', name: 'no companyId, no companies[]' })],
+      [],
+    )
+    expect(result.conflicts).toEqual([])
+    expect(result.orphans).toEqual([])
+    expect(result.unknownUsers).toEqual([{ uid: 'u1', reason: 'no_usable_relations' }])
+  })
 })
 
 describe('extractLegacyRelations — malformed companies[] entries (independent audit fix #6)', () => {

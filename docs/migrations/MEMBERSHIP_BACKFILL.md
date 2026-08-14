@@ -20,6 +20,14 @@ end for the 7 categories of fixes applied. The sections above/below that
 already reflect the fixed behavior (existing-membership classification,
 path-safety scope, rollback precondition, partial-write-failure proof).
 
+**This document was updated a SECOND time after a follow-up independent
+review, also `REVIEW_RESULT: CHANGES REQUIRED`** — see "Independent audit
+fixes — second round" at the very end for the 7 additional categories fixed
+(verify strictness, real Timestamp enforcement, blocking unknown
+users/malformed claims, confirm_role re-validation, full decisionsChecksum,
+collision-free relationKey, schema-strict observed state). Every section
+below already reflects this second round's fixed behavior.
+
 ## Data model — legacy → canonical mapping
 
 | Legacy source | Canonical target |
@@ -55,8 +63,18 @@ canonical document created is always:
   - `invalid_role` — every claim for the pair has an unknown/empty/corrupt
     role value. **Never defaulted** — an invalid role is dropped, never
     coerced to `viewer` or anything else.
+  - `mixed_role_validity` — a `(companyId, uid)` pair has BOTH a valid-role
+    claim and an invalid-role claim from different sources — never silently
+    resolved via the valid claim alone.
   - `user_id_mismatch` — `users/{uid}.id` is present and does not equal the
-    document ID. The *entire* document's claims are conflicted, not used.
+    document ID, AND the referenced company exists. Every claim whose
+    company does NOT exist is a `missing_company` **orphan** instead (2nd
+    round fix #4) — this matters because a `confirm_role` decision can
+    resolve a conflict but can never create a membership under a company
+    that does not exist, so keeping such a claim classified as a orphan is
+    what makes that structurally impossible rather than merely discouraged.
+    An id-mismatched document with NO usable claims at all is reported as
+    an `unknownUsers` entry rather than silently disappearing.
   - `owner_role_not_admin` — `companies/{companyId}.ownerId` has a confirmed
     membership claim, but it is not `admin`.
   - `existing_membership_conflict` — an existing
@@ -120,14 +138,36 @@ Passed via `--decisions-file /absolute/path/outside/this/repository.json` —
     "reason": "Former contractor, access intentionally not migrated.",
     "reviewedBy": "alice@example.test",
     "reviewedAt": "2026-01-15T10:05:00.000Z"
+  },
+  {
+    "uid": "REDACTED_UID_3",
+    "resolution": "exclude",
+    "reason": "Confirmed dead account with support — has no companyId/companies[] claim at all, safe to leave unmigrated.",
+    "reviewedBy": "alice@example.test",
+    "reviewedAt": "2026-01-15T10:10:00.000Z"
   }
 ]
 ```
 
+The third entry above has **no `companyId` at all** — a "user-level"
+decision (2nd round fix #3). This is the ONLY way to acknowledge an
+`unknownUsers` or `malformedClaims` entry, both of which are keyed by `uid`
+alone (there is no `companyId` to target — the whole point of those two
+lists is that no usable relation claim could even be extracted). A
+companyId-less decision MUST have `resolution: "exclude"` — `confirm_role`
+and `accept_existing` always require a specific `(companyId, uid)` relation
+and are rejected by `scripts/lib/decisions.ts` if `companyId` is omitted.
+
 Resolutions:
-- `confirm_role` — requires `role` (`viewer`|`accountant`|`admin`). Resolves
-  a conflict or owner anomaly by creating that membership. **Cannot** target
-  an orphan (a decision can never create a missing company or user).
+- `confirm_role` — requires `role` (`viewer`|`accountant`|`admin`) AND a
+  `companyId`. Resolves a conflict or owner anomaly by creating that
+  membership — but ONLY after re-verifying, at the moment the decision is
+  applied, that BOTH the target company and the target user still exist
+  (`scripts/lib/planner.ts`, `confirmRoleTargetExists()`, 2nd round fix #4).
+  **Cannot** target an orphan (a decision can never create a missing
+  company or user) — this is enforced structurally: a claim referencing a
+  nonexistent company is never even classified as a resolvable conflict in
+  the first place, it is a `missing_company` orphan.
 - `accept_existing` — only meaningful for an `existing_membership_conflict`
   that is `differs_but_valid` (a strictly-schema-valid, active document with
   merely a different role): treats the existing document as canonical;
@@ -135,13 +175,19 @@ Resolutions:
   (unknown role, disabled/non-active status, uid mismatch, missing
   timestamps, or extra fields) — that stays a blocking conflict no matter
   what the decision says.
-- `exclude` — acknowledges a conflict/orphan/owner-anomaly; no membership is
-  ever created for that pair.
+- `exclude` — acknowledges a conflict/orphan/owner-anomaly (with a
+  `companyId`); no membership is ever created for that pair. WITHOUT a
+  `companyId`, acknowledges a user-level `unknownUsers`/`malformedClaims`
+  entry instead (2nd round fix #3) — the only resolution valid in that form.
 
 Validation (`scripts/lib/decisions.ts`) rejects, with no permissive
 fallback: non-array input, unknown fields, unknown `resolution`/`role`
-values, missing required fields, an unparseable `reviewedAt`, and
-duplicate/contradicting decisions for the same `(companyId, uid)` pair.
+values, missing required fields, an unparseable `reviewedAt`, a
+companyId-less decision whose resolution is not `exclude`, and
+duplicate/contradicting decisions for the same `(companyId, uid)` pair (or
+the same `uid` for two user-level decisions — a separate namespace from
+relation-level pairs, so a user-level and a relation-level decision for the
+SAME uid never collide).
 `--decisions-file`'s SHA-256 (over the canonicalized, order-independent
 decision list — see "Checksums" below) is recorded in every report as
 `decisionsChecksum`, so a report can always be tied back to exactly which
@@ -171,7 +217,7 @@ node scripts/backfill-memberships.ts \
 | Code | Meaning |
 |---|---|
 | 0 | Success (dry-run always; apply with 0 write failures; verify matching target) |
-| 1 | Apply refused (unresolved items) or had write failures; verify found drift; rollback had refused deletions |
+| 1 | Apply refused (unresolved items, including unknown users/malformed claims) or had write failures; verify found drift OR the plan was not fully resolved (2nd round fix #1 — `matchesTarget` requires `plan.applyAllowed` too, not just checksum equality); rollback had refused deletions |
 | 2 | CLI argument or decisions-file error |
 | 3 | Environment/project guard failure (wrong project, missing confirmation, etc.) |
 | 4 | Refused: this cycle does not authorize staging/production execution (Phase A only) |
@@ -285,13 +331,29 @@ the full `counts` object (`usersRead` … `unresolved`), and four checksums:
 
 - **`sourceChecksum`** — SHA-256 over the canonicalized, `companyId`-then-`uid`-sorted
   set of *confirmed* candidate relations (`companyId`, `uid`, `role`).
-- **`decisionsChecksum`** — SHA-256 over the canonicalized, sorted decisions
-  array (empty-array checksum when no `--decisions-file` is given).
+- **`decisionsChecksum`** — SHA-256 over the canonicalized decisions array,
+  where each decision is normalized to ALL 7 of its meaningful fields —
+  `uid`, `companyId` (`null` for a user-level decision), `resolution`,
+  `role` (`null` unless `confirm_role`), `reason`, `reviewedBy`,
+  `reviewedAt` — before hashing (2nd round fix #5:
+  `scripts/lib/checksum.ts`'s `computeDecisionsChecksum()` takes the full
+  typed `Decision[]`, not a partial shape). Changing ANY one of those 7
+  fields changes the checksum; sorting is by the canonical JSON of each
+  normalized decision itself, so it stays fully deterministic and
+  order-independent (empty-array checksum when no `--decisions-file` is
+  given).
 - **`targetChecksum`** — SHA-256 over the canonicalized, sorted set of
   relations the run INTENDS to exist afterward (planned creates + already-matching
-  skips), role+status only.
+  skips), role+status only (`schemaValid` always implicitly `true` for a target
+  relation, see `observedChecksum` below).
 - **`observedChecksum`** — same shape, computed from an ACTUAL read-back
   after `apply`/`verify`; `null` for `dry-run` (nothing was applied yet).
+  Each observed relation also carries an explicit `schemaValid` flag (2nd
+  round fix #7: `isStrictlyValidActiveMembership()` run against the
+  read-back document) — a document with the "right" role/status but a wrong
+  uid, forged/missing timestamps, or extra fields produces `schemaValid:
+  false`, which changes `observedChecksum` even though role/status alone
+  would have matched.
 
 All checksums are computed via `scripts/lib/checksum.ts`: canonical
 (recursively key-sorted) JSON, SHA-256 hex. Timestamps (`createdAt`/`updatedAt`)
@@ -300,7 +362,12 @@ part of "did the intended relation set get created"; two runs that create
 the identical logical relation set produce the identical `targetChecksum`
 even though their Firestore `Timestamp` values differ. The sort is always
 `companyId` then `uid`, so **Firestore query result order never affects any
-checksum** (verified directly — see tests).
+checksum** (verified directly — see tests). `companyId`/`uid` pairing
+itself is encoded collision-free via `relationKey()`/`splitRelationKey()`
+(2nd round fix #6: a canonical `JSON.stringify([companyId, uid])` tuple,
+not a hand-chosen delimiter) — two different pairs can never produce the
+same key, even when one identifier contains the other's delimiter,
+whitespace, or Unicode content.
 
 ## Idempotency
 
@@ -416,3 +483,47 @@ rationale, new modules, and the new red→green test list) is in
    `companies/{companyId}/members/{uid}` — a foreign or nested `members`
    document elsewhere in Firestore can no longer influence planning,
    checksums, or the admin gate.
+
+## Independent audit fixes — second round
+
+A follow-up independent review, also `REVIEW_RESULT: CHANGES REQUIRED`,
+found 7 more categories of blocking findings — deeper issues than the first
+round, in the strictness of `verify` itself and the Timestamp/checksum
+machinery underneath it. All 7 were fixed in a second follow-up commit on
+this same branch; the full technical writeup is in
+`docs/remediation/reports/SEC-005.md`, section "Исправления по итогам
+ПОВТОРНОГО независимого аудита". Summary:
+
+1. `verify`'s `matchesTarget` used to be pure checksum equality — which
+   could be trivially, falsely `true` when both the target and observed
+   relation sets were EMPTY (e.g. a company whose only relation is an
+   unresolved conflict). It now also requires `plan.applyAllowed`, zero
+   `missing`/`differing` entries, in addition to the checksum match.
+2. Timestamp validation switched from duck-typing (any object with numeric
+   `seconds`/`nanoseconds`, or any object with a `toDate()` function) to a
+   real `instanceof Timestamp` check against `firebase-admin/firestore`'s
+   own class — a plain JSON-shaped map or a forged `toDate()` no longer
+   passes as a valid membership timestamp.
+3. `unknownUsers` and `malformedClaims` are now BLOCKING — `applyAllowed`
+   requires both to be empty. The only way to clear an entry is a new
+   "user-level" decision (a `Decision` with no `companyId`, `resolution:
+   "exclude"` only) or fixing the source data so the entry stops being
+   extracted; there is no silent-ignore path.
+4. Every `confirm_role` decision is re-verified, at the moment it is
+   applied, against the company and user actually existing right now
+   (`allCompanyIds`/`allUserIds`) — and a `user_id_mismatch` claim
+   referencing a company that does not exist is now classified as a
+   `missing_company` orphan (never resolvable via `confirm_role`) instead
+   of a conflict.
+5. `decisionsChecksum` is computed from the FULL normalized 7-field decision
+   shape (`uid`, `companyId`, `resolution`, `role`, `reason`, `reviewedBy`,
+   `reviewedAt`), sorted by each decision's own canonical JSON — changing
+   any single field changes the checksum, deterministically.
+6. `relationKey()`/`splitRelationKey()` switched from a hand-chosen `"::"`
+   delimiter to a canonical `JSON.stringify([companyId, uid])` tuple —
+   collision-free by construction, including when an identifier contains
+   the old delimiter, whitespace, or Unicode content.
+7. `computeObservedState()` now flags a document as `differing` (and
+   contributes `schemaValid: false` to the checksum) whenever it fails
+   strict canonical-schema validation — not only when its role/status
+   textually differs from the target.

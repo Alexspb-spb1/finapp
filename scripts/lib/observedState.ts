@@ -2,8 +2,17 @@
 // state strictly from documents that were ACTUALLY read back, never
 // substituting an expected value for an absent one. Pure function (no I/O)
 // so partial-write-failure honesty is unit-testable without the emulator.
+//
+// Independent audit fix #7 (2nd round): a document is now reported as
+// `differing` (and contributes `schemaValid: false` to the observed
+// checksum) whenever it fails STRICT canonical-schema validation — not
+// only when its role/status textually differs from the target. This
+// closes the gap where a document with the "right" role/status but a
+// wrong uid, missing/forged timestamps, or extra fields could otherwise
+// pass verify/apply-completion checks.
 import { relationKey } from './types.ts'
 import { computeRelationSetChecksum } from './checksum.ts'
+import { isStrictlyValidActiveMembership } from './membershipValidation.ts'
 
 export interface TargetRelation {
   companyId: string
@@ -35,14 +44,15 @@ export function computeObservedState(
     const data = readBack.get(relationKey(r.companyId, r.uid))
     if (!data) {
       missing.push({ companyId: r.companyId, uid: r.uid })
-      return { companyId: r.companyId, uid: r.uid, role: 'MISSING', status: 'MISSING' }
+      return { companyId: r.companyId, uid: r.uid, role: 'MISSING', status: 'MISSING', schemaValid: false }
     }
     const actualRole = typeof data.role === 'string' ? data.role : 'MISSING'
     const actualStatus = typeof data.status === 'string' ? data.status : 'MISSING'
-    if (actualRole !== r.role || actualStatus !== r.status) {
+    const schemaValid = isStrictlyValidActiveMembership(r.uid, data)
+    if (!schemaValid || actualRole !== r.role || actualStatus !== r.status) {
       differing.push({ companyId: r.companyId, uid: r.uid })
     }
-    return { companyId: r.companyId, uid: r.uid, role: actualRole, status: actualStatus }
+    return { companyId: r.companyId, uid: r.uid, role: actualRole, status: actualStatus, schemaValid }
   })
 
   return { observedChecksum: computeRelationSetChecksum(observedRelations), missing, differing }

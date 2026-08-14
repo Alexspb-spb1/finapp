@@ -149,8 +149,9 @@ async function main(): Promise<number> {
   ])
   const existingActiveAdmins = computeExistingActiveAdmins(existingMemberships)
   const allCompanyIds = new Set(companies.map(c => c.docId))
+  const allUserIds = new Set(users.map(u => u.docId))
   const extraction = extractLegacyRelations(users, companies)
-  const plan = buildPlan({ extraction, decisions: decisionsResult.decisions, existingMemberships, existingActiveAdmins, allCompanyIds })
+  const plan = buildPlan({ extraction, decisions: decisionsResult.decisions, existingMemberships, existingActiveAdmins, allCompanyIds, allUserIds })
 
   const targetRelations: TargetRelation[] = [
     ...plan.plannedCreates.map(c => ({ companyId: c.companyId, uid: c.uid, role: c.role, status: c.status })),
@@ -177,7 +178,7 @@ async function main(): Promise<number> {
     ownerWithoutAdminMembership: plan.unresolvedOwnerAnomalies.length,
     unknownUsers: plan.unknownUsers.length,
     malformedClaims: plan.malformedClaims.length,
-    unresolved: plan.unresolvedConflicts.length + plan.unresolvedOrphans.length + plan.unresolvedOwnerAnomalies.length + plan.companiesWithoutAdmin.length,
+    unresolved: plan.unresolvedConflicts.length + plan.unresolvedOrphans.length + plan.unresolvedOwnerAnomalies.length + plan.companiesWithoutAdmin.length + plan.unknownUsers.length + plan.malformedClaims.length,
   }
 
   const createdPaths: CreatedPathRecord[] = []
@@ -255,7 +256,17 @@ async function main(): Promise<number> {
     writeFailures,
     verification: {
       performed: opts.mode === 'verify',
-      matchesTarget: observedChecksum !== null && observedChecksum === targetChecksum,
+      // Independent audit fix #1 (2nd round): matchesTarget can no longer be
+      // "true" purely because two checksums happen to be equal (which is
+      // trivially true for two EMPTY target/observed sets — e.g. a company
+      // with an unresolved conflict and nothing else touched it). It now
+      // requires, simultaneously: the plan is fully resolved
+      // (plan.applyAllowed — which itself now also requires zero unknown
+      // users/malformed claims, see planner.ts), zero missing/differing
+      // entries, AND the checksums matching. `differing` itself is now also
+      // schema-strict (observedState.ts), so a corrupted document can never
+      // pass even if its role/status happen to match textually.
+      matchesTarget: plan.applyAllowed && observedChecksum !== null && observedChecksum === targetChecksum && missing.length === 0 && differing.length === 0,
       missing,
       differing,
     },

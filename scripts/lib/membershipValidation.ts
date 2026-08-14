@@ -1,11 +1,18 @@
 // Classifies an EXISTING companies/{companyId}/members/{uid} document
 // against a candidate backfill relation — SEC-005.
 //
-// Deliberately duck-types Firestore Timestamps (checks for numeric
-// seconds/nanoseconds) instead of importing firebase-admin/firestore, so
-// this module (and its tests) never need a real Admin SDK instance or the
-// emulator — a plain object shaped like a Timestamp is enough to exercise
-// every branch.
+// Independent audit (2nd round) fix #2: this module used to duck-type
+// Firestore Timestamps (any object with numeric seconds/nanoseconds, or
+// even an object with a toDate() function of ANY shape) as valid — which
+// meant a hand-crafted `{ seconds, nanoseconds }` plain object, or a
+// forged object with a fake `toDate()`, was indistinguishable from a real
+// server-assigned Timestamp. Only a real `firebase-admin/firestore`
+// `Timestamp` instance is accepted now. Importing the `Timestamp` CLASS
+// does not require an initialized Admin SDK app or network access — it is
+// a plain value type (`Timestamp.now()`, `new Timestamp(...)` work with no
+// app) — so this module (and its tests) still never need a real Firestore
+// connection or the emulator.
+import { Timestamp } from 'firebase-admin/firestore'
 import { isKnownRole, type Role } from './types.ts'
 
 // Independent audit fix #2: 'differs_but_valid' (a strictly well-formed,
@@ -18,11 +25,8 @@ export type ExistingMembershipClassification = 'not_found' | 'exact_match' | 'di
 
 const ALLOWED_KEYS = new Set(['uid', 'role', 'status', 'createdAt', 'updatedAt', 'invitedBy'])
 
-function isTimestampLike(value: unknown): boolean {
-  if (value === null || typeof value !== 'object') return false
-  const rec = value as Record<string, unknown>
-  if (typeof rec.toDate === 'function') return true
-  return typeof rec.seconds === 'number' && typeof rec.nanoseconds === 'number'
+function isRealTimestamp(value: unknown): boolean {
+  return value instanceof Timestamp
 }
 
 /** True only for a document that is a strictly well-formed, ACTIVE,
@@ -38,8 +42,8 @@ export function isStrictlyValidActiveMembership(uid: string, data: Record<string
   if (data.uid !== uid) return false
   if (!isKnownRole(data.role)) return false
   if (data.status !== 'active') return false
-  if (!isTimestampLike(data.createdAt)) return false
-  if (!isTimestampLike(data.updatedAt)) return false
+  if (!isRealTimestamp(data.createdAt)) return false
+  if (!isRealTimestamp(data.updatedAt)) return false
   if (data.invitedBy !== undefined && (typeof data.invitedBy !== 'string' || data.invitedBy.length === 0)) return false
   return true
 }

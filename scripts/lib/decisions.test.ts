@@ -22,6 +22,14 @@ describe('validateDecisions — happy paths', () => {
     const result = validateDecisions([{ ...validDecision, resolution: 'accept_existing' }])
     expect(result.ok).toBe(true)
   })
+
+  // ── Independent audit fix #3 (2nd round): user-level decisions ─────────
+  it('accepts a user-level exclude decision with no companyId at all', () => {
+    const { companyId: _drop, ...userLevel } = validDecision
+    const result = validateDecisions([userLevel])
+    expect(result.ok).toBe(true)
+    expect(result.decisions[0]?.companyId).toBeUndefined()
+  })
 })
 
 describe('validateDecisions — rejects invalid/incomplete/duplicate entries', () => {
@@ -70,5 +78,36 @@ describe('validateDecisions — rejects invalid/incomplete/duplicate entries', (
   it('rejects an unparseable reviewedAt', () => {
     const result = validateDecisions([{ ...validDecision, reviewedAt: 'not-a-date' }])
     expect(result.ok).toBe(false)
+  })
+
+  it('rejects a user-level (no companyId) decision with resolution confirm_role', () => {
+    const { companyId: _drop, ...userLevel } = validDecision
+    const result = validateDecisions([{ ...userLevel, resolution: 'confirm_role', role: 'viewer' }])
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects a user-level (no companyId) decision with resolution accept_existing', () => {
+    const { companyId: _drop, ...userLevel } = validDecision
+    const result = validateDecisions([{ ...userLevel, resolution: 'accept_existing' }])
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects an empty-string companyId (must be omitted entirely for user-level, not blank)', () => {
+    const result = validateDecisions([{ ...validDecision, companyId: '' }])
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects duplicate user-level decisions for the same uid', () => {
+    const { companyId: _drop, ...userLevel } = validDecision
+    const result = validateDecisions([userLevel, { ...userLevel, reason: 'a different reason' }])
+    expect(result.ok).toBe(false)
+    expect(result.errors[0]?.message).toContain('duplicate')
+  })
+
+  it('a user-level decision and a relation-level decision for the SAME uid do not collide (different namespaces)', () => {
+    const { companyId: _drop, ...userLevel } = validDecision
+    const result = validateDecisions([userLevel, { ...validDecision, resolution: 'accept_existing' }])
+    expect(result.ok).toBe(true)
+    expect(result.decisions).toHaveLength(2)
   })
 })
