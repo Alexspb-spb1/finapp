@@ -10,10 +10,13 @@ run directly via Node's native TypeScript support — no build step, no
 `ts-node`, no `functions/node_modules`).
 
 **Status of this document**: describes the tool as implemented and verified
-against the **Firestore Emulator**, and now also authorized for **staging**
-(`finapp-staging`) under an explicit `EXTERNAL_ACTION_APPROVED: SEC-005` /
-`ENVIRONMENT: staging` grant from the repository owner — see "Staging
-authorization" below. **Production execution remains unconditionally
+against the **Firestore Emulator**, and now also verified end-to-end
+against real **staging** (`finapp-staging`) — a full dry-run → decisions →
+apply → verify → rollback rehearsal was executed using synthetic fixture
+data under an explicit `STAGING_FIXTURE_ACTION_APPROVED: SEC-005` grant,
+and `finapp-staging` was confirmed fully restored to its pre-rehearsal
+empty state afterward — see "Staging authorization" and "Full staging
+rehearsal" below. **Production execution remains unconditionally
 refused** — no `PRODUCTION_ACTION_APPROVED` grant has been given, and none
 of the CLI's production-only flags can change that.
 
@@ -52,6 +55,17 @@ NO decision can ever clear a dangling existing membership from blocking
 cycle-execution gate (`assertCycleExecutionAllowed()`,
 `scripts/lib/firebaseAdmin.ts`) now lets `--environment staging` proceed.
 Production is unaffected — still refused unconditionally.
+
+**This document was updated a SIXTH time (doc-only) to record a full
+staging rehearsal** — see "Full staging rehearsal" at the end, and the new
+"`verify` requires the same `--decisions-file` as `apply`" operational
+rule in "Idempotency" below. The repository owner granted a separate,
+broader authorization, `STAGING_FIXTURE_ACTION_APPROVED: SEC-005`
+("Разрешаю создать и удалить только синтетические тестовые данные в
+finapp-staging для полной репетиции. Production запрещён."), covering
+create+delete of synthetic fixture data for a full dry-run/apply/
+verify/rollback cycle against `finapp-staging`. No code changed this
+round.
 
 ## Data model — legacy → canonical mapping
 
@@ -368,11 +382,15 @@ cycle-execution gate (`assertCycleExecutionAllowed()`); the project-ID
 consistency guards in the table above are unchanged and still apply in
 full.
 
-**Only `--mode dry-run` is authorized in this cycle.** `apply` against
-`finapp-staging` is explicitly NOT authorized yet — the grant covers a
-read-only reconnaissance run only, so the owner can review real
-anonymized-in-transcript counts/checksums before deciding whether to
-authorize `apply`:
+**Originally, only `--mode dry-run` was authorized under this specific
+grant** — the owner could review real anonymized counts/checksums before
+deciding whether to authorize `apply`. **Updated**: a separate, broader
+grant, `STAGING_FIXTURE_ACTION_APPROVED: SEC-005`, was given afterward,
+explicitly authorizing `apply`/`rollback` against `finapp-staging` for
+SYNTHETIC fixture data only, for a full rehearsal — see "Full staging
+rehearsal" below for what was actually run. `apply` against real
+(non-synthetic) legacy data in `finapp-staging` is still NOT authorized —
+neither grant covers that.
 
 ```bash
 node scripts/backfill-memberships.ts \
@@ -490,6 +508,20 @@ legacy source, every existing membership, and validating every decision —
 **before** the first write. A repeated `apply` run against unchanged source
 data creates 0 new documents, changes 0 existing documents, and produces
 the identical `targetChecksum` (proven by `scripts/backfill-memberships.emulator.test.ts`).
+
+**Operational rule — `verify` must be given the SAME `--decisions-file` as
+the `apply` it is checking.** Decisions are never persisted anywhere in
+Firestore — they are an ephemeral input file the operator supplies each
+run. `verify` re-plans from scratch every time; if a conflict was resolved
+via a decision at `apply` time but `verify` is run without that same
+decisions file (or a different one), the conflict correctly reappears as
+unresolved, and `applyAllowed`/`verification.matchesTarget` both become
+`false`. This is **not a defect** — it is the direct, intended consequence
+of decisions never being stored — but it is easy to trip over operationally
+(running a "quick verify" without remembering the decisions file used at
+apply time looks identical to a real drift/failure at first glance).
+Confirmed directly against real `finapp-staging` during the SEC-005 full
+staging rehearsal — see "Full staging rehearsal" below.
 
 ## Partial-write-failure handling
 
@@ -802,3 +834,46 @@ execution, keep production unconditionally blocked`. Full write-up in
   see `docs/remediation/reports/SEC-005.md` for the safe aggregate
   counts/checksums and whether a live connection to `finapp-staging` was
   actually reachable from this environment.
+
+## Full staging rehearsal (STAGING_FIXTURE_ACTION_APPROVED: SEC-005)
+
+The repository owner granted a separate, broader authorization:
+
+```text
+STAGING_FIXTURE_ACTION_APPROVED: SEC-005
+```
+
+— "Разрешаю создать и удалить только синтетические тестовые данные в
+finapp-staging для полной репетиции. Production запрещён." This explicitly
+covers creating AND deleting synthetic fixture data for a full
+dry-run → decisions → apply → verify → rollback cycle. Full write-up
+(anonymized, doc-only round — no code changed) in
+`docs/remediation/reports/SEC-005.md`, section "Полная staging rehearsal
+(STAGING_FIXTURE_ACTION_APPROVED: SEC-005)". Summary:
+
+- Synthetic fixture (tag `9d544063`): 2 companies + 3 users, deliberately
+  shaped to exercise a `role_mismatch` conflict, a `missing_company`
+  orphan, and a clean happy-path relation in the same run.
+- `dry-run` correctly detected exactly 1 `role_mismatch` and 1
+  `missing_company`, `applyAllowed: false`.
+- `apply` with a decisions file resolving both created exactly 2 canonical
+  membership documents; `unresolved: 0`; checksums matched; exit 0.
+- `verify` WITHOUT the decisions file correctly showed `applyAllowed:
+  false` again (the conflict resurfacing without its decision — see the
+  new operational rule in "Idempotency" above); `verify` WITH the same
+  decisions file showed `applyAllowed: true` and a fully matching checksum
+  — **PASS**.
+- `rollback-from-report` removed both created documents; a follow-up
+  `dry-run` showed `existingMembershipsRead: 0`, identical to the
+  pre-apply state.
+- All 5 fixture documents (2 companies + 3 users) were then deleted
+  directly (outside this tool — it never writes to `users`/`companies`
+  itself); a final `dry-run` showed 0/0/0 across every count, with
+  `sourceChecksum`/`targetChecksum` identical to the very first pre-fixture
+  check — `finapp-staging` fully restored to how it was found.
+- Every full JSON report was written only to an absolute path outside the
+  repository, never opened/pasted in full, and deleted after the safe
+  aggregate summary was extracted. The two temporary Admin-SDK
+  seed/cleanup scripts lived inside the repo only for the seconds needed
+  to run them and were deleted immediately after each use.
+- Production was not referenced by any command this round.
