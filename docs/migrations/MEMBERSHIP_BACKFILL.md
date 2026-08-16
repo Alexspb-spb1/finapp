@@ -36,6 +36,13 @@ via WriteResult, existing-membership integrity against missing
 companies/users, collision-free plannedCreates/skipped ordering). Every
 section below already reflects this third round's fixed behavior.
 
+**This document was updated a FOURTH time to correct a fail-open found in
+the third round's own fix** — see "Independent audit fixes —
+dangling-memberships correction" at the very end, and "Dangling existing
+memberships" below, for the corrected (and now authoritative) behavior:
+NO decision can ever clear a dangling existing membership from blocking
+`apply`/`verify` — only repairing the underlying data can.
+
 ## Data model — legacy → canonical mapping
 
 | Legacy source | Canonical target |
@@ -95,28 +102,70 @@ canonical document created is always:
     `differs_but_valid` case may ever be resolved by an `accept_existing`
     decision** — an `invalid` existing document remains a blocking conflict
     regardless of decision (see "Independent audit fixes" below).
-- **Orphan** — a relation that references something that doesn't exist:
+- **Orphan** — a `(companyId, uid)` LEGACY CLAIM (from `users/{uid}` or
+  `companies/{companyId}.ownerId`) that references something that doesn't
+  exist. Nothing has been migrated yet for an orphan — there is no
+  document in Firestore at stake, only a claim that will never become one:
   - `missing_company` — a legacy field names a `companyId` with no
-    `companies/{companyId}` document. Also produced (3rd round fix #3) for
-    an EXISTING `companies/{companyId}/members/{uid}` document that is
-    strictly schema-valid on its own but whose parent company no longer
-    exists — dangling data, surfaced rather than silently trusted.
+    `companies/{companyId}` document.
   - `missing_user` — `companies/{companyId}.ownerId` names a uid with no
-    `users/{uid}` document. Also produced (3rd round fix #3) for an
-    EXISTING membership document that is strictly schema-valid on its own
-    but whose `uid` has no `users/{uid}` document — this is what stops a
-    dangling admin membership from satisfying the last-admin gate for a
-    real company. Excluding this orphan only dismisses the LISTING; it
-    never makes the underlying document start counting as a protecting
-    admin or as coverage for an unknown user — `computeExistingActiveAdmins()`
-    and the `unknownUsers` suppression check both read company/user
-    existence directly, independent of any decision.
+    `users/{uid}` document.
   Orphans are **never** turned into a membership — "excluded without a
   record" per the task's rule 8 means no membership document is ever
   created for them, but the orphan itself IS recorded in the report and
   still requires an `exclude` decision before `apply` will proceed (a
   deliberate extra safety gate: every orphan must be human-reviewed once,
-  even though the outcome — no membership — never changes).
+  even though the outcome — no membership — never changes). This
+  decision-resolvable contract is unchanged and applies ONLY to legacy
+  claims — see "Dangling existing memberships" below for the structurally
+  different case of a document that already physically exists.
+
+## Dangling existing memberships (never decision-resolvable)
+
+A **dangling existing membership** is a different, structurally stronger
+problem than an orphan: an ALREADY-EXISTING
+`companies/{companyId}/members/{uid}` document — one that is strictly
+schema-valid on its own (right shape, real Timestamps, known role, active
+status) — but whose `companyId` or `uid` does not exist right now
+(`isStrictlyValidActiveMembership()` only ever checks the document's own
+fields; it says nothing about whether its parent company or referenced
+user still exist). Unlike an orphan, this document is REAL and PHYSICALLY
+PRESENT in Firestore.
+
+Reported as `DanglingMembershipRecord` (`companyId`, `uid`, `reason`:
+`'existing_membership_missing_company'` | `'existing_membership_missing_user'`)
+in its own report field, `danglingMemberships` — a completely separate
+list from `orphans`, so the two behaviors can never be confused by a
+report reader or by the code:
+
+- **No decision of any kind — relation-level (`companyId`+`uid`) or
+  user-level (`uid` only) — can ever clear an entry from this list.**
+  `apply` and `verify` both refuse (non-zero exit, `applyAllowed: false`,
+  `verification.matchesTarget: false`) for as long as ANY dangling
+  membership exists, regardless of what a decisions file says.
+- The only way to stop this from blocking is to actually **repair the
+  underlying data** — create the missing `companies/{companyId}` or
+  `users/{uid}` document, or delete the dangling membership document
+  itself — outside this tool, before the next run. The next `dry-run`/
+  `apply`/`verify` will then simply not observe it as dangling anymore,
+  because the check re-derives from live Firestore state every run; it is
+  never a persisted "acknowledged" flag.
+- A dangling admin membership never satisfies the last-admin gate for a
+  real company (`computeExistingActiveAdmins()` requires the uid to exist
+  in `allUserIds`), and a dangling membership under a missing company
+  never suppresses an `unknownUsers` entry for that uid
+  (`allCompanyIds` is checked before a membership counts as coverage) —
+  both of these checks read company/user existence directly from live
+  Firestore state and are completely independent of `danglingMemberships`
+  or any decision.
+
+(This corrects an earlier version of this tool where a dangling membership
+was reported as an ordinary, decision-resolvable orphan — a relation-level
+`exclude` decision could remove it from the orphan listing even though the
+document itself remained in Firestore, which meant `applyAllowed`/`verify`
+could report success while a corrupted document was still present. See
+"Independent audit fixes" below, the dangling-memberships correction, for
+the full history.)
 - **Owner anomaly** (`owner_without_admin_membership`) — the company's
   `ownerId` has NO membership claim at all for that company. The owner is
   **never** auto-granted admin — this only surfaces the case for a manual
@@ -634,13 +683,50 @@ follow-up commit on this same branch; the full technical writeup is in
    an `unknownUsers` entry, and a valid-looking admin membership whose uid
    had no `users/{uid}` document could satisfy the last-admin gate for a
    real company. Both are now cross-checked against `allCompanyIds`/
-   `allUserIds` and, when dangling, surfaced as a blocking
-   `missing_company`/`missing_user` orphan — independent of whether that
-   orphan is later acknowledged via a decision, which never retroactively
-   makes the underlying document trustworthy again.
+   `allUserIds` and, when dangling, surfaced as blocking. **Corrected in a
+   follow-up fix** (see "Dangling existing memberships" above and
+   "Independent audit fixes — dangling-memberships correction" below): the
+   first version of this fix reported these as ordinary orphans, which a
+   relation-level `exclude` decision could remove from the listing even
+   though the document itself remained in Firestore — this has been fixed
+   so NO decision of any kind can ever clear a dangling membership; only
+   repairing the underlying data can.
 4. `plannedCreates`/`skipped` sorting used
    `(a.companyId + a.uid).localeCompare(...)`, which collides whenever one
    identifier's suffix matches the other's prefix (e.g. `('a','bc')` and
    `('ab','c')` both concatenate to `"abc"`). `planner.ts` now uses the
    existing, already-proven collision-free `sortRelations()` helper
    (`checksum.ts`) instead.
+
+## Independent audit fixes — dangling-memberships correction
+
+A follow-up review of the same PR found that the third round's fix #3
+("existing orphaned membership integrity") was itself fail-open: it
+reported dangling existing memberships in `unresolvedOrphans` and let a
+relation-level `exclude` decision remove the entry, even though the
+document itself remained physically present in Firestore. If the affected
+company had another valid admin, `applyAllowed` could become `true` (and
+`verify` could report success) with the corrupted document still sitting
+there, undetected.
+
+Fixed in a single follow-up commit, `fix(sec-005): keep dangling
+memberships fail-closed`. Full write-up in
+`docs/remediation/reports/SEC-005.md`, section "Коррекция: dangling
+memberships остаются fail-closed". Summary:
+
+- Dangling existing memberships now live in their own report field,
+  `danglingMemberships` (`DanglingMembershipRecord`/
+  `DanglingMembershipReason`, `scripts/lib/types.ts`) — structurally
+  separate from `orphans`, which stays exactly as documented for
+  legacy-source claims.
+- **No decision — relation-level or user-level — is ever consulted for
+  this list.** The only way to stop a dangling membership from blocking
+  `apply`/`verify` is to repair the actual data (create the missing
+  company/user, or delete the dangling document) before the next run.
+- `ReportCounts.danglingMemberships` and `counts.unresolved` both reflect
+  this honestly.
+- See "Dangling existing memberships" near the top of this document for
+  the corrected, authoritative description of this behavior — the
+  "Confirmed / conflict / orphan / owner-anomaly definitions" section and
+  this document no longer claim that excluding a dangling membership
+  "just dismisses the listing"; excluding it is not possible at all.

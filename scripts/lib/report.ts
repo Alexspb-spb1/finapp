@@ -9,6 +9,7 @@ import { writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type {
   ConflictRecord, OrphanRecord, OwnerAnomalyRecord, PlannedCreate, UnknownUserRecord, MalformedClaimRecord,
+  DanglingMembershipRecord,
 } from './types.ts'
 import type { Environment } from './firebaseAdmin.ts'
 import { assertPathOutsideRepo } from './pathSafety.ts'
@@ -32,6 +33,10 @@ export interface ReportCounts {
   ownerWithoutAdminMembership: number
   unknownUsers: number
   malformedClaims: number
+  /** Independent audit fix #3 (3rd round, follow-up correction): existing
+   * membership documents that physically exist but reference a missing
+   * company/user — always non-decision-resolvable, always counted here. */
+  danglingMemberships: number
   unresolved: number
 }
 
@@ -88,6 +93,11 @@ export interface MembershipBackfillReport {
   ownerAnomalies: OwnerAnomalyRecord[]
   unknownUsers: UnknownUserRecord[]
   malformedClaims: MalformedClaimRecord[]
+  /** Independent audit fix #3 (3rd round, follow-up correction): see
+   * `DanglingMembershipRecord` — a document that physically exists in
+   * Firestore but references a missing company/user. Deliberately never
+   * merged into `orphans` above; no decision can ever clear an entry here. */
+  danglingMemberships: DanglingMembershipRecord[]
   plannedCreates: PlannedCreate[]
   createdPaths: CreatedPathRecord[]
   writeFailures: WriteFailureRecord[]

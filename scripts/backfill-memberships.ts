@@ -67,7 +67,7 @@ function emptyCounts(): ReportCounts {
     usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
     confirmedRelations: 0, plannedCreates: 0, created: 0, skipped: 0, conflicts: 0,
     missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
-    unknownUsers: 0, malformedClaims: 0, unresolved: 0,
+    unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0, unresolved: 0,
   }
 }
 
@@ -188,7 +188,8 @@ async function main(): Promise<number> {
     ownerWithoutAdminMembership: plan.unresolvedOwnerAnomalies.length,
     unknownUsers: plan.unknownUsers.length,
     malformedClaims: plan.malformedClaims.length,
-    unresolved: plan.unresolvedConflicts.length + plan.unresolvedOrphans.length + plan.unresolvedOwnerAnomalies.length + plan.companiesWithoutAdmin.length + plan.unknownUsers.length + plan.malformedClaims.length,
+    danglingMemberships: plan.danglingMemberships.length,
+    unresolved: plan.unresolvedConflicts.length + plan.unresolvedOrphans.length + plan.unresolvedOwnerAnomalies.length + plan.companiesWithoutAdmin.length + plan.unknownUsers.length + plan.malformedClaims.length + plan.danglingMemberships.length,
   }
 
   let createdPaths: CreatedPathRecord[] = []
@@ -200,7 +201,7 @@ async function main(): Promise<number> {
 
   if (opts.mode === 'apply') {
     if (!plan.applyAllowed) {
-      console.error(`Apply refused: ${counts.unresolved} unresolved item(s) (conflicts/orphans/owner-anomalies/companies-without-admin). Resolve via --decisions-file and retry.`)
+      console.error(`Apply refused: ${counts.unresolved} unresolved item(s) (conflicts/orphans/owner-anomalies/companies-without-admin/dangling-memberships). Resolve via --decisions-file and retry — dangling memberships require repairing the underlying data, no decision can clear them.`)
     } else {
       // Independent audit fix #2 (3rd round): success is captured directly
       // from each create()'s own WriteResult (applyWrites.ts) — no
@@ -261,6 +262,7 @@ async function main(): Promise<number> {
     ownerAnomalies: plan.unresolvedOwnerAnomalies,
     unknownUsers: plan.unknownUsers,
     malformedClaims: plan.malformedClaims,
+    danglingMemberships: plan.danglingMemberships,
     plannedCreates: plan.plannedCreates,
     createdPaths,
     writeFailures,
@@ -367,7 +369,7 @@ async function runRollback(
       finishedAt: new Date().toISOString(),
       counts: emptyCounts(),
       sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
-      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [],
+      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],
@@ -407,6 +409,7 @@ async function runRollback(
     ownerAnomalies: [],
     unknownUsers: [],
     malformedClaims: [],
+    danglingMemberships: [],
     plannedCreates: [],
     createdPaths: [],
     writeFailures: [],

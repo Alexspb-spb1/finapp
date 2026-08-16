@@ -124,6 +124,26 @@ export interface MalformedClaimRecord {
   reason: 'malformed_companies_entry'
 }
 
+/** Independent audit fix #3 (3rd round, follow-up correction): an EXISTING
+ * `companies/{companyId}/members/{uid}` document that is strictly valid on
+ * its OWN schema but references a company or user that does not actually
+ * exist right now. Deliberately a SEPARATE type/reason space from
+ * `OrphanRecord`/`OrphanReason` — a legacy-source orphan describes a claim
+ * that was never migrated (nothing physically exists yet, and an `exclude`
+ * decision legitimately closes the matter forever). A dangling membership
+ * describes a document that DOES physically exist in Firestore right now;
+ * no decision — relation-level or user-level — can ever make that document
+ * stop existing, so none may acknowledge this away. It remains blocking
+ * for as long as the document itself is not externally repaired/removed
+ * (see planner.ts, "Step 7"). */
+export type DanglingMembershipReason = 'existing_membership_missing_company' | 'existing_membership_missing_user'
+
+export interface DanglingMembershipRecord {
+  companyId: string
+  uid: string
+  reason: DanglingMembershipReason
+}
+
 /** Output of the pure legacy-mapping stage — before decisions/existing-membership reconciliation. */
 export interface LegacyExtractionResult {
   confirmed: ConfirmedRelation[]
@@ -192,6 +212,12 @@ export interface PlanResult {
   /** UNRESOLVED malformed `companies[]` entries — same blocking/acknowledgement
    * model as `unknownUsers` above (2nd round fix #3). */
   malformedClaims: MalformedClaimRecord[]
+  /** EXISTING membership documents that are strictly valid on their own
+   * schema but reference a company or user that does not exist —
+   * unconditionally blocking, NEVER decision-resolvable (3rd round
+   * follow-up fix). See DanglingMembershipRecord for why this is a
+   * separate list from `unresolvedOrphans` rather than reusing it. */
+  danglingMemberships: DanglingMembershipRecord[]
   /** True only when the plan may safely proceed to apply. */
   applyAllowed: boolean
 }

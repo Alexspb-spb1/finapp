@@ -428,15 +428,23 @@ describe('buildPlan — malformed claims (independent audit fix #3, 2nd round: n
   })
 })
 
-// ── Independent audit fix #3 (3rd round): existing orphaned membership integrity ──
-describe('buildPlan — existing membership integrity (independent audit fix #3, 3rd round)', () => {
-  it('an existing membership under a NONEXISTENT company is surfaced as a blocking missing_company orphan', () => {
+// ── Independent audit fix #3 (3rd round, follow-up correction): existing
+// membership integrity is now reported via the SEPARATE, never-decision-
+// resolvable `danglingMemberships` list — not `unresolvedOrphans`. The
+// original version of this step (fixed once already this round) reused
+// `unresolvedOrphans` and let a relation-level `exclude` decision remove
+// the entry, which meant `applyAllowed` could become `true` — and `verify`
+// could report success — while the dangling document still physically
+// existed in Firestore. This describe block covers the corrected behavior.
+describe('buildPlan — existing membership integrity is BLOCKING and NEVER decision-resolvable (independent audit fix #3, 3rd round follow-up)', () => {
+  it('an existing membership under a NONEXISTENT company is surfaced in danglingMemberships, never unresolvedOrphans', () => {
     const existing = new Map([[relationKey('co_ghost', 'u1'), { uid: 'u1', role: 'viewer', status: 'active', createdAt: ts, updatedAt: ts }]])
     const plan = buildPlan({
       extraction: emptyExtraction(), decisions: [], existingMemberships: existing,
       existingActiveAdmins: new Map(), allCompanyIds: new Set(), allUserIds: new Set(['u1']), // co_ghost NOT in allCompanyIds
     })
-    expect(plan.unresolvedOrphans).toContainEqual({ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' })
+    expect(plan.danglingMemberships).toContainEqual({ companyId: 'co_ghost', uid: 'u1', reason: 'existing_membership_missing_company' })
+    expect(plan.unresolvedOrphans).toEqual([]) // NOT the legacy-orphan list
     expect(plan.applyAllowed).toBe(false)
   })
 
@@ -453,23 +461,24 @@ describe('buildPlan — existing membership integrity (independent audit fix #3,
     expect(plan.unknownUsers).toEqual([{ uid: 'u1', reason: 'no_usable_relations' }])
   })
 
-  it('an existing admin membership whose uid has NO users/{uid} document is surfaced as a blocking missing_user orphan', () => {
+  it('an existing admin membership whose uid has NO users/{uid} document is surfaced in danglingMemberships', () => {
     const existing = new Map([[relationKey('co_a', 'u_ghost'), { uid: 'u_ghost', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts }]])
     const plan = buildPlan({
       extraction: emptyExtraction(), decisions: [], existingMemberships: existing,
       existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']), allUserIds: new Set(), // u_ghost NOT in allUserIds
     })
-    expect(plan.unresolvedOrphans).toContainEqual({ companyId: 'co_a', uid: 'u_ghost', reason: 'missing_user' })
+    expect(plan.danglingMemberships).toContainEqual({ companyId: 'co_a', uid: 'u_ghost', reason: 'existing_membership_missing_user' })
+    expect(plan.unresolvedOrphans).toEqual([])
     expect(plan.applyAllowed).toBe(false)
   })
 
-  it('a valid-looking existing membership whose company AND user both exist is NOT flagged as an orphan', () => {
+  it('a valid-looking existing membership whose company AND user both exist is NOT flagged as dangling', () => {
     const existing = new Map([[relationKey('co_a', 'u1'), { uid: 'u1', role: 'viewer', status: 'active', createdAt: ts, updatedAt: ts }]])
     const plan = buildPlan({
       extraction: emptyExtraction(), decisions: [], existingMemberships: existing,
       existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']), allUserIds: new Set(['u1']),
     })
-    expect(plan.unresolvedOrphans).toEqual([])
+    expect(plan.danglingMemberships).toEqual([])
   })
 
   it('an already-invalid (corrupted schema) existing membership is not additionally reported by this integrity check', () => {
@@ -481,24 +490,59 @@ describe('buildPlan — existing membership integrity (independent audit fix #3,
       extraction: emptyExtraction(), decisions: [], existingMemberships: existing,
       existingActiveAdmins: new Map(), allCompanyIds: new Set(), allUserIds: new Set(['u1']),
     })
-    expect(plan.unresolvedOrphans).toEqual([])
+    expect(plan.danglingMemberships).toEqual([])
   })
 
-  it('an exclude decision dismisses the orphan LISTING but never makes the dangling membership start counting elsewhere', () => {
-    const existing = new Map([[relationKey('co_a', 'u_ghost'), { uid: 'u_ghost', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts }]])
-    const decisions: Decision[] = [{ uid: 'u_ghost', companyId: 'co_a', resolution: 'exclude', reason: 'acknowledged dangling data, cleanup tracked separately', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+  // ── Required test #1 (exact fail-open scenario from the review) ────────
+  it('a company with a valid real admin PLUS a dangling missing-user membership: a pair-level exclude for the dangling pair still leaves applyAllowed === false', () => {
+    const existing = new Map([
+      [relationKey('co_a', 'u_real_admin'), { uid: 'u_real_admin', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts }],
+      [relationKey('co_a', 'u_ghost'), { uid: 'u_ghost', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts }],
+    ])
+    const decisions: Decision[] = [{ uid: 'u_ghost', companyId: 'co_a', resolution: 'exclude', reason: 'trying to acknowledge the dangling doc away', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
     const plan = buildPlan({
       extraction: emptyExtraction(), decisions, existingMemberships: existing,
-      // existingActiveAdmins deliberately empty here — as it would be in
-      // the real pipeline, since firestoreReaders.ts's
-      // computeExistingActiveAdmins() independently excludes u_ghost for
-      // not being in allUserIds, regardless of any decision.
-      existingActiveAdmins: new Map(), allCompanyIds: new Set(['co_a']), allUserIds: new Set(),
+      // The real admin (u_real_admin) DOES satisfy the gate — computed
+      // upstream by firestoreReaders.ts exactly as it would be in the real
+      // pipeline (u_ghost excluded from this map because it's not in
+      // allUserIds; u_real_admin included because it is).
+      existingActiveAdmins: new Map([['co_a', new Set(['u_real_admin'])]]),
+      allCompanyIds: new Set(['co_a']), allUserIds: new Set(['u_real_admin']), // u_ghost NOT in allUserIds
     })
-    expect(plan.unresolvedOrphans).toEqual([]) // acknowledged
-    // The company still has no admin — the exclude decision did NOT
-    // retroactively make the dangling admin membership count.
-    expect(plan.companiesWithoutAdmin).toEqual(['co_a'])
+    // The company DOES have a valid admin, so the last-admin gate alone
+    // would not have blocked this — proving the ONLY thing keeping
+    // applyAllowed false is danglingMemberships being un-clearable.
+    expect(plan.companiesWithoutAdmin).toEqual([])
+    expect(plan.danglingMemberships).toContainEqual({ companyId: 'co_a', uid: 'u_ghost', reason: 'existing_membership_missing_user' })
+    expect(plan.applyAllowed).toBe(false)
+  })
+
+  it('a user-level exclude decision (matching the dangling uid) also cannot clear a dangling membership', () => {
+    const existing = new Map([
+      [relationKey('co_a', 'u_real_admin'), { uid: 'u_real_admin', role: 'admin', status: 'active', createdAt: ts, updatedAt: ts }],
+      [relationKey('co_ghost', 'u_ghost'), { uid: 'u_ghost', role: 'viewer', status: 'active', createdAt: ts, updatedAt: ts }],
+    ])
+    const decisions: Decision[] = [{ uid: 'u_ghost', resolution: 'exclude', reason: 'trying the user-level route instead', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+    const plan = buildPlan({
+      extraction: emptyExtraction(), decisions, existingMemberships: existing,
+      existingActiveAdmins: new Map([['co_a', new Set(['u_real_admin'])]]),
+      allCompanyIds: new Set(['co_a']), allUserIds: new Set(['u_real_admin', 'u_ghost']), // co_ghost NOT in allCompanyIds
+    })
+    expect(plan.danglingMemberships).toContainEqual({ companyId: 'co_ghost', uid: 'u_ghost', reason: 'existing_membership_missing_company' })
+    expect(plan.applyAllowed).toBe(false)
+  })
+
+  it('BOTH a pair-level exclude AND a user-level exclude together still cannot clear a dangling membership under a missing company', () => {
+    const existing = new Map([[relationKey('co_ghost', 'u1'), { uid: 'u1', role: 'viewer', status: 'active', createdAt: ts, updatedAt: ts }]])
+    const decisions: Decision[] = [
+      { uid: 'u1', companyId: 'co_ghost', resolution: 'exclude', reason: 'pair-level attempt', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' },
+      { uid: 'u1', resolution: 'exclude', reason: 'user-level attempt too', reviewedBy: 'bob', reviewedAt: '2026-01-01T00:00:01.000Z' },
+    ]
+    const plan = buildPlan({
+      extraction: emptyExtraction(), decisions, existingMemberships: existing,
+      existingActiveAdmins: new Map(), allCompanyIds: new Set(), allUserIds: new Set(['u1']),
+    })
+    expect(plan.danglingMemberships).toContainEqual({ companyId: 'co_ghost', uid: 'u1', reason: 'existing_membership_missing_company' })
     expect(plan.applyAllowed).toBe(false)
   })
 })

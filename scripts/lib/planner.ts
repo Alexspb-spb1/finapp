@@ -4,7 +4,8 @@
 import {
   relationKey, splitRelationKey,
   type LegacyExtractionResult, type Decision, type PlanResult, type PlannedCreate,
-  type ConflictRecord, type OrphanRecord, type OrphanReason, type OwnerAnomalyRecord, type UnknownUserRecord, type MalformedClaimRecord,
+  type ConflictRecord, type OrphanRecord, type OwnerAnomalyRecord, type UnknownUserRecord, type MalformedClaimRecord,
+  type DanglingMembershipRecord, type DanglingMembershipReason,
 } from './types.ts'
 import { classifyExistingMembership, isStrictlyValidActiveMembership } from './membershipValidation.ts'
 import { sortRelations } from './checksum.ts'
@@ -185,32 +186,41 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
   const malformedClaims: MalformedClaimRecord[] = extraction.malformedClaims
     .filter(m => !userLevelExcludedUids.has(m.uid))
 
-  // ── Step 7: existing-membership integrity — dangling documents surfaced ──
-  // Independent audit fix #3 (3rd round): an EXISTING
-  // `companies/{companyId}/members/{uid}` document that is strictly valid
-  // on its OWN schema (right shape, real Timestamps, known role, active
-  // status) but references a company or user that no longer exists is
-  // dangling data, not a trustworthy relation — it must never silently pass
-  // as "fine" just because nothing else in this run touches it. It is
-  // surfaced here as a blocking orphan (the SAME acknowledgement model as
-  // every other orphan — `exclude` dismisses the LISTING, but never changes
-  // the independently-computed facts above: it can never retroactively
-  // start counting as a protecting admin or as coverage for an unknown
-  // user — those checks read `allCompanyIds`/`allUserIds` directly, not
-  // whether an orphan was excluded).
-  const pushedOrphanKeys = new Set(unresolvedOrphans.map(o => relationKey(o.companyId, o.uid)))
+  // ── Step 7: existing-membership integrity — dangling documents ALWAYS blocking ──
+  // Independent audit fix #3 (3rd round; follow-up correction after the
+  // 3rd-round review flagged a fail-open in the first version of this
+  // step). An EXISTING `companies/{companyId}/members/{uid}` document that
+  // is strictly valid on its OWN schema (right shape, real Timestamps,
+  // known role, active status) but references a company or user that does
+  // not exist is dangling data — the document PHYSICALLY EXISTS in
+  // Firestore regardless of anything this run's decisions say.
+  //
+  // The first version of this step reused `unresolvedOrphans` and let a
+  // relation-level `exclude` decision remove the entry from that list —
+  // but excluding a LISTING can never make a document stop existing. If
+  // the affected company happened to have another valid admin, that
+  // allowed `applyAllowed` to become `true` (and `verify` to report
+  // success) with the corrupted document still sitting in Firestore,
+  // undetected forever after.
+  //
+  // Fix: reported in its OWN list (`danglingMemberships`, a distinct type
+  // from `OrphanRecord` — see types.ts) that NO decision of any kind can
+  // ever clear — neither a relation-level `exclude` (matching this exact
+  // companyId/uid) nor a user-level `exclude` (matching just the uid).
+  // `decisionByKey`/`userLevelExcludedUids` are deliberately never
+  // consulted here. The only way to stop this from blocking is to actually
+  // repair the data — create the missing company/user document, or delete
+  // the dangling membership document — which the NEXT run will then
+  // observe as no longer dangling.
+  const danglingMemberships: DanglingMembershipRecord[] = []
   for (const [key, data] of existingMemberships) {
     const [companyId, uid] = splitRelationKey(key)
     if (!isStrictlyValidActiveMembership(uid, data)) continue // already untrusted on its own — not this step's concern
     const companyExists = allCompanyIds.has(companyId)
     const userExists = allUserIds.has(uid)
     if (companyExists && userExists) continue
-    const decision = decisionByKey.get(key)
-    if (decision && decision.resolution === 'exclude') continue // acknowledged
-    if (pushedOrphanKeys.has(key)) continue // already reported (e.g. also a legacy-claim orphan for the same pair)
-    pushedOrphanKeys.add(key)
-    const reason: OrphanReason = companyExists ? 'missing_user' : 'missing_company'
-    unresolvedOrphans.push({ companyId, uid, reason })
+    const reason: DanglingMembershipReason = companyExists ? 'existing_membership_missing_user' : 'existing_membership_missing_company'
+    danglingMemberships.push({ companyId, uid, reason })
   }
 
   const applyAllowed =
@@ -219,7 +229,8 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     unresolvedOwnerAnomalies.length === 0 &&
     companiesWithoutAdmin.length === 0 &&
     unknownUsers.length === 0 &&
-    malformedClaims.length === 0
+    malformedClaims.length === 0 &&
+    danglingMemberships.length === 0
 
   return {
     // Independent audit fix #4 (3rd round): `(a.companyId + a.uid).localeCompare(...)`
@@ -237,6 +248,7 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     companiesWithoutAdmin,
     unknownUsers,
     malformedClaims,
+    danglingMemberships,
     applyAllowed,
   }
 }

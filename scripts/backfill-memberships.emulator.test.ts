@@ -694,6 +694,10 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
   })
 
   // ── Independent audit (3rd round) fix #3 — existing orphaned membership integrity ──
+  // Independent audit (3rd round follow-up correction): these dangling
+  // documents are reported in `report.danglingMemberships`, a SEPARATE
+  // list from `report.orphans` (legacy-source orphans), and — unlike
+  // `orphans` — nothing in a decisions file can ever clear an entry here.
   it('an existing membership under a NONEXISTENT company blocks apply and verify with zero writes', async () => {
     const uid = uniqueId('u'); const ghostCompanyId = uniqueId('co_ghost')
     // The company document itself is never created — only the membership doc.
@@ -702,7 +706,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     const applyResult = runCli(baseArgs('apply'))
     expect(applyResult.code).toBe(1)
     expect(applyResult.report?.counts.created).toBe(0)
-    expect(applyResult.report?.orphans).toContainEqual({ companyId: ghostCompanyId, uid, reason: 'missing_company' })
+    expect(applyResult.report?.danglingMemberships).toContainEqual({ companyId: ghostCompanyId, uid, reason: 'existing_membership_missing_company' })
 
     const verifyResult = runCli(baseArgs('verify'))
     expect(verifyResult.code).toBe(1)
@@ -719,12 +723,35 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     const applyResult = runCli(baseArgs('apply'))
     expect(applyResult.code).toBe(1)
     expect(applyResult.report?.counts.created).toBe(0)
-    expect(applyResult.report?.orphans).toContainEqual({ companyId, uid: ghostUid, reason: 'missing_user' })
+    expect(applyResult.report?.danglingMemberships).toContainEqual({ companyId, uid: ghostUid, reason: 'existing_membership_missing_user' })
     // The dangling admin membership must not have satisfied the last-admin
     // gate for this (otherwise real) company.
     expect(applyResult.report?.counts.unresolved).toBeGreaterThanOrEqual(1)
 
     const verifyResult = runCli(baseArgs('verify'))
+    expect(verifyResult.code).toBe(1)
+    expect(verifyResult.report?.verification.matchesTarget).toBe(false)
+  })
+
+  // ── Required test #2 (this round): the exact fail-open scenario from the review ──
+  it('a company with a valid real admin PLUS a dangling missing-user admin membership stays blocked even with a pair-level exclude decision', async () => {
+    const companyId = uniqueId('co')
+    const realAdminUid = uniqueId('u_real'); const ghostUid = uniqueId('u_ghost')
+    await seedCompany(companyId)
+    await seedUser(realAdminUid, { companyId, role: 'admin' }) // a REAL, valid admin — the company is NOT otherwise short an admin
+    // A second, dangling admin membership whose uid has no users/{uid} doc.
+    await seedExistingMembership(companyId, ghostUid, { uid: ghostUid, role: 'admin', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now() })
+
+    const decisions = decisionsFile([{ uid: ghostUid, companyId, resolution: 'exclude', reason: 'trying to acknowledge the dangling doc away', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+
+    const applyResult = runCli(baseArgs('apply', ['--decisions-file', decisions]))
+    expect(applyResult.code).toBe(1)
+    expect(applyResult.report?.counts.created).toBe(0)
+    expect(applyResult.report?.danglingMemberships).toContainEqual({ companyId, uid: ghostUid, reason: 'existing_membership_missing_user' })
+    expect(await getMembership(companyId, realAdminUid)).toBeUndefined() // nothing written at all
+    expect(await getMembership(companyId, ghostUid)).toBeDefined() // the dangling doc is untouched, still there
+
+    const verifyResult = runCli(baseArgs('verify', ['--decisions-file', decisions]))
     expect(verifyResult.code).toBe(1)
     expect(verifyResult.report?.verification.matchesTarget).toBe(false)
   })
