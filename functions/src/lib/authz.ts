@@ -102,16 +102,30 @@ export function requireRole(membership: Membership, allowed: readonly Role[]): v
  * for Admin SDK callers — the `isMaintenanceModeActive()` Rules helper
  * that blocks CLIENT writes to users/companies/company_data has zero
  * effect on this Cloud Function, which writes via Admin SDK privileges.
- * Without this explicit check, a live `createCompany` call could still
- * create a NEW company/membership/user while a SEC-005 production apply
- * is in flight, even with maintenance mode "on" from the client's
- * perspective. Fail-closed: a read failure is treated the same as
- * `enabled === true` — never silently treated as "maintenance is off".
+ * Fail-closed: a read failure is treated the same as `enabled === true` —
+ * never silently treated as "maintenance is off".
+ *
+ * **Must be called with the mutating call's own `Transaction`** (the
+ * optional `txn` parameter — same pattern as `requireActiveMember()` and
+ * `assertNotLastAdmin()` above), and awaited before any `txn.set()`/
+ * `txn.update()`/`txn.delete()` in that same transaction. Reading via
+ * `txn.get()` makes this document part of the transaction's read set, so
+ * Firestore's optimistic-concurrency control forces the WHOLE transaction
+ * to retry — re-running this check against the fresh value — if
+ * `system/maintenance` is written by another operation after this read but
+ * before this transaction commits. A plain pre-transaction `db...get()`
+ * (the original SEC-005 implementation) could not close that window: an
+ * operator enabling maintenance mode a moment after such a check passed,
+ * but before the transaction it gated had committed, would not stop that
+ * transaction from creating a company. Called without `txn`, this performs
+ * a plain (non-transactional) read instead — useful for callers with no
+ * transaction of their own, but offers no such guarantee.
  */
-export async function requireNotInMaintenanceMode(db: Firestore): Promise<void> {
+export async function requireNotInMaintenanceMode(db: Firestore, txn?: Transaction): Promise<void> {
+  const ref = db.collection('system').doc('maintenance')
   let snap
   try {
-    snap = await db.collection('system').doc('maintenance').get()
+    snap = txn ? await txn.get(ref) : await ref.get()
   } catch {
     throw new AppError('maintenance_mode')
   }

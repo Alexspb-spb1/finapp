@@ -40,6 +40,38 @@ describe('parseCliArgs — required flags', () => {
   it('throws on an unknown argument', () => {
     expect(() => parseCliArgs([...baseArgs, '--force'])).toThrow(CliArgError)
   })
+
+  // ── Final-round fix #6: rollback-from-report requires --expected-report-sha256 ──
+  const HEX64 = 'a'.repeat(64)
+
+  it('rollback-from-report requires --expected-report-sha256 even when --from-report is given', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-report', '--from-report', '/tmp/a.json'])).toThrow(CliArgError)
+  })
+
+  it('accepts rollback-from-report when both --from-report and --expected-report-sha256 are given', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'rollback-from-report', '--from-report', '/tmp/a.json', '--expected-report-sha256', HEX64])
+    expect(opts.fromReport).toBe('/tmp/a.json')
+    expect(opts.expectedReportSha256).toBe(HEX64)
+  })
+
+  it('rejects a malformed (non-hex, wrong-length) --expected-report-sha256', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-report', '--from-report', '/tmp/a.json', '--expected-report-sha256', 'not-a-hash'])).toThrow(CliArgError)
+  })
+
+  // ── Final-round fix #7: rollback-from-plan requires --from-plan + --ack-emergency-reconstruction ──
+  it('rollback-from-plan requires --from-plan', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--ack-emergency-reconstruction'])).toThrow(CliArgError)
+  })
+
+  it('rollback-from-plan requires --ack-emergency-reconstruction even with --from-plan given', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json'])).toThrow(CliArgError)
+  })
+
+  it('accepts rollback-from-plan when both --from-plan and --ack-emergency-reconstruction are given', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction'])
+    expect(opts.fromPlan).toBe('/tmp/dry-run.json')
+    expect(opts.ackEmergencyReconstruction).toBe(true)
+  })
 })
 
 describe('parseCliArgs — passthrough flags', () => {

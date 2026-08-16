@@ -16,7 +16,7 @@ import { assertPathOutsideRepo } from './pathSafety.ts'
 
 export const REPORT_SCHEMA_VERSION = 1
 
-export type ReportMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from-report'
+export type ReportMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from-report' | 'rollback-from-plan'
 
 export interface ReportCounts {
   usersRead: number
@@ -78,7 +78,10 @@ export interface WriteFailureRecord {
  * flag's raw string value. See scripts/lib/productionSafety.ts. */
 export interface ProductionSafetyAudit {
   maintenanceMode: { verifiedAt: string; enabledAt: string | null; enabledBy: string | null; taskId: string | null } | null
-  backupReference: { sha256: string; createdAtUtc: string } | null
+  /** `membersCount` — independent review fix #1: proves the verified backup
+   * actually captured the `members` collection group, not merely that a
+   * manifest file existed. */
+  backupReference: { sha256: string; createdAtUtc: string; membersCount: number } | null
   /** PRE-apply rollback plan reference — a dry-run report whose targetChecksum
    * was cross-checked against this run's own computed target BEFORE any write. */
   rollbackPlanReference: { sha256: string; targetChecksum: string } | null
@@ -86,6 +89,33 @@ export interface ProductionSafetyAudit {
    * report file, once written — the durable pointer a subsequent
    * `rollback-from-report` would actually consume. */
   ownReportSha256: string | null
+}
+
+/** `--mode rollback-from-plan` only — final-round fix for item 7: the
+ * "lost apply-report" emergency scenario no longer falls back to a blind
+ * Firestore `import` of the pre-apply backup (which cannot delete anything
+ * — see MEMBERSHIP_BACKFILL.md). Instead, candidates are reconstructed from
+ * a separately-verified dry-run report's `plannedCreates`, and each one is
+ * deleted ONLY if the live document still matches EXACTLY what was
+ * planned, under the same `lastUpdateTime` delete precondition
+ * `rollback-from-report` uses. This is deliberately weaker evidence than a
+ * real apply report's `createdPaths` (no create-time proof this exact run
+ * created the document — only that a matching document exists now and
+ * nothing else claimed to have planned it) — `null` for every other mode. */
+export interface EmergencyReconstructionRefusal {
+  companyId: string
+  uid: string
+  reason: string
+}
+export interface EmergencyReconstructionAudit {
+  sourceDryRunSha256: string
+  /** Planned candidates with no live document at all — nothing to delete,
+   * not an error (the intended creation may simply never have happened). */
+  skippedNotFound: { companyId: string; uid: string }[]
+  /** Planned candidates whose live document did NOT exactly match the
+   * plan (or failed strict schema validation, or changed concurrently at
+   * delete time) — never deleted; refused instead of guessing. */
+  refused: EmergencyReconstructionRefusal[]
 }
 
 export interface MembershipBackfillReport {
@@ -124,6 +154,7 @@ export interface MembershipBackfillReport {
   verification: VerificationResult
   rollbackManifest: RollbackManifestEntry[]
   productionSafety: ProductionSafetyAudit
+  emergencyReconstruction: EmergencyReconstructionAudit | null
 }
 
 /** Refuses any report path that is not absolute, or that resolves (after
@@ -186,5 +217,15 @@ export function printSafeSummary(report: MembershipBackfillReport): void {
     // local file path (which could reveal operator filesystem/username
     // structure) and never a Firestore document identifier.
     productionSafety: report.productionSafety,
+    // Only COUNTS here, deliberately — unlike productionSafety above,
+    // EmergencyReconstructionAudit's skippedNotFound/refused arrays contain
+    // companyId/uid (sensitive identifiers per task spec §8), so only their
+    // lengths are safe for the stdout summary; the full detail stays in the
+    // full report file only.
+    emergencyReconstruction: report.emergencyReconstruction === null ? null : {
+      sourceDryRunSha256: report.emergencyReconstruction.sourceDryRunSha256,
+      skippedNotFoundCount: report.emergencyReconstruction.skippedNotFound.length,
+      refusedCount: report.emergencyReconstruction.refused.length,
+    },
   }, null, 2))
 }

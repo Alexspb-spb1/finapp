@@ -262,5 +262,35 @@ describe('createCompany — real callable pipeline through the Functions Emulato
       await callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() })
       expect(await countCompaniesOwnedBy(uid)).toBe(1)
     })
+
+    // ── Final-round fix #2: TOCTOU race — maintenance check must be INSIDE the transaction ──
+    it('closes the maintenance-mode TOCTOU race: enabling maintenance mode WHILE a createCompany call is in flight still creates zero documents', async () => {
+      const { uid } = await createTestUser(true, 'maintenance-race')
+
+      // Fired in the SAME tick, before awaiting anything.
+      // callCreateCompany()'s real call goes through the Functions
+      // Emulator's HTTP layer and performs SEVERAL sequential round trips
+      // (adminAuth.getUser(), the bootstrap-receipt txn.get(), the
+      // maintenance txn.get(), the user-profile txn.get(), then a
+      // multi-document commit) before it can possibly succeed.
+      // setMaintenanceMode() is a single, direct Admin SDK `.set()` — one
+      // round trip. Firing it several times (not just once) closes the
+      // remaining timing gap: ANY one of these landing inside
+      // createCompany's transaction's live read-to-commit window is
+      // enough to force Firestore's automatic optimistic-concurrency
+      // retry — the whole point of reading system/maintenance via
+      // `txn.get()` (requireNotInMaintenanceMode(db, txn) in
+      // functions/src/lib/authz.ts) instead of a plain pre-transaction
+      // read (the previous implementation, which this test would have
+      // caught failing: a plain read taken before the race window could
+      // pass, then the transaction could still commit after maintenance
+      // mode went active).
+      const createPromise = callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() })
+      const maintenancePromises = Array.from({ length: 8 }, () => setMaintenanceMode(true))
+
+      await expect(createPromise).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'maintenance_mode')
+      await Promise.all(maintenancePromises)
+      expect(await countCompaniesOwnedBy(uid)).toBe(0)
+    })
   })
 })

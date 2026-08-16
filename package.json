@@ -18,7 +18,7 @@
     "preview": "vite preview",
     "firebase:emulators": "firebase emulators:start --project demo-finapp",
     "test:rules": "firebase emulators:exec --project demo-finapp --only firestore \"vitest run tests/rules\"",
-    "test:migration": "firebase emulators:exec --project demo-finapp --only firestore \"vitest run scripts\"",
+    "test:migration": "firebase emulators:exec --project demo-finapp --only firestore \"vitest run scripts --no-file-parallelism\"",
     "typecheck": "tsc -b --pretty false",
     "baseline:bundle": "node scripts/technicalBaseline/report-bundle.mjs",
     "migrate:memberships": "node scripts/backfill-memberships.ts"

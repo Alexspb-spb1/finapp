@@ -17,14 +17,27 @@
 import { readFileSync } from 'node:fs'
 import type { Firestore } from 'firebase-admin/firestore'
 import { sha256Hex } from './checksum.ts'
+import { REPORT_SCHEMA_VERSION } from './report.ts'
 
 export class ProductionSafetyError extends Error {}
+
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+function isValidIsoTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !Number.isNaN(Date.parse(value))
+}
 
 // ── Maintenance mode ────────────────────────────────────────────────────
 
 export interface MaintenanceModeStatus {
   verifiedAt: string
-  enabledAt: string | null
+  /** Always a real timestamp when this function resolves successfully — see
+   * below for why this is now REQUIRED, not merely best-effort. */
+  enabledAt: string
   enabledBy: string | null
   taskId: string | null
 }
@@ -39,7 +52,15 @@ export interface MaintenanceModeStatus {
  * merely asserts. `system/maintenance` is never client-writable
  * (firestore.rules has no `allow write` rule for it — falls through to
  * the deny-by-default catch-all), so only an operator using the Admin SDK
- * (i.e. following the SEC-005 runbook) can ever set it.
+ * (i.e. following the SEC-005 runbook, e.g. scripts/ops/set-maintenance-mode.ts)
+ * can ever set it.
+ *
+ * **`enabledAt` is now a hard requirement** (final-round fix, item 3):
+ * `verifyBackupReference()` below needs a real "maintenance was enabled at
+ * time T" anchor to prove a given backup manifest was created AFTER
+ * maintenance mode went active — a document missing `enabledAt` cannot
+ * support that proof, so it is refused here rather than silently degrading
+ * to `null` and skipping the freshness check downstream.
  */
 export async function assertMaintenanceModeActive(db: Firestore): Promise<MaintenanceModeStatus> {
   let snap
@@ -55,12 +76,16 @@ export async function assertMaintenanceModeActive(db: Firestore): Promise<Mainte
   if (data.enabled !== true) {
     throw new ProductionSafetyError('system/maintenance.enabled is not true — maintenance mode is not active.')
   }
-  const enabledAt = data.enabledAt
+  const enabledAtRaw = data.enabledAt
+  const enabledAtIso = enabledAtRaw !== null && typeof enabledAtRaw === 'object' && typeof (enabledAtRaw as { toDate?: unknown }).toDate === 'function'
+    ? (enabledAtRaw as { toDate: () => Date }).toDate().toISOString()
+    : null
+  if (enabledAtIso === null) {
+    throw new ProductionSafetyError('system/maintenance.enabledAt is missing or not a valid Firestore Timestamp — cannot prove maintenance mode was enabled before the backup was taken.')
+  }
   return {
     verifiedAt: new Date().toISOString(),
-    enabledAt: enabledAt !== null && typeof enabledAt === 'object' && typeof (enabledAt as { toDate?: unknown }).toDate === 'function'
-      ? (enabledAt as { toDate: () => Date }).toDate().toISOString()
-      : null,
+    enabledAt: enabledAtIso,
     enabledBy: typeof data.enabledBy === 'string' ? data.enabledBy : null,
     taskId: typeof data.taskId === 'string' ? data.taskId : null,
   }
@@ -72,21 +97,50 @@ export interface BackupReference {
   path: string
   sha256: string
   createdAtUtc: string
+  membersCount: number
 }
+
+/** Backup manifests older than this can no longer be used as
+ * `--backup-reference` for a production apply — a stale backup does not
+ * reflect the state Firestore is actually in right now. 24h is a
+ * deliberately conservative bound for a single-apply migration window;
+ * documented in MEMBERSHIP_BACKFILL.md alongside the runbook step order. */
+export const MAX_BACKUP_AGE_MS = 24 * 60 * 60 * 1000
 
 /**
  * Verifies `--backup-reference` points to an existing, readable backup
- * manifest (schema: docs/remediation/reports/BASE-003.md §6.1) showing a
- * SUCCESSFUL Firestore export for the EXACT project this run targets —
- * not merely a non-empty string. Independent review fix #1: the manifest
- * itself must show `members` was included in the export's
- * `--collection-ids` (or that a full/unscoped export was used) — this
- * function checks the manifest's `firestore.membersCount` field is
- * present (a manifest produced by the corrected backup procedure always
- * sets it; an old-style manifest that never captured `members` at all
- * will be missing it and is refused here).
+ * manifest (schema: docs/remediation/reports/BASE-003.md §6.1, extended by
+ * SEC-005) showing a SUCCESSFUL, complete, freshly-taken Firestore export
+ * for the EXACT project this run targets — not merely a non-empty string
+ * or a partially-populated JSON file. Final-round fixes #1 and #3:
+ *
+ * - `firestore.exportOperationId` must identify which export produced
+ *   this manifest.
+ * - `firestore.collectionIds` must include `"members"`, or
+ *   `firestore.scope === 'full'` — a partial export that omitted the
+ *   `members` collection group is refused (independent review fix #1).
+ * - Every count (`membersCount`/`companiesCount`/`usersCount`/
+ *   `companyDataDocsCount`) must be a non-negative integer.
+ * - `restore.verificationResult === 'PASS'`, with `restore.membersCount`
+ *   matching `firestore.membersCount` and a non-empty
+ *   `restore.membersChecksum` — the backup must have actually been
+ *   restored to an isolated project and its `members` collection group
+ *   count/checksum confirmed there, not merely exported (independent
+ *   review fix #2).
+ * - `createdAtUtc` must be a valid timestamp AT OR AFTER
+ *   `maintenanceEnabledAtIso` — a backup taken BEFORE maintenance mode was
+ *   enabled cannot be trusted as a write-frozen, consistent snapshot
+ *   (final-round fix #1: the runbook now enables maintenance mode before
+ *   backup, so this is enforceable, not just documented).
+ * - `createdAtUtc` must be no older than `MAX_BACKUP_AGE_MS` relative to
+ *   `nowIso` (defaults to real "now") — a stale backup is refused.
  */
-export function verifyBackupReference(path: string, expectedProjectId: string): BackupReference {
+export function verifyBackupReference(
+  path: string,
+  expectedProjectId: string,
+  maintenanceEnabledAtIso: string,
+  nowIso: string = new Date().toISOString(),
+): BackupReference {
   let raw: string
   try {
     raw = readFileSync(path, 'utf8')
@@ -100,20 +154,164 @@ export function verifyBackupReference(path: string, expectedProjectId: string): 
     throw new ProductionSafetyError('--backup-reference is not valid JSON.')
   }
   const manifest = parsed as Record<string, unknown>
+
   if (manifest.productionProjectId !== expectedProjectId) {
     throw new ProductionSafetyError(`--backup-reference manifest.productionProjectId does not match --project (${expectedProjectId}).`)
   }
+  if (!isValidIsoTimestamp(manifest.createdAtUtc)) {
+    throw new ProductionSafetyError('--backup-reference manifest.createdAtUtc is missing or not a valid timestamp.')
+  }
+  const createdAtUtc = manifest.createdAtUtc as string
+
   const firestore = manifest.firestore as Record<string, unknown> | undefined
-  if (!firestore || firestore.exportStatus !== 'SUCCESS') {
+  if (!firestore || typeof firestore !== 'object') {
+    throw new ProductionSafetyError('--backup-reference manifest is missing the firestore section.')
+  }
+  if (typeof firestore.exportOperationId !== 'string' || firestore.exportOperationId.length === 0) {
+    throw new ProductionSafetyError('--backup-reference manifest.firestore.exportOperationId is missing — cannot identify which export produced this backup.')
+  }
+  if (firestore.exportStatus !== 'SUCCESS') {
     throw new ProductionSafetyError('--backup-reference manifest does not show a SUCCESSFUL Firestore export.')
   }
-  if (typeof firestore.membersCount !== 'number') {
-    throw new ProductionSafetyError('--backup-reference manifest is missing firestore.membersCount — the backup export did not include the members collection group (independent review fix #1). Re-run the export with --collection-ids including "members", or a full export.')
+  const collectionIds = firestore.collectionIds
+  const isFullScope = firestore.scope === 'full'
+  const hasMembers = Array.isArray(collectionIds) && collectionIds.includes('members')
+  if (!isFullScope && !hasMembers) {
+    throw new ProductionSafetyError('--backup-reference manifest.firestore.collectionIds does not include "members" and firestore.scope is not "full" — the export did not capture the members collection group (independent review fix #1). Re-run the export with --collection-ids including "members", or use a full export.')
   }
-  if (typeof manifest.createdAtUtc !== 'string') {
-    throw new ProductionSafetyError('--backup-reference manifest is missing createdAtUtc.')
+  for (const field of ['membersCount', 'companiesCount', 'usersCount', 'companyDataDocsCount'] as const) {
+    if (!isNonNegativeInteger(firestore[field])) {
+      throw new ProductionSafetyError(`--backup-reference manifest.firestore.${field} must be a non-negative integer.`)
+    }
   }
-  return { path, sha256: sha256Hex(raw), createdAtUtc: manifest.createdAtUtc }
+  const membersCount = firestore.membersCount as number
+
+  const restore = manifest.restore as Record<string, unknown> | undefined
+  if (!restore || typeof restore !== 'object') {
+    throw new ProductionSafetyError('--backup-reference manifest is missing the restore section — restore verification (counts/checksum for members) was never recorded.')
+  }
+  if (restore.verificationResult !== 'PASS') {
+    throw new ProductionSafetyError('--backup-reference manifest.restore.verificationResult is not "PASS" — this backup was never confirmed by a restore-to-isolated-project cycle.')
+  }
+  if (!isNonNegativeInteger(restore.membersCount)) {
+    throw new ProductionSafetyError('--backup-reference manifest.restore.membersCount must be a non-negative integer.')
+  }
+  if (restore.membersCount !== membersCount) {
+    throw new ProductionSafetyError(`--backup-reference manifest.restore.membersCount (${restore.membersCount}) does not match firestore.membersCount (${membersCount}) — the restore cycle did not confirm the backup's own count.`)
+  }
+  if (typeof restore.membersChecksum !== 'string' || restore.membersChecksum.length === 0) {
+    throw new ProductionSafetyError('--backup-reference manifest.restore.membersChecksum is missing.')
+  }
+  if (!isValidIsoTimestamp(restore.verifiedAtUtc)) {
+    throw new ProductionSafetyError('--backup-reference manifest.restore.verifiedAtUtc is missing or not a valid timestamp.')
+  }
+
+  if (Date.parse(createdAtUtc) < Date.parse(maintenanceEnabledAtIso)) {
+    throw new ProductionSafetyError('--backup-reference manifest.createdAtUtc predates maintenance mode being enabled — a backup taken before maintenance mode was on cannot be trusted as a consistent, write-frozen snapshot.')
+  }
+
+  const ageMs = Date.parse(nowIso) - Date.parse(createdAtUtc)
+  if (ageMs < 0) {
+    throw new ProductionSafetyError('--backup-reference manifest.createdAtUtc is in the future.')
+  }
+  if (ageMs > MAX_BACKUP_AGE_MS) {
+    throw new ProductionSafetyError(`--backup-reference manifest is too old to use (created ${createdAtUtc}, ${Math.round(ageMs / 3_600_000)}h ago, max ${MAX_BACKUP_AGE_MS / 3_600_000}h) — take a fresh backup.`)
+  }
+
+  return { path, sha256: sha256Hex(raw), createdAtUtc, membersCount }
+}
+
+// ── Strict dry-run report validation (shared) ───────────────────────────
+
+interface PlannedCreateLike {
+  companyId: string
+  uid: string
+  role: string
+  status: string
+}
+
+export interface StrictDryRunReport {
+  path: string
+  sha256: string
+  targetChecksum: string
+  plannedCreates: readonly PlannedCreateLike[]
+}
+
+/**
+ * Strictly validates that `path` is a genuine, fully-resolved dry-run
+ * report — schemaVersion, `mode === 'dry-run'`, `environment`/`projectId`
+ * matching what this run is targeting, a non-empty `sourceGitSha`, all
+ * three checksum fields present as valid SHA-256 hex, and
+ * `counts.unresolved === 0` (final-round fix #4: a minimal forged/partial
+ * JSON — e.g. `{mode: 'dry-run', targetChecksum: '...'}` with nothing
+ * else — is rejected outright, not merely "close enough"). Shared by
+ * `verifyRollbackPlanReference()` (pre-apply `--rollback-reference`) and
+ * the emergency `rollback-from-plan` reconstruction path
+ * (`scripts/backfill-memberships.ts`) — both need the exact same "this is
+ * a real, fully-approved dry-run report" guarantee before trusting
+ * anything it contains.
+ */
+export function verifyStrictDryRunReport(path: string, expectedProjectId: string, expectedEnvironment: string): StrictDryRunReport {
+  let raw: string
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch (err) {
+    throw new ProductionSafetyError(`could not be read: ${err instanceof Error ? err.message : 'unknown error'}`)
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new ProductionSafetyError('is not valid JSON.')
+  }
+  const report = parsed as Record<string, unknown>
+
+  if (report.schemaVersion !== REPORT_SCHEMA_VERSION) {
+    throw new ProductionSafetyError(`has schemaVersion ${JSON.stringify(report.schemaVersion)}, expected ${REPORT_SCHEMA_VERSION}.`)
+  }
+  if (report.mode !== 'dry-run') {
+    throw new ProductionSafetyError(`must be a dry-run report (mode !== "dry-run", got ${JSON.stringify(report.mode)}).`)
+  }
+  if (report.environment !== expectedEnvironment) {
+    throw new ProductionSafetyError(`environment must be ${JSON.stringify(expectedEnvironment)}, got ${JSON.stringify(report.environment)}.`)
+  }
+  if (report.projectId !== expectedProjectId) {
+    throw new ProductionSafetyError(`projectId does not match --project (${expectedProjectId}).`)
+  }
+  if (typeof report.sourceGitSha !== 'string' || report.sourceGitSha.length === 0) {
+    throw new ProductionSafetyError('is missing sourceGitSha.')
+  }
+  for (const field of ['sourceChecksum', 'decisionsChecksum', 'targetChecksum'] as const) {
+    const value = report[field]
+    if (typeof value !== 'string' || !SHA256_HEX_PATTERN.test(value)) {
+      throw new ProductionSafetyError(`.${field} is missing or not a valid SHA-256 hex digest.`)
+    }
+  }
+  const counts = report.counts as Record<string, unknown> | undefined
+  if (!counts || typeof counts.unresolved !== 'number') {
+    throw new ProductionSafetyError('is missing counts.unresolved.')
+  }
+  if (counts.unresolved !== 0) {
+    throw new ProductionSafetyError(`counts.unresolved is ${counts.unresolved}, expected 0 — this dry-run plan still has unresolved items and cannot be treated as fully approved.`)
+  }
+  const plannedCreatesRaw = report.plannedCreates
+  if (!Array.isArray(plannedCreatesRaw)) {
+    throw new ProductionSafetyError('is missing plannedCreates.')
+  }
+  const plannedCreates: PlannedCreateLike[] = plannedCreatesRaw.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new ProductionSafetyError(`plannedCreates[${index}] is not an object.`)
+    }
+    const rec = entry as Record<string, unknown>
+    for (const field of ['companyId', 'uid', 'role', 'status'] as const) {
+      if (typeof rec[field] !== 'string' || (rec[field] as string).length === 0) {
+        throw new ProductionSafetyError(`plannedCreates[${index}].${field} is missing.`)
+      }
+    }
+    return { companyId: rec.companyId as string, uid: rec.uid as string, role: rec.role as string, status: rec.status as string }
+  })
+
+  return { path, sha256: sha256Hex(raw), targetChecksum: report.targetChecksum as string, plannedCreates }
 }
 
 // ── Rollback plan reference (pre-apply) ─────────────────────────────────
@@ -126,10 +324,10 @@ export interface RollbackPlanReference {
 
 /**
  * Verifies `--rollback-reference` points to an existing, readable
- * DRY-RUN report whose OWN `targetChecksum` matches the CURRENT run's
- * computed target — proving the operator reviewed the exact same planned
- * change set this apply is about to attempt, not a stale or unrelated
- * dry-run.
+ * DRY-RUN report (validated by `verifyStrictDryRunReport()` above) whose
+ * OWN `targetChecksum` matches the CURRENT run's computed target —
+ * proving the operator reviewed the exact same planned change set this
+ * apply is about to attempt, not a stale or unrelated dry-run.
  *
  * Independent review fix #7 ("circular ROLLBACK_REFERENCE"): the apply
  * report — which is what `rollback-from-report` actually consumes —
@@ -139,27 +337,18 @@ export interface RollbackPlanReference {
  * report); the executable rollback artifact (the apply report itself,
  * hashed) is recorded separately, AFTER apply, by the caller.
  */
-export function verifyRollbackPlanReference(path: string, expectedTargetChecksum: string): RollbackPlanReference {
-  let raw: string
+export function verifyRollbackPlanReference(path: string, expectedTargetChecksum: string, expectedProjectId: string): RollbackPlanReference {
+  let strict: StrictDryRunReport
   try {
-    raw = readFileSync(path, 'utf8')
+    strict = verifyStrictDryRunReport(path, expectedProjectId, 'production')
   } catch (err) {
-    throw new ProductionSafetyError(`--rollback-reference could not be read: ${err instanceof Error ? err.message : 'unknown error'}`)
+    if (err instanceof ProductionSafetyError) throw new ProductionSafetyError(`--rollback-reference ${err.message}`)
+    throw err
   }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    throw new ProductionSafetyError('--rollback-reference is not valid JSON.')
-  }
-  const report = parsed as Record<string, unknown>
-  if (report.mode !== 'dry-run') {
-    throw new ProductionSafetyError(`--rollback-reference must point to a dry-run report (mode !== "dry-run", got ${JSON.stringify(report.mode)}).`)
-  }
-  if (typeof report.targetChecksum !== 'string' || report.targetChecksum !== expectedTargetChecksum) {
+  if (strict.targetChecksum !== expectedTargetChecksum) {
     throw new ProductionSafetyError('--rollback-reference targetChecksum does not match this run\'s computed target — it does not describe the change this apply is about to make (re-run dry-run and supply its report).')
   }
-  return { path, sha256: sha256Hex(raw), targetChecksum: report.targetChecksum }
+  return { path, sha256: strict.sha256, targetChecksum: strict.targetChecksum }
 }
 
 // ── Post-apply rollback artifact ────────────────────────────────────────

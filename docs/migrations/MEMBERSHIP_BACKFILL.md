@@ -314,49 +314,60 @@ committed.
 
 ```text
 node scripts/backfill-memberships.ts \
-  --mode dry-run|apply|verify|rollback-from-report   (default: dry-run)
+  --mode dry-run|apply|verify|rollback-from-report|rollback-from-plan (default: dry-run)
   --environment emulator|staging|production           (REQUIRED, no default)
   --project <project-id>                               (REQUIRED, no default)
   --confirm-project <project-id>                        (staging/production only, exact match required)
   --decisions-file /absolute/path/outside/repo.json     (optional)
   --report-path /absolute/path/outside/repo/report.json (REQUIRED)
   --from-report /absolute/path/to/an/apply-report.json  (rollback-from-report only)
+  --expected-report-sha256 <64-hex-char SHA-256>        (rollback-from-report only, REQUIRED)
+  --from-plan /absolute/path/to/a/dry-run-report.json   (rollback-from-plan only)
+  --ack-emergency-reconstruction                        (rollback-from-plan only, REQUIRED)
   --backup-reference /absolute/path/to/backup-manifest.json    (production apply only)
   --rollback-reference /absolute/path/to/a/dry-run-report.json (production apply only)
-  --ack-maintenance-readonly                                    (production apply/rollback only)
+  --ack-maintenance-readonly                                    (production apply/rollback-from-report/rollback-from-plan only)
 ```
 
 `--apply` is a convenience alias for `--mode apply`.
 
 ### Production mode-specific requirements
 
-**Corrected after independent review** — an earlier, never-committed
+**Corrected twice after independent review.** An earlier, never-committed
 preflight used a single blanket check
 (`backup-reference`/`rollback-reference`/`ack-maintenance` required for
-ANY non-`verify` production mode). The actual per-mode requirements,
-implemented in `scripts/backfill-memberships.ts` and
+ANY non-`verify` production mode) — fixed in the first preflight-safety
+round. A follow-up review then found `rollback-from-report` had no
+integrity check on `--from-report` itself, and the "lost apply-report"
+emergency scenario had no real recovery path — both fixed below
+(`--expected-report-sha256`, `rollback-from-plan`). The actual per-mode
+requirements, implemented in `scripts/backfill-memberships.ts` and
 `scripts/lib/productionSafety.ts`:
 
-| Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | Maintenance mode checked live? |
-|---|---|---|---|---|
-| `dry-run` | not required | not required | not required | no — dry-run writes nothing |
-| `apply` | **required, verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, verified against this run's own `targetChecksum`** (`verifyRollbackPlanReference` — see "Two-phase ROLLBACK_REFERENCE" below) | required | **yes** (`assertMaintenanceModeActive`, fail-closed) |
-| `verify` | not required | not required | not required | no — verify only reads |
-| `rollback-from-report` | not required | not required | required | **yes** (`assertMaintenanceModeActive`, fail-closed) |
+| Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | `--expected-report-sha256` | `--ack-emergency-reconstruction` | Maintenance mode checked live? |
+|---|---|---|---|---|---|---|
+| `dry-run` | not required | not required | not required | n/a | n/a | no — dry-run writes nothing |
+| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified against this run's own `targetChecksum`** (`verifyRollbackPlanReference` — see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
+| `verify` | not required | not required | not required | n/a | n/a | no — verify only reads |
+| `rollback-from-report` | not required | not required | required | **required** — verified against `--from-report`'s actual bytes BEFORE any parsing/I/O | n/a | **yes** (`assertMaintenanceModeActive`, fail-closed) |
+| `rollback-from-plan` | not required | not required | required | n/a | **required** — explicit acknowledgement this is the degraded, last-resort path | **yes** (`assertMaintenanceModeActive`, fail-closed) |
 
-Any production-safety check failing for `apply`/`rollback-from-report`
-refuses BEFORE the first write/delete (exit 3) — the same exit code
-family as the project-ID guards below, since this is the same class of
-"precondition not met" failure.
+Any production-safety check failing for `apply`/`rollback-from-report`/
+`rollback-from-plan` refuses BEFORE the first write/delete (exit 3 for a
+verification failure; the `--expected-report-sha256` integrity check for
+`rollback-from-report` also refuses with exit 3, checked before even
+parsing `--from-report` as JSON) — the same exit code family as the
+project-ID guards below, since this is the same class of "precondition
+not met" failure.
 
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | Success (dry-run always; apply with 0 write failures; verify matching target) |
-| 1 | Apply refused (unresolved items, including unknown users/malformed claims) or had write failures; verify found drift OR the plan was not fully resolved (2nd round fix #1 — `matchesTarget` requires `plan.applyAllowed` too, not just checksum equality); rollback had refused deletions |
-| 2 | CLI argument or decisions-file error |
-| 3 | Environment/project guard failure (wrong project, missing confirmation, etc.) OR a production-safety precondition failed (unverifiable backup/rollback reference, maintenance mode not active — see "Production mode-specific requirements" above) |
+| 1 | Apply refused (unresolved items, including unknown users/malformed claims) or had write failures; verify found drift OR the plan was not fully resolved (2nd round fix #1 — `matchesTarget` requires `plan.applyAllowed` too, not just checksum equality); rollback/rollback-from-plan had refused deletions |
+| 2 | CLI argument error, decisions-file error, or a structurally invalid `--from-report`/`--from-plan` (wrong schema, wrong mode, unresolved dry-run, etc.) |
+| 3 | Environment/project guard failure (wrong project, missing confirmation, etc.), a production-safety precondition failed (unverifiable backup/rollback reference, maintenance mode not active), OR `--from-report` does not match `--expected-report-sha256` (tampered/wrong/swapped report — checked before any parsing) |
 | 4 | Refused: `--environment production` (unconditional — no grant exists this cycle); `staging` is now authorized (see below) |
 
 ### Environment/project guards (enforced BEFORE any credential acquisition or Firestore read)
@@ -474,7 +485,61 @@ future authorized round. This section documents the exact intended flow,
 corrected after independent review (see the changelog note at the top of
 this document), so it is ready when that authorization is given.
 
-### Step 1 — backup (BASE-003 mechanism, corrected scope)
+**Step order corrected after independent review (final round).** An
+earlier draft of this section ran backup BEFORE enabling maintenance mode
+— meaning the backup could capture a snapshot while clients could still
+be writing. The corrected order below moves maintenance mode to BEFORE
+backup, and adds the separate Rules/Functions deploy as its own explicit
+first step (item 8):
+
+### Step 1 — deploy the maintenance-mode-aware Rules and Functions (separate, out of scope for this cycle)
+
+`firestore.rules`'s `isMaintenanceModeActive()` gate and
+`functions/src/lib/authz.ts`'s `requireNotInMaintenanceMode()` check
+inside `createCompany` (both implemented and emulator-tested in this
+repository) only take effect once actually deployed to the production
+Firebase project — `firebase deploy --only firestore:rules,functions`.
+**This is its own separate, explicitly-authorized deploy action** —
+CLAUDE.md §5 requires separate authorization for `firebase deploy`
+independent of this migration cycle's authorization, and no such
+authorization has been requested or given in this round. Steps 2 onward
+below are meaningless until this deploy has actually happened — enabling
+`system/maintenance` against a production project running OLDER Rules/
+Functions (i.e. before this deploy) would NOT block any client or Admin
+SDK write at all, since the code that reads it wouldn't exist there yet.
+
+### Step 2 — create `system/maintenance` in a known, disabled state (idempotent bootstrap)
+
+```bash
+node scripts/ops/set-maintenance-mode.ts \
+  --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
+  --disable --operator <your-identifier>
+```
+
+Establishes `system/maintenance` in a known `{enabled: false}` state if it
+doesn't already exist (`--disable`'s Firestore write is `set(...,
+{merge: true})`, so it succeeds whether or not the document already
+exists) — this is a real, tested script (item 8; see "Maintenance/
+read-only mode" below), not illustrative pseudocode. Safe to run even if
+the document already exists in this state; not required if it's already
+known to exist and be `enabled: false`.
+
+### Step 3 — enable maintenance mode (BEFORE backup — see "Maintenance/read-only mode" below)
+
+```bash
+node scripts/ops/set-maintenance-mode.ts \
+  --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
+  --enable --reason "SEC-005 membership backfill" --task-id SEC-005 --operator <your-identifier>
+```
+
+**Must happen BEFORE Step 4 (backup)** — a backup taken before maintenance
+mode was enabled cannot be trusted as a write-frozen, consistent snapshot,
+and `verifyBackupReference()` (Step 6) enforces this ordering
+programmatically by comparing the backup manifest's `createdAtUtc`
+against this step's `enabledAt`, read live from Firestore at apply time —
+not merely documented as a suggested order.
+
+### Step 4 — backup (BASE-003 mechanism, corrected scope)
 
 ```bash
 gcloud firestore export gs://<backup-bucket>/sec005-prod-backup-<date> \
@@ -490,11 +555,11 @@ project-wide, regardless of nesting depth. The BASE-003-derived command
 used in an earlier, never-committed draft of this preflight omitted
 `members` entirely, which would have made the backup useless for
 undoing exactly what this tool's `apply` creates. Record the resulting
-manifest (BASE-003.md §6.1 schema, extended with a required
-`firestore.membersCount: number` field) at an absolute path outside the
-repository — this is the file `--backup-reference` will point to.
+manifest (BASE-003.md §6.1 schema, extended per "Backup reference
+verification" below) at an absolute path outside the repository — this is
+the file `--backup-reference` will point to.
 
-### Step 2 — dry-run (produces the pre-apply `--rollback-reference`)
+### Step 5 — dry-run / review (produces the pre-apply `--rollback-reference`)
 
 ```bash
 node scripts/backfill-memberships.ts \
@@ -507,19 +572,7 @@ owner-anomaly it found. This dry-run report's path is what
 `apply`'s `--rollback-reference` will point to (see "Two-phase
 ROLLBACK_REFERENCE" below) — keep it.
 
-### Step 3 — enable maintenance mode (BEFORE apply, see "Maintenance/read-only mode" below)
-
-```bash
-node scripts/ops/set-maintenance-mode.ts --environment production --project finapp-prod-10a83 --enable --reason "SEC-005 membership backfill" --task-id SEC-005
-```
-
-(Illustrative — the actual operator script for setting `system/maintenance`
-is out of this round's scope; any Admin-SDK-privileged write to that
-single document with `{enabled: true, enabledAt, enabledBy, reason,
-taskId}` has the same effect. `assertMaintenanceModeActive()` reads the
-document directly and does not care how it was written.)
-
-### Step 4 — apply
+### Step 6 — apply
 
 ```bash
 node scripts/backfill-memberships.ts \
@@ -537,11 +590,11 @@ On success, the tool prints (never embeds in the report itself):
 Apply report SHA-256 (record this as the ROLLBACK_REFERENCE for this run): <sha256 hex>
 ```
 
-**Record this hash** — it is the `ROLLBACK_REFERENCE` for a subsequent
-`rollback-from-report` call, if one is ever needed (see "Two-phase
-ROLLBACK_REFERENCE" below).
+**Record this hash** — it is both the `ROLLBACK_REFERENCE` AND the
+required `--expected-report-sha256` for a subsequent `rollback-from-report`
+call, if one is ever needed (see "Two-phase ROLLBACK_REFERENCE" below).
 
-### Step 5 — verify (still BEFORE disabling maintenance mode)
+### Step 7 — verify (still BEFORE disabling maintenance mode)
 
 ```bash
 node scripts/backfill-memberships.ts \
@@ -552,57 +605,93 @@ node scripts/backfill-memberships.ts \
 
 Use the SAME `--decisions-file` as `apply` (see "Idempotency" above).
 
-### Step 6 — disable maintenance mode (ONLY after verify passes)
+### Step 8 — disable maintenance mode (ONLY after verify passes)
 
 ```bash
-node scripts/ops/set-maintenance-mode.ts --environment production --project finapp-prod-10a83 --disable
+node scripts/ops/set-maintenance-mode.ts \
+  --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
+  --disable --operator <your-identifier>
 ```
 
-The tool itself never disables maintenance mode automatically — doing so
-would risk a window between `verify` and disabling in which a client
-could write before the operator has confirmed the migrated state is
-correct. This is a deliberate manual step.
+Neither this tool nor `set-maintenance-mode.ts` disables maintenance mode
+automatically as a side effect of anything — doing so would risk a window
+between `verify` and disabling in which a client could write before the
+operator has confirmed the migrated state is correct. This is always a
+deliberate, separate manual step.
 
 ### Rollback, if needed (see "Production rollback" below for the exact command)
 
 ```bash
+node scripts/ops/set-maintenance-mode.ts \
+  --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
+  --enable --reason "SEC-005 rollback" --task-id SEC-005 --operator <your-identifier>
+
 node scripts/backfill-memberships.ts \
   --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
   --mode rollback-from-report --from-report /absolute/path/outside/repo/sec005-prod-apply.json \
+  --expected-report-sha256 <the SHA-256 printed after apply, Step 6> \
   --report-path /absolute/path/outside/repo/sec005-prod-rollback.json \
   --ack-maintenance-readonly
 ```
 
-Maintenance mode must be re-enabled (Step 3) before running this, for the
-same reason it is required before `apply`.
+Maintenance mode must be re-enabled (same as Step 3) before running this,
+for the same reason it is required before `apply`.
 
 ## Backup reference verification
 
 `--backup-reference` (production `apply` only) must point to a local
 manifest file matching the BASE-003 schema
-(`docs/remediation/reports/BASE-003.md`, §6.1), verified by
-`verifyBackupReference()` (`scripts/lib/productionSafety.ts`) before any
-write:
+(`docs/remediation/reports/BASE-003.md`, §6.1), extended by SEC-005,
+verified by `verifyBackupReference()` (`scripts/lib/productionSafety.ts`)
+before any write. **Strengthened in the final preflight-safety round**
+(independent review items 1 and 3) — the schema now requires a great deal
+more than "the file parses and has the right project ID":
 
 - `manifest.productionProjectId === 'finapp-prod-10a83'` — the manifest
   must actually be for this production project, not a stale or
   differently-scoped backup.
+- `manifest.createdAtUtc` must be a valid timestamp.
+- `manifest.firestore.exportOperationId` must be a non-empty string —
+  identifies exactly which `gcloud firestore export` operation produced
+  this manifest (traceable to `gcloud firestore operations describe`).
 - `manifest.firestore.exportStatus === 'SUCCESS'` — a failed or
-  in-progress export can never be used as a rollback basis.
-- `manifest.firestore.membersCount` must be present and a `number` —
-  **this is the fix for independent-review item 1**: a manifest whose
-  export command omitted the `members` collection group (the original,
-  BASE-003-derived command,
+  in-progress export can never be used as a backup basis.
+- `manifest.firestore.collectionIds` must include `"members"`, OR
+  `manifest.firestore.scope === 'full'` — **this is the fix for
+  independent-review item 1**: a manifest whose export command omitted the
+  `members` collection group (the original, BASE-003-derived command,
   `--collection-ids=users,companies,company_data`, had exactly this gap)
   is rejected outright, with an error message naming "members"/"collection
-  group" explicitly, rather than silently accepted as if the backup were
-  complete.
-- `manifest.createdAtUtc` must be present and a string.
+  group" explicitly.
+- `manifest.firestore.membersCount`, `.companiesCount`, `.usersCount`, and
+  `.companyDataDocsCount` must each be a non-negative integer — not merely
+  present, but a real, well-formed count (a negative number or a `1.5`
+  float is refused).
+- `manifest.restore.verificationResult === 'PASS'` — **this is the fix for
+  independent-review item 2**: the backup must have actually been
+  restored to an isolated project and verified there (see "Restore
+  verification" below), not merely exported. `manifest.restore.membersCount`
+  must be a non-negative integer AND equal `manifest.firestore.membersCount`
+  (the restore confirmed the SAME count the export claimed — not just any
+  count), `manifest.restore.membersChecksum` must be a non-empty string,
+  and `manifest.restore.verifiedAtUtc` must be a valid timestamp.
+- **`manifest.createdAtUtc` must be AT OR AFTER the live, currently-active
+  `system/maintenance.enabledAt`** (read via `assertMaintenanceModeActive()`,
+  checked BEFORE this function is even called — see "Production
+  mode-specific requirements" above) — a backup taken before maintenance
+  mode was enabled cannot be trusted as a write-frozen, consistent
+  snapshot. This is the mechanism, not just documentation, behind Step 3
+  (enable maintenance) coming before Step 4 (backup) in "Future production
+  execution" above.
+- `manifest.createdAtUtc` must be no older than `MAX_BACKUP_AGE_MS` (24
+  hours, `scripts/lib/productionSafety.ts`'s `MAX_BACKUP_AGE_MS`) relative
+  to the moment `apply` runs, and not in the future — a stale backup is
+  refused, not silently accepted as "good enough".
 
 This is a real content check, not a presence check — passing
-`--backup-reference` pointing at an unrelated, failed, or `members`-less
-manifest refuses `apply` (exit 3) before any Firestore write, the same way
-a missing flag would.
+`--backup-reference` pointing at an unrelated, failed, un-restored,
+`members`-less, stale, or pre-maintenance manifest refuses `apply` (exit
+3) before any Firestore write, the same way a missing flag would.
 
 ## Restore verification — members collection group
 
@@ -653,28 +742,44 @@ The resolution splits `ROLLBACK_REFERENCE` into two distinct, non-circular
 phases:
 
 1. **Pre-apply** (`--rollback-reference` flag, verified by
-   `verifyRollbackPlanReference()` in `scripts/lib/productionSafety.ts`):
-   points to an EXISTING **dry-run** report. The tool requires
-   `report.mode === 'dry-run'` (rejecting an apply report outright — this
-   is what makes the self-referential case structurally impossible) AND
-   `report.targetChecksum === <this run's own targetChecksum>` — proving
-   the operator reviewed the exact same planned change set that is about
-   to be applied, not a stale or unrelated dry-run. This is not a
-   description of a future rollback — it is proof the operator actually
-   looked at the plan before running `apply`.
+   `verifyRollbackPlanReference()`, which delegates the structural checks
+   to the shared `verifyStrictDryRunReport()` — both in
+   `scripts/lib/productionSafety.ts`): points to an EXISTING **dry-run**
+   report, STRICTLY validated (strengthened in the final preflight-safety
+   round, independent review item 4 — a minimal forged/incomplete JSON is
+   rejected, not merely "close enough"):
+   - `schemaVersion` matches this tool's own `REPORT_SCHEMA_VERSION`;
+   - `mode === 'dry-run'` (rejecting an apply report outright — this is
+     what makes the self-referential case structurally impossible);
+   - `environment === 'production'` and `projectId === '--project'`'s
+     value — a staging or emulator dry-run can never authorize a
+     production apply;
+   - `sourceGitSha` is present and non-empty;
+   - `sourceChecksum`, `decisionsChecksum`, and `targetChecksum` are each
+     present as a well-formed 64-character hex SHA-256 digest — not just
+     "some string";
+   - `counts.unresolved === 0` — a dry-run plan that still has unresolved
+     conflicts/orphans/anomalies cannot be treated as fully reviewed and
+     approved;
+   - AND, finally, `targetChecksum === <this run's own computed
+     targetChecksum>` — proving the operator reviewed the exact same
+     planned change set that is about to be applied, not a stale or
+     unrelated (even if otherwise valid) dry-run.
+   This is not a description of a future rollback — it is proof the
+   operator actually looked at a genuine, fully-resolved plan before
+   running `apply`.
 2. **Post-apply** (printed to stdout, never embedded in the report file
    itself — a file cannot contain a hash of itself): the SHA-256 of the
    just-written apply-report file (`sha256OfFile()`, computed after
    `writeReport()` returns). This value is what a LATER
-   `rollback-from-report` call should be identified by — recorded by the
+   `rollback-from-report` call must be identified by — recorded by the
    operator outside the tool (e.g. in the incident/runbook log), since the
-   tool has no persistent store of its own to write it to.
-
-`rollback-from-report`'s actual safety comes from validating the
-`--from-report` file's contents directly (`validateSourceReportForRollback`,
-unchanged from earlier rounds) — the post-apply SHA-256 is an operator-facing
-audit trail for "which apply this rollback undoes", not itself a
-cryptographic gate the tool enforces at rollback time.
+   tool has no persistent store of its own to write it to. **Strengthened
+   in the final preflight-safety round (independent review item 6)**: this
+   is no longer merely an audit trail — `rollback-from-report` now
+   REQUIRES this exact value via `--expected-report-sha256` and refuses
+   (before even parsing `--from-report` as JSON) if it doesn't match the
+   file's actual bytes. See "Production rollback" below.
 
 ## Production rollback — `import` is not an exact rollback
 
@@ -701,45 +806,102 @@ is the only mechanism that can reliably undo *creation*, which is all
 node scripts/backfill-memberships.ts \
   --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
   --mode rollback-from-report --from-report <path-to-the-apply-report.json> \
+  --expected-report-sha256 <the SHA-256 printed by apply as "Apply report SHA-256"> \
   --report-path /absolute/path/outside/repo/sec005-prod-rollback.json \
   --ack-maintenance-readonly
 ```
+
+**`--expected-report-sha256` is REQUIRED** (final preflight-safety round,
+independent review item 6) — `sha256Hex()` of `--from-report`'s actual raw
+bytes is computed and compared against this value BEFORE the file is even
+parsed as JSON, let alone before any Firestore read/delete. A tampered,
+swapped, or corrupted report is refused outright (exit 3), never silently
+accepted just because it happens to still pass the structural validation
+below.
 
 ## Emergency scenario: apply-report lost
 
 `rollback-from-report` requires the apply report file — by design, it is
 never committed to Git, never stored in Firestore, and never printed in
 full to stdout. If it is genuinely lost (disk failure, accidental
-deletion, etc.), the normal rollback path is unavailable. This is a
-last-resort, degraded procedure, not part of the normal runbook flow, and
-requires the repository owner's explicit separate confirmation before
-being executed:
+deletion, etc.), `rollback-from-report` is unavailable — there is no
+`--from-report` to point it at, and `--expected-report-sha256` above has
+nothing to be verified against either.
 
-1. **The apply report is not recoverable.** There is no secondary copy by
-   design (see "No PII in Git" below) — accept this before proceeding.
-2. **Fall back to a full `import` of the pre-apply backup**
-   (`gcloud firestore import gs://<backup-bucket>/sec005-prod-backup-<date>
-   --project=finapp-prod-10a83`), understanding this is safe specifically
-   *because* `import` never deletes anything extra (see "Production
-   rollback" above) — it will restore any documents `apply` may have
-   overwritten. It will **not** remove the newly-created membership
-   documents; those remain in Firestore afterward. Whether that is
-   acceptable (e.g. because the affected memberships are individually
-   reviewed and manually deleted afterward, or because the migration is
-   simply re-approved instead of rolled back) is an operator/owner
-   decision this document cannot make in advance.
-3. **Mandatory verification after import**: run `--mode verify` (without
-   a decisions file, to see the raw unresolved state) against production
-   to confirm the restored `members` collection group's counts match the
-   backup manifest's `firestore.membersCount` and checksum — the same
-   counts/checksum discipline "Restore verification — members collection
-   group" below requires for a BASE-003 restore-to-isolated-project cycle,
-   applied here to the production project itself.
-4. This scenario is explicitly a **last resort** requiring separate
-   explicit owner sign-off before execution — it is not covered by the
-   standard runbook flow above, and it does not restore the specific
-   guarantee (only the documents this run created are removed) that
-   `rollback-from-report` provides.
+**Corrected after independent review (final round, item 7): this no
+longer falls back to a blind Firestore `import`.** An earlier version of
+this section proposed importing the pre-apply backup as an emergency
+substitute — but `import` cannot delete anything (see "Production
+rollback" above), so it could never actually undo the *creation* `apply`
+performed; it was never a real fix for a lost apply report, only a
+different, riskier problem dressed up as one.
+
+### `--mode rollback-from-plan` — reconstruction from a verified dry-run report
+
+If a dry-run report from immediately before the lost `apply` still
+exists (the SAME file that would have been used as `--rollback-reference`
+— see "Two-phase ROLLBACK_REFERENCE" above), it can be used to
+RECONSTRUCT rollback candidates, with real Firestore state cross-checked
+before every single deletion:
+
+```bash
+node scripts/backfill-memberships.ts \
+  --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
+  --mode rollback-from-plan --from-plan <path-to-the-surviving-dry-run-report.json> \
+  --report-path /absolute/path/outside/repo/sec005-prod-emergency-rollback.json \
+  --ack-maintenance-readonly --ack-emergency-reconstruction
+```
+
+- `--from-plan` is validated by the SAME `verifyStrictDryRunReport()` used
+  for `--rollback-reference` — real schema, matching environment/project,
+  all checksums well-formed, `counts.unresolved === 0`. A minimal forged
+  or incomplete file is rejected before any Firestore access.
+- `--ack-emergency-reconstruction` is a SEPARATE, additional
+  acknowledgement from `--ack-maintenance-readonly` — the operator must
+  explicitly accept that this is the degraded, last-resort path, never a
+  default choice.
+- For each candidate `(companyId, uid, role, status)` from the dry-run's
+  `plannedCreates`, the tool reads the LIVE document right now and deletes
+  it ONLY if it exists, matches the candidate's `uid`/`role`/`status`
+  EXACTLY, and passes strict canonical-schema validation — under the SAME
+  `lastUpdateTime` delete precondition `rollback-from-report` uses. A
+  candidate with no live document is skipped (nothing to delete, not an
+  error — recorded in the report's `emergencyReconstruction.skippedNotFound`).
+  A candidate whose live document does NOT match exactly is REFUSED, never
+  guessed at (`emergencyReconstruction.refused`, with a reason).
+- **This is deliberately weaker evidence than a real apply report.** A
+  genuine `rollback-from-report` deletes exactly the documents `apply`'s
+  own `WriteResult`s proved were created by THIS run. `rollback-from-plan`
+  can only prove "a document matching what was planned exists now" — it
+  cannot prove THIS specific apply run is what created it (a different,
+  unrelated write landing on the exact same planned `(companyId, uid)`
+  pair with the exact same role/status, in the window between the
+  surviving dry-run and now, is not distinguishable by this mechanism).
+  This is exactly why it requires the separate
+  `--ack-emergency-reconstruction` acknowledgement and is documented as a
+  last resort, not a substitute for `rollback-from-report`.
+
+### If no dry-run report survives either: BLOCKED — manual recovery
+
+If neither the apply report NOR a matching dry-run report survives, this
+tool has **no automated recovery path**, and none should be improvised.
+The honest status is `BLOCKED — требуется действие владельца`:
+
+1. The operator manually reviews `companies/*/members/*` in the Firebase
+   Console (or via an ad-hoc, reviewed read-only script) against whatever
+   external record exists of what the migration was intended to do
+   (decisions file, ticket, runbook log).
+2. Any document believed to have been created by this migration is
+   deleted manually, one at a time, with each deletion individually
+   reviewed by the operator — never scripted/bulk without inspection.
+3. This is explicitly NOT something this tool automates, and no future
+   round should add an "auto-recover from nothing" mode — the entire
+   point of `rollback-from-report`'s and `rollback-from-plan`'s design is
+   that every deletion is justified by verifiable evidence (an apply
+   report's `WriteResult`s, or a dry-run's `plannedCreates` cross-checked
+   against live state); a mode with no evidence at all to check against
+   would just be a blind, unverifiable delete loop — exactly the "accept
+   the risk" failure mode this whole preflight redesign exists to avoid.
 
 ## Maintenance/read-only mode
 
@@ -758,26 +920,94 @@ Firestore writes can originate:
 - **Admin SDK writes from `createCompany`** — Firestore Rules never apply
   to Admin SDK callers at all, so the Rules change above has zero effect
   on this path. `functions/src/lib/authz.ts`'s
-  `requireNotInMaintenanceMode(db)` is called as the very first check
-  inside `createCompany`'s handler (right after `requireAuth`, before any
-  read/write) and throws a `maintenance_mode` `AppError`
-  (`failed-precondition`) when active.
+  `requireNotInMaintenanceMode(db, txn)` is called as the very first
+  statement inside `createCompany`'s bootstrap transaction (right after
+  the transaction starts, before the existing-user read and before any
+  write) and throws a `maintenance_mode` `AppError` (`failed-precondition`)
+  when active.
+  **Closed a TOCTOU race in the final preflight-safety round (independent
+  review item 2).** The original implementation called
+  `requireNotInMaintenanceMode(db)` as a plain, PRE-transaction read
+  (right after `requireAuth`, before `runBootstrapIdempotent` even
+  started) — an operator enabling maintenance mode a moment after that
+  read passed, but before the transaction it was meant to gate had
+  actually committed, would not have stopped that transaction from
+  creating a company. Reading via `txn.get()` instead makes
+  `system/maintenance` part of the TRANSACTION's own read set: Firestore
+  guarantees that if any document a transaction read is modified by
+  another completed write before that transaction commits, the SDK
+  automatically retries the whole transaction function — including
+  re-running this exact check — rather than allowing a stale read to
+  reach commit. A concurrent `system/maintenance` write landing anywhere
+  between this read and `createCompany`'s commit therefore forces a retry
+  that observes the new value and refuses, exactly the same pattern
+  already used by `assertNotLastAdmin()` in the same file. Proven directly
+  by a real emulator race test
+  (`functions/test/emulator/createCompany.test.ts`, "closes the
+  maintenance-mode TOCTOU race") — not just asserted in a comment.
 - **Fail-closed on both sides.** A Firestore read failure while checking
   `system/maintenance` is treated identically to `enabled === true`
   (refuse) — never as "maintenance is off". Applied consistently in
   `requireNotInMaintenanceMode()` (functions) and
   `assertMaintenanceModeActive()` (`scripts/lib/productionSafety.ts`,
-  used by this tool's own `apply`/`rollback-from-report`).
-- **Ordering, enforced by the tool itself**: `apply` and
-  `rollback-from-report` both call `assertMaintenanceModeActive(db)` —
-  which does a REAL Firestore read, not just checking that
-  `--ack-maintenance-readonly` was passed — before performing any write or
-  delete. Maintenance mode must therefore already be active (enabled by
-  the operator as Step 3 of the production runbook, above) before `apply`
-  can proceed. Disabling it is a deliberate manual step, done only AFTER
-  `verify` passes (Step 6) — the tool never disables it automatically, to
+  used by this tool's own `apply`/`rollback-from-report`/
+  `rollback-from-plan`).
+- **Ordering, enforced by the tool itself**: `apply`,
+  `rollback-from-report`, and `rollback-from-plan` all call
+  `assertMaintenanceModeActive(db)` — which does a REAL Firestore read,
+  not just checking that `--ack-maintenance-readonly` was passed — before
+  performing any write or delete. For `apply` specifically, this check
+  runs FIRST, before `--backup-reference` is even read, because its
+  `enabledAt` anchors the backup-freshness check (see "Backup reference
+  verification" above). Maintenance mode must therefore already be active
+  (enabled by the operator as Step 3 of the production runbook, above)
+  before `apply` can proceed. Disabling it is a deliberate manual step,
+  done only AFTER `verify` passes (Step 8) — neither this tool nor
+  `scripts/ops/set-maintenance-mode.ts` ever disables it automatically, to
   avoid a window between verification and re-enabling client writes in
   which a client could write against an unverified state.
+
+### `scripts/ops/set-maintenance-mode.ts` — the real operator script (item 8)
+
+A REAL, tested script — not illustrative pseudocode — for enabling/
+disabling `system/maintenance`, reusing the exact SAME
+`assertEnvironmentGuard()`/`assertCycleExecutionAllowed()` guards as
+`scripts/backfill-memberships.ts` (there is exactly one place in this
+codebase that decides whether production is authorized this cycle — this
+script does not duplicate or bypass it):
+
+```bash
+node scripts/ops/set-maintenance-mode.ts \
+  --environment <emulator|staging|production> --project <project-id> [--confirm-project <project-id>] \
+  --enable --reason <why> --task-id <e.g. SEC-005> --operator <your-identifier>
+
+node scripts/ops/set-maintenance-mode.ts \
+  --environment <emulator|staging|production> --project <project-id> [--confirm-project <project-id>] \
+  --disable --operator <your-identifier>
+```
+
+- `--enable` does a FULL overwrite (`set()`, not merge) — a fresh enable
+  must never inherit stale `reason`/`taskId`/`enabledBy` fields from a
+  previous maintenance cycle on the same document. Writes `enabled: true`,
+  `enabledAt: FieldValue.serverTimestamp()`, `enabledBy`, `reason`,
+  `taskId`.
+- `--disable` does a MERGING write (`set(..., {merge: true})`) —
+  deliberately PRESERVES the historical `enabledAt`/`enabledBy`/`reason`/
+  `taskId` fields for audit, only flipping `enabled: false` and adding
+  `disabledAt`/`disabledBy`. This is also what makes `--disable` safe to
+  use as the "create in a known disabled state" bootstrap in Step 2 of the
+  production runbook above — it succeeds whether or not the document
+  already exists.
+- `--operator <identifier>` is REQUIRED for both actions — every
+  enable/disable transition must be attributable to a specific person.
+- **The production gate stays unconditionally closed** — exactly like
+  `scripts/backfill-memberships.ts`, `--environment production` is refused
+  by `assertCycleExecutionAllowed()` before `initFirestore()` is ever
+  called (exit 4), regardless of any other flag. Proven by a real
+  emulator test asserting the refusal happens with zero Firestore writes
+  (`scripts/ops/set-maintenance-mode.emulator.test.ts`). Until a future,
+  separately-authorized round removes that block, this script can only
+  actually write against `--environment emulator|staging`.
 
 ## Counts and checksum contract
 
@@ -1270,3 +1500,97 @@ preflight по итогам независимого ревью". Summary:
 **Production was not read or modified at any point in this round** — all
 verification is against the Firestore Emulator and unit-level fake
 Firestore stubs.
+
+## Independent audit fixes — production preflight, final round
+
+A follow-up independent review of the production preflight (the round
+directly above) found 9 remaining blocking issues — deeper than before:
+the runbook order didn't actually enable maintenance mode before backup,
+`createCompany`'s maintenance check had a TOCTOU race, the backup manifest
+schema was too loose (no export operation ID, no integer count
+enforcement, no restore-verification requirement, no freshness/ordering
+check), the pre-apply dry-run reference accepted a near-empty forged JSON,
+`--backup-reference`/`--rollback-reference` bypassed the shared
+outside-the-repo path check, `rollback-from-report` had no integrity
+check on `--from-report` itself, and the "lost apply-report" emergency
+scenario still fell back to a blind `import`. All 9 are fixed in this
+document and in code, in a single commit `fix(sec-005): close final
+production preflight review findings`. Full technical writeup:
+`docs/remediation/reports/SEC-005.md`, section "Исправления production
+preflight по итогам финального независимого ревью". Summary:
+
+1. **Runbook step order corrected**: guards (Rules/Functions deploy, a
+   separate authorized action) → create `system/maintenance` disabled →
+   ENABLE maintenance → backup → dry-run/review → apply → verify →
+   disable maintenance. See "Future production execution" above (Steps
+   1–8) — maintenance is now enabled BEFORE backup, not after.
+2. **TOCTOU race closed in `createCompany`**: `system/maintenance` is now
+   read via `txn.get()` INSIDE the same Firestore transaction that
+   creates company/user/membership/receipt
+   (`requireNotInMaintenanceMode(db, txn)`,
+   `functions/src/lib/authz.ts`), not via a plain pre-transaction read.
+   Proven by a real emulator race test — see "Maintenance/read-only mode"
+   above.
+3. **Backup manifest schema strengthened**: exact `productionProjectId`,
+   a real `firestore.exportOperationId`, `firestore.exportStatus ===
+   'SUCCESS'`, `collectionIds` containing `"members"` (or `scope ===
+   'full'`), every count a non-negative integer, valid timestamps,
+   `restore.verificationResult === 'PASS'` with a matching
+   `restore.membersCount`/`membersChecksum`, and `createdAtUtc` both AT OR
+   AFTER the live `system/maintenance.enabledAt` AND within
+   `MAX_BACKUP_AGE_MS` of "now". See "Backup reference verification"
+   above.
+4. **Dry-run reference validation strengthened**: full `schemaVersion`,
+   `mode === 'dry-run'`, `environment === 'production'`, matching
+   `projectId`, non-empty `sourceGitSha`, all three checksums as
+   well-formed SHA-256 hex, and `counts.unresolved === 0` — a minimal
+   forged JSON (`{mode: 'dry-run', targetChecksum: '...'}`) is rejected
+   outright. Factored into a shared `verifyStrictDryRunReport()`
+   (`scripts/lib/productionSafety.ts`), reused by both
+   `verifyRollbackPlanReference()` and the new `rollback-from-plan` mode.
+   See "Two-phase ROLLBACK_REFERENCE" above.
+5. **`--backup-reference`/`--rollback-reference` now go through
+   `assertPathOutsideRepo()`** in `main()`, before any credential
+   acquisition or Firestore I/O — previously they went straight to
+   `readFileSync()` inside `productionSafety.ts`, bypassing the same
+   outside-the-repo check every other path flag already had.
+6. **`rollback-from-report` now requires `--expected-report-sha256`**,
+   verified against `--from-report`'s actual raw bytes BEFORE the file is
+   even parsed as JSON — a tampered, corrupted, or swapped report is
+   refused outright (exit 3). See "Production rollback" above.
+7. **The lost-apply-report emergency scenario no longer falls back to a
+   blind `import`.** A new `--mode rollback-from-plan` reconstructs
+   candidates from a separately-verified dry-run report's
+   `plannedCreates`, deleting a live document ONLY if it exactly matches
+   the plan and passes strict schema validation, under the same
+   `lastUpdateTime` precondition `rollback-from-report` uses — explicitly
+   weaker evidence than a real apply report, requiring its own
+   `--ack-emergency-reconstruction`. If no dry-run report survives
+   either, the documented outcome is honest `BLOCKED — требуется действие
+   владельца` manual recovery, not an improvised automated one. See
+   "Emergency scenario: apply-report lost" above.
+8. **A real, tested operator script** (`scripts/ops/set-maintenance-mode.ts`
+   + `scripts/ops/maintenanceModeCli.ts`) replaces the earlier
+   "illustrative" placeholder for enabling/disabling `system/maintenance`
+   — reuses the exact same `assertEnvironmentGuard()`/
+   `assertCycleExecutionAllowed()` guards as the main migration tool, so
+   production remains refused (exit 4) with zero writes, proven by a real
+   emulator test. The separate future deploy of maintenance-mode-aware
+   Rules/Functions is documented as its own explicit Step 1, requiring
+   its own authorization (CLAUDE.md §5). See "Maintenance/read-only mode"
+   above.
+9. `scripts/lib/firebaseAdmin.ts`'s `assertCycleExecutionAllowed()` was
+   NOT touched this round either — `production` is still refused
+   unconditionally, independent of any flag.
+
+**Production was not read or modified at any point in this round** — all
+verification is against the Firestore Emulator and unit-level fake
+Firestore stubs. One incidental environmental fix landed alongside these:
+`npm run test:migration` now passes `--no-file-parallelism` to `vitest`
+(`package.json`) — adding the second emulator-backed test file
+(`scripts/ops/set-maintenance-mode.emulator.test.ts`) exposed a
+pre-existing hazard where two test files independently wiping the SAME
+shared `demo-finapp` Firestore Emulator project in their own `beforeEach`
+hooks could race under vitest's default cross-file parallelism, producing
+spurious failures unrelated to any code defect (root-caused and confirmed
+by running the affected test in isolation, where it passed reliably).

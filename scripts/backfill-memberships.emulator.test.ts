@@ -4,8 +4,13 @@
 // no mock-only evidence for apply/idempotency/rollback (task requirement).
 //
 // Run only via `npm run test:migration` (`firebase emulators:exec --project
-// demo-finapp --only firestore "vitest run scripts"`), which sets
-// FIRESTORE_EMULATOR_HOST/GCLOUD_PROJECT for this process automatically.
+// demo-finapp --only firestore "vitest run scripts --no-file-parallelism"`),
+// which sets FIRESTORE_EMULATOR_HOST/GCLOUD_PROJECT for this process
+// automatically. `--no-file-parallelism` matters here specifically because
+// scripts/ops/set-maintenance-mode.emulator.test.ts ALSO wipes this same
+// shared `demo-finapp` project in its own beforeEach — running both files
+// in parallel worker threads (vitest's default) lets their wipes race each
+// other and produces spurious failures unrelated to any real code defect.
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
@@ -15,9 +20,19 @@ import { randomUUID } from 'node:crypto'
 import { initializeApp, getApps } from 'firebase-admin/app'
 import { getFirestore, Timestamp, type Firestore } from 'firebase-admin/firestore'
 import type { MembershipBackfillReport } from './lib/report.ts'
+import { sha256Hex } from './lib/checksum.ts'
 
 const PROJECT_ID = 'demo-finapp'
 const REPO_ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+
+/** Final-round fix #6: --mode rollback-from-report now requires
+ * --expected-report-sha256, computed the SAME way the CLI itself does
+ * (sha256Hex over the raw file bytes) — so tests can supply the correct
+ * value and actually exercise the DOWNSTREAM structural validation, rather
+ * than being rejected earlier by the integrity check itself. */
+function sha256OfReportFile(path: string): string {
+  return sha256Hex(readFileSync(path, 'utf8'))
+}
 
 let db: Firestore
 
@@ -290,7 +305,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     expect(applyResult.report?.counts.created).toBe(1)
     expect(await getMembership(companyId, uid)).toBeDefined()
 
-    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', applyReportPath])
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', applyReportPath, '--expected-report-sha256', sha256OfReportFile(applyReportPath)])
 
     expect(rollbackResult.code).toBe(0)
     expect(await getMembership(companyId, uid)).toBeUndefined()
@@ -306,9 +321,45 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     // Simulate a post-backfill modification (e.g. a real admin change).
     await db.collection('companies').doc(companyId).collection('members').doc(uid).set({ uid, role: 'viewer', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now() })
 
-    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', applyReportPath])
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', applyReportPath, '--expected-report-sha256', sha256OfReportFile(applyReportPath)])
 
     expect(rollbackResult.code).toBe(1)
+    expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
+  })
+
+  // ── Final-round fix #6: --expected-report-sha256 verified before any parsing/I/O ──
+  it('rollback refuses a --from-report that does not match --expected-report-sha256 (tampered or wrong file), before any parsing', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const applyReportPath = reportPath()
+    runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', applyReportPath, '--mode', 'apply'])
+    expect(await getMembership(companyId, uid)).toBeDefined()
+
+    const wrongHash = '0'.repeat(64)
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', applyReportPath, '--expected-report-sha256', wrongHash])
+
+    expect(rollbackResult.code).toBe(3)
+    expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
+  })
+
+  it('rollback refuses a --from-report that was tampered AFTER being hashed — even a single byte change is caught', async () => {
+    const uid = uniqueId('u'); const companyId = uniqueId('co')
+    await seedCompany(companyId)
+    await seedUser(uid, { companyId, role: 'admin' })
+    const applyReportPath = reportPath()
+    runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', applyReportPath, '--mode', 'apply'])
+    const expectedHash = sha256OfReportFile(applyReportPath)
+
+    // Tamper AFTER computing the hash the operator would have recorded —
+    // simulates a swapped/edited report file.
+    const tampered = JSON.parse(readFileSync(applyReportPath, 'utf8')) as MembershipBackfillReport
+    ;(tampered as unknown as Record<string, unknown>).projectId = 'a-different-project'
+    writeFileSync(applyReportPath, JSON.stringify(tampered))
+
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', applyReportPath, '--expected-report-sha256', expectedHash])
+
+    expect(rollbackResult.code).toBe(3)
     expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
   })
 
@@ -393,9 +444,14 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     const tampered = JSON.parse(readFileSync(applyReportPath, 'utf8')) as MembershipBackfillReport
     ;(tampered as unknown as Record<string, unknown>).projectId = 'a-different-project'
     const tamperedPath = reportPath()
-    writeFileSync(tamperedPath, JSON.stringify(tampered))
+    const tamperedContent = JSON.stringify(tampered)
+    writeFileSync(tamperedPath, tamperedContent)
 
-    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath])
+    // Hash the TAMPERED content itself — proves the integrity check passes
+    // (the operator's recorded hash matches what's on disk) and it is the
+    // DOWNSTREAM structural validation (wrong projectId) that refuses this,
+    // not the integrity check from the previous test.
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath, '--expected-report-sha256', sha256Hex(tamperedContent)])
 
     expect(rollbackResult.code).toBe(2)
     expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
@@ -411,12 +467,107 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     const tampered = JSON.parse(readFileSync(applyReportPath, 'utf8')) as MembershipBackfillReport
     ;(tampered as unknown as Record<string, unknown>).mode = 'dry-run'
     const tamperedPath = reportPath()
-    writeFileSync(tamperedPath, JSON.stringify(tampered))
+    const tamperedContent = JSON.stringify(tampered)
+    writeFileSync(tamperedPath, tamperedContent)
 
-    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath])
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath, '--expected-report-sha256', sha256Hex(tamperedContent)])
 
     expect(rollbackResult.code).toBe(2)
     expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
+  })
+
+  // ── Final-round fix #7: rollback-from-plan (emergency reconstruction, no blind import) ──
+  describe('rollback-from-plan (emergency lost-apply-report reconstruction)', () => {
+    it('deletes a live document that exactly matches the dry-run plan\'s planned candidate', async () => {
+      const uid = uniqueId('u'); const companyId = uniqueId('co')
+      await seedCompany(companyId)
+      await seedUser(uid, { companyId, role: 'admin' })
+
+      const dryRunPath = reportPath()
+      const dryRunResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', dryRunPath, '--mode', 'dry-run'])
+      expect(dryRunResult.report?.plannedCreates).toHaveLength(1)
+
+      const applyResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'apply'])
+      expect(applyResult.report?.counts.created).toBe(1)
+      expect(await getMembership(companyId, uid)).toBeDefined()
+
+      // Simulate the apply report being lost — only the dry-run report
+      // (produced BEFORE apply, structurally identical to a genuine
+      // --rollback-reference) survives.
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction'])
+
+      expect(result.code).toBe(0)
+      expect(await getMembership(companyId, uid)).toBeUndefined()
+      expect(result.report?.emergencyReconstruction?.refused).toHaveLength(0)
+      expect(result.report?.emergencyReconstruction?.skippedNotFound).toHaveLength(0)
+    })
+
+    it('skips (does not error on) a planned candidate with no live document — nothing to delete', async () => {
+      const uid = uniqueId('u'); const companyId = uniqueId('co')
+      await seedCompany(companyId)
+      await seedUser(uid, { companyId, role: 'admin' })
+
+      const dryRunPath = reportPath()
+      runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', dryRunPath, '--mode', 'dry-run'])
+      // Deliberately do NOT apply — the planned candidate was never created.
+
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction'])
+
+      expect(result.code).toBe(0)
+      expect(result.report?.emergencyReconstruction?.skippedNotFound).toEqual([{ companyId, uid }])
+      expect(result.report?.emergencyReconstruction?.refused).toHaveLength(0)
+    })
+
+    it('refuses (never deletes) a live document whose role no longer matches the plan', async () => {
+      const uid = uniqueId('u'); const companyId = uniqueId('co')
+      await seedCompany(companyId)
+      await seedUser(uid, { companyId, role: 'admin' })
+
+      const dryRunPath = reportPath()
+      runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', dryRunPath, '--mode', 'dry-run'])
+      runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'apply'])
+      expect(await getMembership(companyId, uid)).toBeDefined()
+
+      // A real admin changed the role after apply — the live document no
+      // longer exactly matches what the dry-run planned.
+      const now = Timestamp.now()
+      await db.collection('companies').doc(companyId).collection('members').doc(uid).set({ uid, role: 'viewer', status: 'active', createdAt: now, updatedAt: now })
+
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction'])
+
+      expect(result.code).toBe(1)
+      expect(result.report?.emergencyReconstruction?.refused).toHaveLength(1)
+      expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
+    })
+
+    it('refuses a --from-plan that is an apply report, not a dry-run report', async () => {
+      const uid = uniqueId('u'); const companyId = uniqueId('co')
+      await seedCompany(companyId)
+      await seedUser(uid, { companyId, role: 'admin' })
+      const applyReportPath = reportPath()
+      runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', applyReportPath, '--mode', 'apply'])
+      expect(await getMembership(companyId, uid)).toBeDefined()
+
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', applyReportPath, '--ack-emergency-reconstruction'])
+
+      expect(result.code).toBe(2)
+      expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted — refused before any I/O
+    })
+
+    it('refuses a --from-plan dry-run report that still has unresolved items', async () => {
+      const uid = uniqueId('u'); const companyId = uniqueId('co')
+      await seedCompany(companyId)
+      await seedUser(uid, { companyId, role: 'admin' })
+      await seedUser(uniqueId('u2'), { companyId, role: 'bogus-unknown-role' })
+
+      const dryRunPath = reportPath()
+      const dryRunResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', dryRunPath, '--mode', 'dry-run'])
+      expect(dryRunResult.report?.counts.unresolved).toBeGreaterThan(0)
+
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction'])
+
+      expect(result.code).toBe(2)
+    })
   })
 
   // ── Independent audit fix #5 ─────────────────────────────────────────────
@@ -704,9 +855,10 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     expect(tampered.rollbackManifest).toHaveLength(1)
     expect(tampered.createdPaths).toHaveLength(2)
     const tamperedPath = reportPath()
-    writeFileSync(tamperedPath, JSON.stringify(tampered))
+    const tamperedContent = JSON.stringify(tampered)
+    writeFileSync(tamperedPath, tamperedContent)
 
-    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath])
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath, '--expected-report-sha256', sha256Hex(tamperedContent)])
 
     expect(rollbackResult.code).toBe(2)
     // BOTH documents remain — not even the one WITH a manifest entry was
@@ -823,9 +975,15 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
   it('production is refused (exit 4) even WITH every production-approval flag supplied — unconditional, no bypass', () => {
     const { FIRESTORE_EMULATOR_HOST: _emulatorHost, GCLOUD_PROJECT: _gcloudProject, GOOGLE_CLOUD_PROJECT: _googleCloudProject, ...envWithoutEmulator } = process.env
 
+    // --backup-reference/--rollback-reference are now real filesystem
+    // paths (final-round fix: strictly verified, not opaque honor-system
+    // IDs) — path-safety validation (assertPathOutsideRepo) runs on them
+    // BEFORE assertCycleExecutionAllowed(), so they must be absolute paths
+    // outside the repo even though this test never expects them to be
+    // read (production is refused before that point regardless).
     const result = runCliWithEnv([
       '--environment', 'production', '--project', 'finapp-prod-10a83', '--confirm-project', 'finapp-prod-10a83',
-      '--backup-reference', 'backup-1', '--rollback-reference', 'rollback-1', '--ack-maintenance-readonly',
+      '--backup-reference', reportPath(), '--rollback-reference', reportPath(), '--ack-maintenance-readonly',
       '--report-path', reportPath(), '--mode', 'dry-run',
     ], envWithoutEmulator)
 

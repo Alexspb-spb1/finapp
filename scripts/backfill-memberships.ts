@@ -30,10 +30,12 @@ import { createPlannedRelations, readBackObservedState } from './lib/applyWrites
 import {
   writeReport, assertReportPathWritable, printSafeSummary, REPORT_SCHEMA_VERSION,
   type MembershipBackfillReport, type ReportCounts, type CreatedPathRecord, type WriteFailureRecord, type ProductionSafetyAudit,
+  type EmergencyReconstructionAudit, type EmergencyReconstructionRefusal,
 } from './lib/report.ts'
 import {
-  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, sha256OfFile, ProductionSafetyError,
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, verifyStrictDryRunReport, sha256OfFile, ProductionSafetyError,
 } from './lib/productionSafety.ts'
+import { isStrictlyValidActiveMembership } from './lib/membershipValidation.ts'
 import { relationKey, type Decision, type ConfirmedRelation } from './lib/types.ts'
 import type { CliOptions } from './lib/cli.ts'
 
@@ -99,10 +101,17 @@ async function main(): Promise<number> {
   // OUTSIDE the repository checkout BEFORE any credential acquisition or
   // Firestore I/O — including --decisions-file and --from-report, not just
   // --report-path. A single invalid path here means ZERO writes happen.
+  // Final-round fix #5: --backup-reference/--rollback-reference/--from-plan
+  // went straight to readFileSync() in productionSafety.ts without this
+  // check — closed here, before any credential acquisition/Firestore I/O,
+  // same as every other path flag.
   try {
     assertPathOutsideRepo('--report-path', opts.reportPath!, REPO_ROOT)
     if (opts.decisionsFile) assertPathOutsideRepo('--decisions-file', opts.decisionsFile, REPO_ROOT)
     if (opts.fromReport) assertPathOutsideRepo('--from-report', opts.fromReport, REPO_ROOT)
+    if (opts.fromPlan) assertPathOutsideRepo('--from-plan', opts.fromPlan, REPO_ROOT)
+    if (opts.backupReference) assertPathOutsideRepo('--backup-reference', opts.backupReference, REPO_ROOT)
+    if (opts.rollbackReference) assertPathOutsideRepo('--rollback-reference', opts.rollbackReference, REPO_ROOT)
     // Independent audit fix #2 (3rd round): prove the report destination is
     // actually writable BEFORE any credential acquisition or Firestore
     // I/O — losing the ability to write the report only AFTER apply has
@@ -169,6 +178,10 @@ async function main(): Promise<number> {
     return runRollback(db, opts.fromReport!, environment, expectedProjectId, runId, startedAt, opts.reportPath!, opts)
   }
 
+  if (opts.mode === 'rollback-from-plan') {
+    return runRollbackFromPlan(db, opts.fromPlan!, environment, expectedProjectId, runId, startedAt, opts.reportPath!, opts)
+  }
+
   const [users, companies, existingMemberships] = await Promise.all([
     readAllUsers(db), readAllCompanies(db), readAllExistingMemberships(db),
   ])
@@ -222,28 +235,29 @@ async function main(): Promise<number> {
       console.error(`Apply refused: ${counts.unresolved} unresolved item(s) (conflicts/orphans/owner-anomalies/companies-without-admin/dangling-memberships). Resolve via --decisions-file and retry — dangling memberships require repairing the underlying data, no decision can clear them.`)
     } else {
       // Independent review fix #5/6/7 (production preflight, follow-up
-      // round): for a PRODUCTION apply, verify (not merely accept as
-      // present) backup-reference, rollback-reference (pre-apply plan,
-      // cross-checked against THIS run's own targetChecksum — see
-      // productionSafety.ts for why this resolves the circular
-      // ROLLBACK_REFERENCE problem), and that maintenance mode is
-      // ACTUALLY active right now (a real Firestore read, not an honor-
-      // system flag). Any failure refuses before a single write —
-      // `--ack-maintenance-readonly` remains required too, as an explicit
-      // additional human acknowledgement on top of the real check, not a
-      // substitute for it.
+      // round) + final-round fixes #1/#3/#4: for a PRODUCTION apply, verify
+      // (not merely accept as present) maintenance mode, backup-reference,
+      // and rollback-reference — in THAT order. Maintenance is checked
+      // FIRST, deliberately: its `enabledAt` is what verifyBackupReference()
+      // uses to prove the backup was actually taken AFTER maintenance mode
+      // went active (final-round fix #1 — the runbook now requires
+      // maintenance to be enabled BEFORE backup runs, so this ordering is
+      // enforced here, not just documented). Any failure refuses before a
+      // single write — `--ack-maintenance-readonly` remains required too,
+      // as an explicit additional human acknowledgement on top of the real
+      // check, not a substitute for it.
       let productionSafetyOk = true
       if (environment === 'production') {
         try {
-          if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
-          const backupRef = verifyBackupReference(opts.backupReference, expectedProjectId)
-          if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
-          const rollbackPlanRef = verifyRollbackPlanReference(opts.rollbackReference, targetChecksum)
           if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production apply.')
           const maintenance = await assertMaintenanceModeActive(db)
+          if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
+          const backupRef = verifyBackupReference(opts.backupReference, expectedProjectId, maintenance.enabledAt)
+          if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
+          const rollbackPlanRef = verifyRollbackPlanReference(opts.rollbackReference, targetChecksum, expectedProjectId)
           productionSafety = {
             maintenanceMode: maintenance,
-            backupReference: { sha256: backupRef.sha256, createdAtUtc: backupRef.createdAtUtc },
+            backupReference: { sha256: backupRef.sha256, createdAtUtc: backupRef.createdAtUtc, membersCount: backupRef.membersCount },
             rollbackPlanReference: { sha256: rollbackPlanRef.sha256, targetChecksum: rollbackPlanRef.targetChecksum },
             ownReportSha256: null,
           }
@@ -335,6 +349,7 @@ async function main(): Promise<number> {
     },
     rollbackManifest: createdPaths.map(c => ({ companyId: c.companyId, uid: c.uid, path: c.path })),
     productionSafety,
+    emergencyReconstruction: null,
   }
 
   writeReport(opts.reportPath!, REPO_ROOT, report)
@@ -407,11 +422,52 @@ async function runRollback(
   reportPath: string,
   opts: CliOptions,
 ): Promise<number> {
+  let sourceReportRawText: string
+  try {
+    sourceReportRawText = readFileSync(fromReportPath, 'utf8')
+  } catch {
+    console.error('Failed to read --from-report.')
+    return 2
+  }
+
+  // Final-round fix #6: verify --from-report's integrity via the
+  // operator-supplied SHA-256 (recorded when apply printed "Apply report
+  // SHA-256...") BEFORE any parsing or Firestore I/O — a tampered or
+  // swapped report is refused here, before the structural validation
+  // below even runs. --expected-report-sha256 is required by
+  // parseCliArgs() for this mode, so opts.expectedReportSha256 is always
+  // defined here.
+  const actualReportSha256 = sha256Hex(sourceReportRawText)
+  if (actualReportSha256 !== opts.expectedReportSha256) {
+    console.error(`Rollback refused: --from-report content does not match --expected-report-sha256 (expected ${opts.expectedReportSha256}, got ${actualReportSha256}) — the report may have been tampered with, corrupted, or is the wrong file.`)
+    const report: MembershipBackfillReport = {
+      schemaVersion: REPORT_SCHEMA_VERSION,
+      mode: 'rollback-from-report',
+      environment,
+      projectId,
+      sourceGitSha: readSourceGitSha(),
+      runId,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      counts: emptyCounts(),
+      sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
+      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+      plannedCreates: [], createdPaths: [], writeFailures: [],
+      verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
+      rollbackManifest: [],
+      productionSafety: emptyProductionSafety(),
+      emergencyReconstruction: null,
+    }
+    writeReport(reportPath, REPO_ROOT, report)
+    printSafeSummary(report)
+    return 3
+  }
+
   let sourceReportRaw: unknown
   try {
-    sourceReportRaw = JSON.parse(readFileSync(fromReportPath, 'utf8'))
+    sourceReportRaw = JSON.parse(sourceReportRawText)
   } catch {
-    console.error('Failed to read/parse --from-report.')
+    console.error('Failed to parse --from-report as JSON.')
     return 2
   }
 
@@ -439,6 +495,7 @@ async function runRollback(
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],
       productionSafety: emptyProductionSafety(),
+      emergencyReconstruction: null,
     }
     writeReport(reportPath, REPO_ROOT, report)
     printSafeSummary(report)
@@ -478,6 +535,7 @@ async function runRollback(
         verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
         rollbackManifest: [],
         productionSafety: emptyProductionSafety(),
+        emergencyReconstruction: null,
       }
       writeReport(reportPath, REPO_ROOT, report)
       printSafeSummary(report)
@@ -522,6 +580,165 @@ async function runRollback(
     verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
     rollbackManifest: removed,
     productionSafety,
+    emergencyReconstruction: null,
+  }
+  writeReport(reportPath, REPO_ROOT, report)
+  printSafeSummary(report)
+  return refused.length > 0 ? 1 : 0
+}
+
+/**
+ * `--mode rollback-from-plan` — final-round fix #7 ("no blind import").
+ * Emergency, LAST-RESORT recovery for exactly one scenario: the actual
+ * apply report has been lost, so `rollback-from-report` (the primary,
+ * preferred rollback mechanism) cannot be used at all. This never falls
+ * back to a Firestore `import` of the pre-apply backup — `import` cannot
+ * delete anything (see MEMBERSHIP_BACKFILL.md, "Production rollback"), so
+ * it could never undo the *creation* apply performed.
+ *
+ * Instead, candidates are reconstructed from a SEPARATELY VERIFIED dry-run
+ * report's `plannedCreates` (`verifyStrictDryRunReport()` — the same
+ * strict structural validation `--rollback-reference` requires: real
+ * schema, matching environment/project, zero unresolved items). Each
+ * candidate is deleted ONLY if:
+ *   1. a live document exists at that exact path;
+ *   2. it matches the planned uid/role/status EXACTLY;
+ *   3. it passes strict canonical-schema validation
+ *      (isStrictlyValidActiveMembership — real Timestamps, no extra
+ *      fields, active status);
+ *   4. the delete itself succeeds under the SAME `lastUpdateTime`
+ *      precondition rollback-from-report uses, closing the read-then-
+ *      delete race.
+ * Any candidate that fails any of these is REFUSED, never guessed at —
+ * this reconstruction is deliberately weaker evidence than a real apply
+ * report's `createdPaths` (no create-time proof this exact backfill run
+ * created the document), so it never attempts a "best effort" delete of
+ * something merely plausible. If no verified dry-run report exists either,
+ * the operator has no automated path at all — MEMBERSHIP_BACKFILL.md's
+ * "Emergency scenario: apply-report lost" documents this as an honest
+ * BLOCKED / manual-recovery case, not something this function pretends to
+ * solve.
+ */
+async function runRollbackFromPlan(
+  db: import('firebase-admin/firestore').Firestore,
+  fromPlanPath: string,
+  environment: Environment,
+  projectId: string,
+  runId: string,
+  startedAt: string,
+  reportPath: string,
+  opts: CliOptions,
+): Promise<number> {
+  function refusedReport(errorMessage: string, exitCode: number): number {
+    console.error(`Emergency reconstruction refused: ${errorMessage}`)
+    const report: MembershipBackfillReport = {
+      schemaVersion: REPORT_SCHEMA_VERSION,
+      mode: 'rollback-from-plan',
+      environment,
+      projectId,
+      sourceGitSha: readSourceGitSha(),
+      runId,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      counts: emptyCounts(),
+      sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
+      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+      plannedCreates: [], createdPaths: [], writeFailures: [],
+      verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
+      rollbackManifest: [],
+      productionSafety: emptyProductionSafety(),
+      emergencyReconstruction: null,
+    }
+    writeReport(reportPath, REPO_ROOT, report)
+    printSafeSummary(report)
+    return exitCode
+  }
+
+  // Same production-safety requirement as rollback-from-report — this is
+  // still a production write. --ack-emergency-reconstruction (required by
+  // parseCliArgs() for this mode) is a SEPARATE, additional acknowledgement
+  // from --ack-maintenance-readonly: the operator must explicitly accept
+  // that this is the degraded, weaker-evidence recovery path, not the
+  // normal one.
+  let productionSafety = emptyProductionSafety()
+  if (environment === 'production') {
+    try {
+      if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production emergency reconstruction.')
+      const maintenance = await assertMaintenanceModeActive(db)
+      productionSafety = { ...emptyProductionSafety(), maintenanceMode: maintenance }
+    } catch (err) {
+      if (!(err instanceof ProductionSafetyError)) throw err
+      return refusedReport(err.message, 3)
+    }
+  }
+
+  let strict
+  try {
+    strict = verifyStrictDryRunReport(fromPlanPath, projectId, environment)
+  } catch (err) {
+    if (err instanceof ProductionSafetyError) return refusedReport(`--from-plan ${err.message}`, 2)
+    throw err
+  }
+
+  const removed: { companyId: string; uid: string; path: string }[] = []
+  const skippedNotFound: { companyId: string; uid: string }[] = []
+  const refused: EmergencyReconstructionRefusal[] = []
+
+  for (const candidate of strict.plannedCreates) {
+    const ref = db.collection('companies').doc(candidate.companyId).collection('members').doc(candidate.uid)
+    const snap = await ref.get()
+    if (!snap.exists) { skippedNotFound.push({ companyId: candidate.companyId, uid: candidate.uid }); continue }
+    const data = snap.data()!
+    if (data.uid !== candidate.uid || data.role !== candidate.role || data.status !== candidate.status) {
+      refused.push({ companyId: candidate.companyId, uid: candidate.uid, reason: 'live document does not exactly match the planned candidate (uid/role/status) — refusing to guess' })
+      continue
+    }
+    if (!isStrictlyValidActiveMembership(candidate.uid, data as Record<string, unknown>)) {
+      refused.push({ companyId: candidate.companyId, uid: candidate.uid, reason: 'live document does not pass strict membership schema validation' })
+      continue
+    }
+    try {
+      await ref.delete({ lastUpdateTime: snap.updateTime! })
+      removed.push({ companyId: candidate.companyId, uid: candidate.uid, path: ref.path })
+    } catch {
+      refused.push({ companyId: candidate.companyId, uid: candidate.uid, reason: 'concurrent modification detected at delete time' })
+    }
+  }
+
+  const emergencyReconstruction: EmergencyReconstructionAudit = {
+    sourceDryRunSha256: strict.sha256,
+    skippedNotFound,
+    refused,
+  }
+
+  const report: MembershipBackfillReport = {
+    schemaVersion: REPORT_SCHEMA_VERSION,
+    mode: 'rollback-from-plan',
+    environment,
+    projectId,
+    sourceGitSha: readSourceGitSha(),
+    runId,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    counts: { ...emptyCounts(), conflicts: refused.length, unresolved: refused.length },
+    sourceChecksum: '',
+    decisionsChecksum: '',
+    targetChecksum: strict.targetChecksum,
+    observedChecksum: null,
+    readBackError: null,
+    conflicts: refused.map(r => ({ companyId: r.companyId, uid: r.uid, reason: 'existing_membership_conflict' as const })),
+    orphans: [],
+    ownerAnomalies: [],
+    unknownUsers: [],
+    malformedClaims: [],
+    danglingMemberships: [],
+    plannedCreates: [],
+    createdPaths: [],
+    writeFailures: [],
+    verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
+    rollbackManifest: removed,
+    productionSafety,
+    emergencyReconstruction,
   }
   writeReport(reportPath, REPO_ROOT, report)
   printSafeSummary(report)

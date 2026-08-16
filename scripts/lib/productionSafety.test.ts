@@ -1,5 +1,5 @@
-// Independent review (production preflight, follow-up round) — unit
-// coverage for the REAL, verified production-write preconditions. Uses a
+// Independent review (production preflight, final round) — unit coverage
+// for the REAL, strictly-verified production-write preconditions. Uses a
 // minimal fake Firestore-shaped stub for the maintenance-mode check (same
 // pattern as applyWrites.test.ts) and real temp files for the
 // backup/rollback-reference checks — no real emulator or GCP project
@@ -11,9 +11,17 @@ import { join } from 'node:path'
 import { Timestamp } from 'firebase-admin/firestore'
 import type { Firestore } from 'firebase-admin/firestore'
 import {
-  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, sha256OfFile, ProductionSafetyError,
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, verifyStrictDryRunReport,
+  sha256OfFile, ProductionSafetyError, MAX_BACKUP_AGE_MS,
 } from './productionSafety.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
+
+const PROJECT_ID = 'finapp-prod-10a83'
+const HEX64_A = 'a'.repeat(64)
+const HEX64_B = 'b'.repeat(64)
+const HEX64_C = 'c'.repeat(64)
+const MAINTENANCE_ENABLED_AT = '2026-01-01T00:00:00.000Z'
+const FRESH_NOW = '2026-01-01T02:00:00.000Z' // 2h after maintenance enabled
 
 function makeFakeMaintenanceDb(doc: Record<string, unknown> | undefined | 'throw'): Firestore {
   const db = {
@@ -41,7 +49,7 @@ function tempFile(name: string, content: unknown): string {
 }
 
 describe('assertMaintenanceModeActive', () => {
-  it('resolves when enabled === true, returning enabledAt/enabledBy/taskId', async () => {
+  it('resolves when enabled === true with a real Timestamp enabledAt, returning enabledAt/enabledBy/taskId', async () => {
     const ts = Timestamp.now()
     const db = makeFakeMaintenanceDb({ enabled: true, enabledAt: ts, enabledBy: 'alice', taskId: 'SEC-005' })
     const result = await assertMaintenanceModeActive(db)
@@ -65,71 +73,268 @@ describe('assertMaintenanceModeActive', () => {
   it('fails CLOSED (rejects) when the Firestore read itself throws — never treated as "maintenance is off"', async () => {
     await expect(assertMaintenanceModeActive(makeFakeMaintenanceDb('throw'))).rejects.toThrow(ProductionSafetyError)
   })
+
+  // ── Final-round fix: enabledAt is now a hard requirement ───────────────
+  it('rejects when enabled === true but enabledAt is missing — cannot anchor the backup-freshness check', async () => {
+    const db = makeFakeMaintenanceDb({ enabled: true, enabledBy: 'alice', taskId: 'SEC-005' })
+    await expect(assertMaintenanceModeActive(db)).rejects.toThrow(/enabledAt/)
+  })
+
+  it('rejects when enabledAt is a plain object, not a real Timestamp', async () => {
+    const db = makeFakeMaintenanceDb({ enabled: true, enabledAt: { seconds: 1, nanoseconds: 0 } })
+    await expect(assertMaintenanceModeActive(db)).rejects.toThrow(ProductionSafetyError)
+  })
 })
 
 describe('verifyBackupReference', () => {
   const validManifest = {
-    productionProjectId: 'finapp-prod-10a83',
-    createdAtUtc: '2026-01-01T00:00:00.000Z',
-    firestore: { exportStatus: 'SUCCESS', membersCount: 3, companiesCount: 2, usersCount: 3, companyDataDocsCount: 2 },
+    productionProjectId: PROJECT_ID,
+    createdAtUtc: '2026-01-01T01:00:00.000Z', // 1h after maintenance enabled, 1h before "now"
+    firestore: {
+      exportOperationId: 'op-12345',
+      exportStatus: 'SUCCESS',
+      collectionIds: ['users', 'companies', 'company_data', 'members'],
+      membersCount: 3, companiesCount: 2, usersCount: 3, companyDataDocsCount: 2,
+    },
+    restore: {
+      verificationResult: 'PASS',
+      membersCount: 3,
+      membersChecksum: HEX64_A,
+      verifiedAtUtc: '2026-01-01T01:30:00.000Z',
+    },
   }
 
-  it('accepts a valid manifest and returns its sha256/createdAtUtc', () => {
+  it('accepts a valid manifest and returns its sha256/createdAtUtc/membersCount', () => {
     const path = tempFile('manifest.json', validManifest)
-    const result = verifyBackupReference(path, 'finapp-prod-10a83')
-    expect(result.createdAtUtc).toBe('2026-01-01T00:00:00.000Z')
+    const result = verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)
+    expect(result.createdAtUtc).toBe(validManifest.createdAtUtc)
+    expect(result.membersCount).toBe(3)
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/)
   })
 
+  it('accepts a full-scope export with no collectionIds array at all', () => {
+    const path = tempFile('manifest.json', {
+      ...validManifest,
+      firestore: { ...validManifest.firestore, collectionIds: undefined, scope: 'full' },
+    })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).not.toThrow()
+  })
+
   it('rejects a nonexistent path', () => {
-    expect(() => verifyBackupReference('/nonexistent/path/manifest.json', 'finapp-prod-10a83')).toThrow(ProductionSafetyError)
+    expect(() => verifyBackupReference('/nonexistent/path/manifest.json', PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
   })
 
   it('rejects invalid JSON', () => {
     const path = tempFile('manifest.json', 'not json')
-    expect(() => verifyBackupReference(path, 'finapp-prod-10a83')).toThrow(ProductionSafetyError)
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
   })
 
   it('rejects a projectId mismatch', () => {
     const path = tempFile('manifest.json', { ...validManifest, productionProjectId: 'some-other-project' })
-    expect(() => verifyBackupReference(path, 'finapp-prod-10a83')).toThrow(ProductionSafetyError)
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
   })
 
   it('rejects when firestore.exportStatus is not SUCCESS', () => {
     const path = tempFile('manifest.json', { ...validManifest, firestore: { ...validManifest.firestore, exportStatus: 'FAILED' } })
-    expect(() => verifyBackupReference(path, 'finapp-prod-10a83')).toThrow(ProductionSafetyError)
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects a manifest missing firestore.exportOperationId', () => {
+    const { exportOperationId: _drop, ...firestoreWithout } = validManifest.firestore
+    const path = tempFile('manifest.json', { ...validManifest, firestore: firestoreWithout })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(/exportOperationId/)
   })
 
   // ── Independent review fix #1 (collection group `members` must be backed up) ──
-  it('rejects a manifest with no firestore.membersCount — the export never captured the members collection group', () => {
-    const { membersCount: _drop, ...firestoreWithoutMembers } = validManifest.firestore
-    const path = tempFile('manifest.json', { ...validManifest, firestore: firestoreWithoutMembers })
-    expect(() => verifyBackupReference(path, 'finapp-prod-10a83')).toThrow(/members/i)
+  it('rejects a manifest whose collectionIds omits "members" and scope is not full', () => {
+    const path = tempFile('manifest.json', {
+      ...validManifest,
+      firestore: { ...validManifest.firestore, collectionIds: ['users', 'companies', 'company_data'] },
+    })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(/members/i)
+  })
+
+  it.each(['membersCount', 'companiesCount', 'usersCount', 'companyDataDocsCount'] as const)(
+    'rejects a non-integer or negative firestore.%s',
+    field => {
+      const badPath = tempFile(`bad-${field}.json`, { ...validManifest, firestore: { ...validManifest.firestore, [field]: -1 } })
+      expect(() => verifyBackupReference(badPath, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
+      const floatPath = tempFile(`float-${field}.json`, { ...validManifest, firestore: { ...validManifest.firestore, [field]: 1.5 } })
+      expect(() => verifyBackupReference(floatPath, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
+    },
+  )
+
+  // ── Independent review fix #2 (restore verification for members) ───────
+  it('rejects a manifest with no restore section at all', () => {
+    const { restore: _drop, ...withoutRestore } = validManifest
+    const path = tempFile('manifest.json', withoutRestore)
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(/restore/i)
+  })
+
+  it('rejects when restore.verificationResult is not PASS', () => {
+    const path = tempFile('manifest.json', { ...validManifest, restore: { ...validManifest.restore, verificationResult: 'FAIL' } })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects when restore.membersCount does not match firestore.membersCount', () => {
+    const path = tempFile('manifest.json', { ...validManifest, restore: { ...validManifest.restore, membersCount: 999 } })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects when restore.membersChecksum is missing', () => {
+    const path = tempFile('manifest.json', { ...validManifest, restore: { ...validManifest.restore, membersChecksum: '' } })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(ProductionSafetyError)
+  })
+
+  // ── Final-round fix #1 (backup must postdate maintenance mode enable) ──
+  it('rejects a backup created BEFORE maintenance mode was enabled', () => {
+    const path = tempFile('manifest.json', { ...validManifest, createdAtUtc: '2025-12-31T23:00:00.000Z' })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(/maintenance/i)
+  })
+
+  it('accepts a backup created exactly AT the maintenance-enabled instant', () => {
+    const path = tempFile('manifest.json', { ...validManifest, createdAtUtc: MAINTENANCE_ENABLED_AT })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).not.toThrow()
+  })
+
+  // ── Final-round fix #1 (backup freshness) ───────────────────────────────
+  it('rejects a stale backup older than MAX_BACKUP_AGE_MS', () => {
+    const staleNow = new Date(Date.parse(validManifest.createdAtUtc) + MAX_BACKUP_AGE_MS + 1).toISOString()
+    const path = tempFile('manifest.json', validManifest)
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, staleNow)).toThrow(/old/i)
+  })
+
+  it('rejects a manifest whose createdAtUtc is in the future relative to now', () => {
+    const path = tempFile('manifest.json', validManifest)
+    const pastNow = '2025-01-01T00:00:00.000Z'
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, pastNow)).toThrow(/future/i)
+  })
+})
+
+describe('verifyStrictDryRunReport', () => {
+  const validDryRun = {
+    schemaVersion: REPORT_SCHEMA_VERSION,
+    mode: 'dry-run',
+    environment: 'production',
+    projectId: PROJECT_ID,
+    sourceGitSha: 'abc123def',
+    sourceChecksum: HEX64_A,
+    decisionsChecksum: HEX64_B,
+    targetChecksum: HEX64_C,
+    counts: { unresolved: 0 },
+    plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
+  }
+
+  it('accepts a genuine, fully-resolved dry-run report', () => {
+    const path = tempFile('dry-run.json', validDryRun)
+    const result = verifyStrictDryRunReport(path, PROJECT_ID, 'production')
+    expect(result.targetChecksum).toBe(HEX64_C)
+    expect(result.plannedCreates).toEqual([{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }])
+    expect(result.sha256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('rejects a minimal forged JSON with only mode+targetChecksum', () => {
+    const path = tempFile('fake.json', { mode: 'dry-run', targetChecksum: HEX64_C })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects a nonexistent path', () => {
+    expect(() => verifyStrictDryRunReport('/nonexistent/dry-run.json', PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects the wrong schemaVersion', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, schemaVersion: 999 })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects a non-dry-run mode (e.g. an apply report)', () => {
+    const path = tempFile('apply.json', { ...validDryRun, mode: 'apply' })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects an environment mismatch', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, environment: 'staging' })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects a projectId mismatch', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, projectId: 'wrong-project' })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects a missing sourceGitSha', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, sourceGitSha: '' })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it.each(['sourceChecksum', 'decisionsChecksum', 'targetChecksum'] as const)(
+    'rejects a non-hex or malformed %s',
+    field => {
+      const path = tempFile(`bad-${field}.json`, { ...validDryRun, [field]: 'not-a-real-hash' })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+    },
+  )
+
+  it('rejects counts.unresolved !== 0 — a plan that is not fully approved', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, counts: { unresolved: 1 } })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/unresolved/)
+  })
+
+  it('rejects a missing counts object entirely', () => {
+    const { counts: _drop, ...withoutCounts } = validDryRun
+    const path = tempFile('dry-run.json', withoutCounts)
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects plannedCreates entries missing a required field', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin' }] })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/plannedCreates/)
+  })
+
+  it('accepts an empty plannedCreates array (nothing was planned)', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, plannedCreates: [] })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
   })
 })
 
 describe('verifyRollbackPlanReference', () => {
-  const dryRunReport = { schemaVersion: REPORT_SCHEMA_VERSION, mode: 'dry-run', targetChecksum: 'abc123' }
+  const validDryRun = {
+    schemaVersion: REPORT_SCHEMA_VERSION,
+    mode: 'dry-run',
+    environment: 'production',
+    projectId: PROJECT_ID,
+    sourceGitSha: 'abc123def',
+    sourceChecksum: HEX64_A,
+    decisionsChecksum: HEX64_B,
+    targetChecksum: HEX64_C,
+    counts: { unresolved: 0 },
+    plannedCreates: [],
+  }
 
   it('accepts a dry-run report whose targetChecksum matches the expected value', () => {
-    const path = tempFile('dry-run.json', dryRunReport)
-    const result = verifyRollbackPlanReference(path, 'abc123')
-    expect(result.targetChecksum).toBe('abc123')
+    const path = tempFile('dry-run.json', validDryRun)
+    const result = verifyRollbackPlanReference(path, HEX64_C, PROJECT_ID)
+    expect(result.targetChecksum).toBe(HEX64_C)
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/)
   })
 
   it('rejects a nonexistent path', () => {
-    expect(() => verifyRollbackPlanReference('/nonexistent/dry-run.json', 'abc123')).toThrow(ProductionSafetyError)
+    expect(() => verifyRollbackPlanReference('/nonexistent/dry-run.json', HEX64_C, PROJECT_ID)).toThrow(ProductionSafetyError)
   })
 
   it('rejects a report whose mode is not dry-run (e.g. an apply report — closes the circular ROLLBACK_REFERENCE)', () => {
-    const path = tempFile('apply.json', { ...dryRunReport, mode: 'apply' })
-    expect(() => verifyRollbackPlanReference(path, 'abc123')).toThrow(ProductionSafetyError)
+    const path = tempFile('apply.json', { ...validDryRun, mode: 'apply' })
+    expect(() => verifyRollbackPlanReference(path, HEX64_C, PROJECT_ID)).toThrow(ProductionSafetyError)
   })
 
   it('rejects a targetChecksum mismatch — a stale or unrelated dry-run', () => {
-    const path = tempFile('dry-run.json', dryRunReport)
-    expect(() => verifyRollbackPlanReference(path, 'different-checksum')).toThrow(ProductionSafetyError)
+    const path = tempFile('dry-run.json', validDryRun)
+    expect(() => verifyRollbackPlanReference(path, HEX64_B, PROJECT_ID)).toThrow(ProductionSafetyError)
+  })
+
+  it('rejects a dry-run with unresolved items even if the checksum matches', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, counts: { unresolved: 2 } })
+    expect(() => verifyRollbackPlanReference(path, HEX64_C, PROJECT_ID)).toThrow(/unresolved/)
   })
 })
 

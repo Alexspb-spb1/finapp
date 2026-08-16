@@ -65,10 +65,6 @@ const DEFAULT_CATEGORIES = [
 export const createCompany = onCall(async request => {
   try {
     const auth = requireAuth(request)
-    // SEC-005 production preflight: Firestore Rules never apply to this
-    // Admin SDK write path, so maintenance mode needs its own explicit
-    // check here — checked before any read/write below.
-    await requireNotInMaintenanceMode(db)
     const input = validateRequest(CreateCompanyRequestSchema, request.data)
 
     // Email comes ONLY from the trusted Admin Auth record for this uid —
@@ -89,6 +85,15 @@ export const createCompany = onCall(async request => {
         inn: input.inn ?? null,
       },
       run: async (txn: Transaction) => {
+        // SEC-005 production preflight: Firestore Rules never apply to
+        // this Admin SDK write path, so maintenance mode needs its own
+        // explicit check — read via txn.get() (requireNotInMaintenanceMode's
+        // txn parameter), so it is part of THIS transaction's read set and
+        // closes the TOCTOU window between the check and commit (see the
+        // function's doc comment in lib/authz.ts). Must stay the first
+        // statement in run(), before any other read/write.
+        await requireNotInMaintenanceMode(db, txn)
+
         const userRef = db.collection('users').doc(auth.uid)
 
         // Guard against bootstrapping a SECOND "first company" for a uid
