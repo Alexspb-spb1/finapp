@@ -10,9 +10,12 @@ run directly via Node's native TypeScript support — no build step, no
 `ts-node`, no `functions/node_modules`).
 
 **Status of this document**: describes the tool as implemented and verified
-against the **Firestore Emulator only** (SEC-005 Phase A). Staging rehearsal
-and production execution are **not authorized and have not been run** — see
-"Future staging rehearsal and production execution" at the end.
+against the **Firestore Emulator**, and now also authorized for **staging**
+(`finapp-staging`) under an explicit `EXTERNAL_ACTION_APPROVED: SEC-005` /
+`ENVIRONMENT: staging` grant from the repository owner — see "Staging
+authorization" below. **Production execution remains unconditionally
+refused** — no `PRODUCTION_ACTION_APPROVED` grant has been given, and none
+of the CLI's production-only flags can change that.
 
 **This document was updated after an independent review returned
 `REVIEW_RESULT: CHANGES REQUIRED`** — see "Independent audit fixes" near the
@@ -42,6 +45,13 @@ dangling-memberships correction" at the very end, and "Dangling existing
 memberships" below, for the corrected (and now authoritative) behavior:
 NO decision can ever clear a dangling existing membership from blocking
 `apply`/`verify` — only repairing the underlying data can.
+
+**This document was updated a FIFTH time to record staging authorization**
+— see "Staging authorization" below. The repository owner granted
+`EXTERNAL_ACTION_APPROVED: SEC-005` / `ENVIRONMENT: staging`; the CLI's
+cycle-execution gate (`assertCycleExecutionAllowed()`,
+`scripts/lib/firebaseAdmin.ts`) now lets `--environment staging` proceed.
+Production is unaffected — still refused unconditionally.
 
 ## Data model — legacy → canonical mapping
 
@@ -288,7 +298,7 @@ node scripts/backfill-memberships.ts \
 | 1 | Apply refused (unresolved items, including unknown users/malformed claims) or had write failures; verify found drift OR the plan was not fully resolved (2nd round fix #1 — `matchesTarget` requires `plan.applyAllowed` too, not just checksum equality); rollback had refused deletions |
 | 2 | CLI argument or decisions-file error |
 | 3 | Environment/project guard failure (wrong project, missing confirmation, etc.) |
-| 4 | Refused: this cycle does not authorize staging/production execution (Phase A only) |
+| 4 | Refused: `--environment production` (unconditional — no grant exists this cycle); `staging` is now authorized (see below) |
 
 ### Environment/project guards (enforced BEFORE any credential acquisition or Firestore read)
 
@@ -304,12 +314,19 @@ never a default — `--environment` and `--project` have no defaults at all.
 The Admin SDK resolves credentials itself (Application Default
 Credentials); this tool never reads or logs a service-account file.
 
-**In this cycle (SEC-005 Phase A), the CLI refuses to run against anything
-other than `--environment emulator`, regardless of flags** — see `main()`'s
-explicit guard in `scripts/backfill-memberships.ts`. This is deliberate:
-the guards above are implemented and unit-tested, but staging/production
-execution requires separate, explicit authorization not granted in this
-task cycle.
+**Cycle-scoped execution authorization** (`assertCycleExecutionAllowed()`,
+`scripts/lib/firebaseAdmin.ts`) is a SEPARATE gate from the project-ID
+consistency table above — it decides whether THIS remediation cycle is
+allowed to run against a given external environment AT ALL, independent of
+whether the flags are individually well-formed. `--environment emulator`
+and `--environment staging` are both currently allowed to proceed past
+this gate (staging under the `EXTERNAL_ACTION_APPROVED: SEC-005` /
+`ENVIRONMENT: staging` grant — see "Staging authorization" below).
+**`--environment production` is refused unconditionally** — this check
+never inspects `--backup-reference`/`--rollback-reference`/
+`--ack-maintenance-readonly` or any other flag; no combination of flags can
+make it pass, because no `PRODUCTION_ACTION_APPROVED` grant has been
+given.
 
 ## Emulator walkthrough (safe — run this)
 
@@ -343,10 +360,19 @@ FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 node scripts/backfill-memberships.ts \
 `npm run test:migration` runs the full automated proof of this flow
 (`firebase emulators:exec --project demo-finapp --only firestore "vitest run scripts"`).
 
-## Future staging rehearsal (template — NOT run in this cycle)
+## Staging authorization (EXTERNAL_ACTION_APPROVED: SEC-005 / ENVIRONMENT: staging)
 
-Requires `EXTERNAL_ACTION_APPROVED: SEC-005` / `ENVIRONMENT: staging` from
-the repository owner first.
+The repository owner granted `EXTERNAL_ACTION_APPROVED: SEC-005` /
+`ENVIRONMENT: staging`. `--environment staging` now proceeds past the
+cycle-execution gate (`assertCycleExecutionAllowed()`); the project-ID
+consistency guards in the table above are unchanged and still apply in
+full.
+
+**Only `--mode dry-run` is authorized in this cycle.** `apply` against
+`finapp-staging` is explicitly NOT authorized yet — the grant covers a
+read-only reconnaissance run only, so the owner can review real
+anonymized-in-transcript counts/checksums before deciding whether to
+authorize `apply`:
 
 ```bash
 node scripts/backfill-memberships.ts \
@@ -354,8 +380,18 @@ node scripts/backfill-memberships.ts \
   --mode dry-run --report-path /absolute/path/outside/repo/sec005-staging-dry-run.json
 ```
 
-Then, after manual review of the dry-run report and a decisions file for
-every conflict/orphan/owner-anomaly:
+The full report (written only to the absolute, outside-the-repo
+`--report-path` above) contains uid/companyId and is never committed,
+never printed to stdout, and never pasted into a session transcript —
+see "No PII in Git" below. Only the safe aggregate summary that
+`printSafeSummary()` prints to stdout (mode, environment, projectId,
+counts, checksums — no identifiers) is safe to share/quote.
+
+Once `apply` for staging IS separately authorized, the same
+`--environment staging --project finapp-staging --confirm-project
+finapp-staging` flags apply, after reviewing the dry-run report and
+preparing a decisions file for every conflict/orphan/owner-anomaly it
+found:
 
 ```bash
 node scripts/backfill-memberships.ts \
@@ -730,3 +766,39 @@ memberships остаются fail-closed". Summary:
   "Confirmed / conflict / orphan / owner-anomaly definitions" section and
   this document no longer claim that excluding a dangling membership
   "just dismisses the listing"; excluding it is not possible at all.
+
+## Staging authorization — implementation notes
+
+The repository owner granted `EXTERNAL_ACTION_APPROVED: SEC-005` /
+`ENVIRONMENT: staging` (production explicitly excluded: "Production
+запрещён"). Implemented in a single commit, `fix(sec-005): allow staging
+execution, keep production unconditionally blocked`. Full write-up in
+`docs/remediation/reports/SEC-005.md`, section "Staging authorization
+(EXTERNAL_ACTION_APPROVED: SEC-005)".
+
+- New `assertCycleExecutionAllowed(environment)`
+  (`scripts/lib/firebaseAdmin.ts`) — a gate deliberately SEPARATE from
+  `assertEnvironmentGuard()`'s project-ID consistency checks, since a
+  cycle's authorization for one external environment says nothing about
+  another. Replaces the previous blanket `if (environment !== 'emulator')
+  return 4` in `scripts/backfill-memberships.ts`'s `main()`.
+- `emulator` and `staging` both pass this gate now; `production` throws
+  `CycleExecutionError` UNCONDITIONALLY — the function never inspects
+  `--backup-reference`/`--rollback-reference`/`--ack-maintenance-readonly`
+  or any other flag before refusing `production`.
+- Unit-tested directly (`scripts/lib/firebaseAdmin.test.ts`) and, for the
+  production-refusal direction, also proven end-to-end via the real CLI
+  binary (`scripts/backfill-memberships.emulator.test.ts`) — safe to do
+  because `production` is refused BEFORE `initFirestore()` is ever called,
+  so no real I/O of any kind is attempted. The staging-allowed direction
+  is intentionally NOT proven via a live CLI invocation against
+  `finapp-staging` in the automated test suite — doing so would require
+  letting the process attempt a real (or credential-failing) Firestore
+  connection, which is out of scope for `npm run test:migration`; it is
+  proven directly at the unit level instead, against the exact function
+  this gate is implemented with.
+- This round performed exactly one real action against `finapp-staging`:
+  a single `--mode dry-run` run. `apply` against staging was NOT run —
+  see `docs/remediation/reports/SEC-005.md` for the safe aggregate
+  counts/checksums and whether a live connection to `finapp-staging` was
+  actually reachable from this environment.

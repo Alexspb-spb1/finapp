@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 import { parseCliArgs, CliArgError } from './lib/cli.ts'
-import { assertEnvironmentGuard, initFirestore, EnvironmentGuardError, type Environment } from './lib/firebaseAdmin.ts'
+import { assertEnvironmentGuard, assertCycleExecutionAllowed, initFirestore, EnvironmentGuardError, CycleExecutionError, type Environment } from './lib/firebaseAdmin.ts'
 import { extractLegacyRelations } from './lib/legacyMapping.ts'
 import { validateDecisions } from './lib/decisions.ts'
 import { buildPlan } from './lib/planner.ts'
@@ -128,12 +128,17 @@ async function main(): Promise<number> {
       return 3
     }
   }
-  // This cycle (SEC-005 Phase A): staging/production execution is not
-  // authorized regardless of flags — the guard above proves the CLI WOULD
-  // enforce the right preconditions, but no external run happens here.
-  if (environment !== 'emulator') {
-    console.error(`Refusing to run against --environment ${environment} in this cycle: staging rehearsal and production backfill require separate, explicit authorization (see docs/migrations/MEMBERSHIP_BACKFILL.md).`)
-    return 4
+  // SEC-005: staging execution is explicitly authorized this cycle
+  // (EXTERNAL_ACTION_APPROVED: SEC-005 / ENVIRONMENT: staging, granted by
+  // the repository owner) — emulator and staging both proceed past this
+  // gate. Production remains UNCONDITIONALLY refused: assertCycleExecutionAllowed()
+  // never lets 'production' through, regardless of the flags checked just
+  // above — no PRODUCTION_ACTION_APPROVED grant has been given this cycle.
+  try {
+    assertCycleExecutionAllowed(environment)
+  } catch (err) {
+    if (err instanceof CycleExecutionError) { console.error(`Refusing to run against --environment ${environment}: ${err.message}`); return 4 }
+    throw err
   }
 
   let decisionsResult

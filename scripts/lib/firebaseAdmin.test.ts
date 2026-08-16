@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { assertEnvironmentGuard, EnvironmentGuardError } from './firebaseAdmin.ts'
+import { assertEnvironmentGuard, assertCycleExecutionAllowed, EnvironmentGuardError, CycleExecutionError } from './firebaseAdmin.ts'
 
 describe('assertEnvironmentGuard — production is never the default', () => {
   it('throws when --project is not provided at all', () => {
@@ -78,5 +78,31 @@ describe('assertEnvironmentGuard — source conflicts are rejected before any I/
       environment: 'emulator', cliProjectId: 'demo-finapp', envProjectId: 'some-other-project',
       firestoreEmulatorHost: '127.0.0.1:8080', confirmProjectId: undefined,
     })).toThrow(EnvironmentGuardError)
+  })
+})
+
+// ── SEC-005 staging authorization (EXTERNAL_ACTION_APPROVED: SEC-005 /
+// ENVIRONMENT: staging) — production remains unconditionally refused. ────
+describe('assertCycleExecutionAllowed — staging is allowed, production is unconditionally refused', () => {
+  it('does not throw for emulator', () => {
+    expect(() => assertCycleExecutionAllowed('emulator')).not.toThrow()
+  })
+
+  it('does not throw for staging — explicitly authorized this cycle', () => {
+    expect(() => assertCycleExecutionAllowed('staging')).not.toThrow()
+  })
+
+  it('throws CycleExecutionError for production — no exceptions, no bypass', () => {
+    expect(() => assertCycleExecutionAllowed('production')).toThrow(CycleExecutionError)
+  })
+
+  it('the production error message does not leak into implying any flag could unlock it', () => {
+    try {
+      assertCycleExecutionAllowed('production')
+      expect.unreachable('should have thrown')
+    } catch (err) {
+      expect(err).toBeInstanceOf(CycleExecutionError)
+      expect((err as Error).message).toMatch(/PRODUCTION_ACTION_APPROVED/)
+    }
   })
 })

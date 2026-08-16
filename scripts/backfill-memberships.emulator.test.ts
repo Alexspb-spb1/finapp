@@ -69,6 +69,28 @@ function baseArgs(mode: string, extra: string[] = []): string[] {
   return ['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', mode, ...extra]
 }
 
+/** Like runCli(), but with an explicit env object instead of inheriting
+ * process.env verbatim — needed for the staging/production authorization
+ * tests below, since `firebase emulators:exec` (which runs this whole
+ * suite) sets FIRESTORE_EMULATOR_HOST/GCLOUD_PROJECT on this process,
+ * which would otherwise make assertEnvironmentGuard() refuse a
+ * --environment production invocation for an unrelated reason (ambiguous
+ * emulator-host / project-ID conflict) before ever reaching the
+ * cycle-authorization gate this test actually targets. */
+function runCliWithEnv(args: string[], env: NodeJS.ProcessEnv): CliResult {
+  const result = spawnSync('node', ['scripts/backfill-memberships.ts', ...args], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    env,
+  })
+  const reportPathArg = args[args.indexOf('--report-path') + 1]
+  let report: MembershipBackfillReport | undefined
+  if (reportPathArg && existsSync(reportPathArg)) {
+    report = JSON.parse(readFileSync(reportPathArg, 'utf8')) as MembershipBackfillReport
+  }
+  return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr, report }
+}
+
 async function seedUser(uid: string, data: Record<string, unknown>): Promise<void> {
   await db.collection('users').doc(uid).set(data)
 }
@@ -779,5 +801,48 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     expect(bcIndex).toBeGreaterThanOrEqual(0)
     expect(cIndex).toBeGreaterThanOrEqual(0)
     expect(bcIndex).not.toBe(cIndex) // both present as distinct entries, never collapsed/collided
+  })
+
+  // ── SEC-005 staging authorization (EXTERNAL_ACTION_APPROVED: SEC-005 /
+  // ENVIRONMENT: staging) — production remains unconditionally refused. ──
+  //
+  // NOTE on scope: these tests prove the CLI's CONTROL FLOW, not a live
+  // staging connection — per the task's own "emulator only; no
+  // staging/production access" constraint, nothing here ever attempts a
+  // real network call to a real GCP project. `--environment production` is
+  // refused by assertCycleExecutionAllowed() BEFORE initFirestore() is
+  // ever called, so that direction is safe to prove fully end-to-end via
+  // the real CLI binary with zero risk of any real I/O. The "staging is
+  // allowed past the gate" direction is proven directly and exhaustively
+  // at the unit level instead (`scripts/lib/firebaseAdmin.test.ts`,
+  // `assertCycleExecutionAllowed`) — the exact function this gate is
+  // implemented with — since proving it via the real CLI binary would
+  // require letting the process proceed to a real (or credential-failing)
+  // Firestore connection attempt for `finapp-staging`, which is out of
+  // scope for an automated test run.
+  it('production is refused (exit 4) even WITH every production-approval flag supplied — unconditional, no bypass', () => {
+    const { FIRESTORE_EMULATOR_HOST: _emulatorHost, GCLOUD_PROJECT: _gcloudProject, GOOGLE_CLOUD_PROJECT: _googleCloudProject, ...envWithoutEmulator } = process.env
+
+    const result = runCliWithEnv([
+      '--environment', 'production', '--project', 'finapp-prod-10a83', '--confirm-project', 'finapp-prod-10a83',
+      '--backup-reference', 'backup-1', '--rollback-reference', 'rollback-1', '--ack-maintenance-readonly',
+      '--report-path', reportPath(), '--mode', 'dry-run',
+    ], envWithoutEmulator)
+
+    expect(result.code).toBe(4)
+    expect(result.stderr).toMatch(/PRODUCTION_ACTION_APPROVED/)
+    // No report is even written — refused before any I/O, including the
+    // report-writability probe having anything to report about.
+  })
+
+  it('production is refused (exit 4) even for --mode verify (which skips the backup-reference flag requirement)', () => {
+    const { FIRESTORE_EMULATOR_HOST: _emulatorHost, GCLOUD_PROJECT: _gcloudProject, GOOGLE_CLOUD_PROJECT: _googleCloudProject, ...envWithoutEmulator } = process.env
+
+    const result = runCliWithEnv([
+      '--environment', 'production', '--project', 'finapp-prod-10a83', '--confirm-project', 'finapp-prod-10a83',
+      '--report-path', reportPath(), '--mode', 'verify',
+    ], envWithoutEmulator)
+
+    expect(result.code).toBe(4)
   })
 })

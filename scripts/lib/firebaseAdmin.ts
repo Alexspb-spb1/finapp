@@ -69,6 +69,32 @@ export function assertEnvironmentGuard(input: EnvironmentGuardInput): string {
   return expected
 }
 
+export class CycleExecutionError extends Error {}
+
+/**
+ * Cycle-scoped execution authorization — deliberately SEPARATE from
+ * assertEnvironmentGuard() above, which only checks project-ID
+ * consistency and is identical regardless of which external environment a
+ * given remediation cycle happens to be authorized for. A single cycle may
+ * be granted `EXTERNAL_ACTION_APPROVED: <TASK-ID>` / `ENVIRONMENT:
+ * staging` without that implying anything about production — production
+ * requires its own, separate `PRODUCTION_ACTION_APPROVED` grant with a
+ * verified `BACKUP_REFERENCE`/`ROLLBACK_REFERENCE` (CLAUDE.md §5).
+ *
+ * SEC-005 has been granted `EXTERNAL_ACTION_APPROVED: SEC-005` /
+ * `ENVIRONMENT: staging` — `emulator` and `staging` are both allowed to
+ * proceed past this gate. `production` remains UNCONDITIONALLY refused —
+ * this check does not accept or consult any flag (backup-reference,
+ * rollback-reference, ack-maintenance-readonly, or otherwise); no
+ * PRODUCTION_ACTION_APPROVED grant has been given this cycle, and none can
+ * make this function return without throwing for `production`.
+ */
+export function assertCycleExecutionAllowed(environment: Environment): void {
+  if (environment === 'production') {
+    throw new CycleExecutionError('production backfill requires a separate, explicit PRODUCTION_ACTION_APPROVED grant (with verified BACKUP_REFERENCE/ROLLBACK_REFERENCE) from the repository owner, which has not been given this cycle.')
+  }
+}
+
 let cachedApp: App | undefined
 
 /** Initializes (once per process) and returns the Admin SDK Firestore
