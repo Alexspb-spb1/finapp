@@ -20,7 +20,7 @@
 import { onCall } from 'firebase-functions/v2/https'
 import { FieldValue, type Transaction } from 'firebase-admin/firestore'
 import { db, adminAuth } from './lib/admin'
-import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, validateRequest } from './lib/authz'
+import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, requireNotInMaintenanceMode, validateRequest } from './lib/authz'
 import { AppError, toSafeHttpsError } from './lib/errors'
 import { writeAuditEvent } from './lib/audit'
 import { runBootstrapIdempotent } from './lib/bootstrapIdempotency'
@@ -65,6 +65,10 @@ const DEFAULT_CATEGORIES = [
 export const createCompany = onCall(async request => {
   try {
     const auth = requireAuth(request)
+    // SEC-005 production preflight: Firestore Rules never apply to this
+    // Admin SDK write path, so maintenance mode needs its own explicit
+    // check here — checked before any read/write below.
+    await requireNotInMaintenanceMode(db)
     const input = validateRequest(CreateCompanyRequestSchema, request.data)
 
     // Email comes ONLY from the trusted Admin Auth record for this uid —

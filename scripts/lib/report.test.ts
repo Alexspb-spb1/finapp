@@ -29,6 +29,7 @@ function minimalReport(overrides: Partial<MembershipBackfillReport> = {}): Membe
     plannedCreates: [], createdPaths: [], writeFailures: [],
     verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
     rollbackManifest: [],
+    productionSafety: { maintenanceMode: null, backupReference: null, rollbackPlanReference: null, ownReportSha256: null },
     ...overrides,
   }
 }

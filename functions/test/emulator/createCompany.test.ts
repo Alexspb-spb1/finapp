@@ -4,13 +4,14 @@
 // Functions Emulator (not a direct in-process function call), using real
 // Auth Emulator-issued identities and real Firestore Emulator documents —
 // no mocked Firestore for these checks (CLAUDE.md §8.6, task instructions).
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { FunctionsError } from 'firebase/functions'
 import { Timestamp } from 'firebase-admin/firestore'
 import {
   createTestUser, signOutClient, callCreateCompany,
   getCompanyDoc, getCompanyDataDoc, getMembershipDoc, getUserDoc, countCompaniesOwnedBy,
   seedRawUserDoc, getBootstrapReceipt, countAuditEvents,
+  setMaintenanceMode, clearMaintenanceMode,
 } from './helpers'
 
 function appCodeOf(err: unknown): string | undefined {
@@ -230,5 +231,36 @@ describe('createCompany — real callable pipeline through the Functions Emulato
 
     await callCreateCompany({ ...basePayload, idempotencyKey }) // retry, same key
     expect(await countAuditEvents(first.companyId)).toBe(1)
+  })
+
+  // ── SEC-005 production preflight: maintenance mode ──────────────────────
+  describe('SEC-005 production preflight: maintenance mode', () => {
+    afterEach(async () => {
+      await clearMaintenanceMode()
+    })
+
+    it('refuses with maintenance_mode when system/maintenance.enabled is true, and creates nothing', async () => {
+      await setMaintenanceMode(true)
+      const { uid } = await createTestUser(true, 'maintenance-blocked')
+      await expect(
+        callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() }),
+      ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'maintenance_mode')
+      expect(await countCompaniesOwnedBy(uid)).toBe(0)
+    })
+
+    it('succeeds normally once maintenance mode is disabled again', async () => {
+      await setMaintenanceMode(true)
+      await clearMaintenanceMode()
+      const { uid } = await createTestUser(true, 'maintenance-cleared')
+      const result = (await callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() })) as { companyId: string }
+      expect(result.companyId).toBeTruthy()
+      expect(await countCompaniesOwnedBy(uid)).toBe(1)
+    })
+
+    it('succeeds normally when system/maintenance does not exist at all (the default, pre-runbook state)', async () => {
+      const { uid } = await createTestUser(true, 'maintenance-absent')
+      await callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() })
+      expect(await countCompaniesOwnedBy(uid)).toBe(1)
+    })
   })
 })

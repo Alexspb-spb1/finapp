@@ -179,3 +179,16 @@ export async function countAuditEvents(companyId: string): Promise<number> {
   const snap = await db.collection('companies').doc(companyId).collection('audit_events').get()
   return snap.size
 }
+
+/** Sets (or clears) system/maintenance directly via the Admin SDK — SEC-005
+ * production preflight. Firestore Rules never apply to this write since it
+ * goes through the Admin SDK, matching how an operator following the
+ * SEC-005 runbook would actually set it. */
+export async function setMaintenanceMode(enabled: boolean, extra: Record<string, unknown> = {}): Promise<void> {
+  await db.collection('system').doc('maintenance').set({ enabled, taskId: 'SEC-005', ...extra })
+}
+
+/** Removes system/maintenance entirely — restores the default (pre-runbook) state. */
+export async function clearMaintenanceMode(): Promise<void> {
+  await db.collection('system').doc('maintenance').delete()
+}

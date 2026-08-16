@@ -68,6 +68,26 @@ export interface WriteFailureRecord {
   error: string
 }
 
+/** SEC-005 production preflight — real, VERIFIED production-write
+ * preconditions, recorded honestly in the report's safe/audit section.
+ * `null` for any mode/environment where a given precondition does not
+ * apply (e.g. dry-run/verify never populate any of these — they are
+ * read-only and require none of them). Every non-null field here was
+ * independently verified against real state (a Firestore read, or a file
+ * that was actually read and schema-checked) — never a mere echo of a CLI
+ * flag's raw string value. See scripts/lib/productionSafety.ts. */
+export interface ProductionSafetyAudit {
+  maintenanceMode: { verifiedAt: string; enabledAt: string | null; enabledBy: string | null; taskId: string | null } | null
+  backupReference: { sha256: string; createdAtUtc: string } | null
+  /** PRE-apply rollback plan reference — a dry-run report whose targetChecksum
+   * was cross-checked against this run's own computed target BEFORE any write. */
+  rollbackPlanReference: { sha256: string; targetChecksum: string } | null
+  /** POST-apply (or post-rollback) artifact: SHA-256 of THIS run's own
+   * report file, once written — the durable pointer a subsequent
+   * `rollback-from-report` would actually consume. */
+  ownReportSha256: string | null
+}
+
 export interface MembershipBackfillReport {
   schemaVersion: typeof REPORT_SCHEMA_VERSION
   mode: ReportMode
@@ -103,6 +123,7 @@ export interface MembershipBackfillReport {
   writeFailures: WriteFailureRecord[]
   verification: VerificationResult
   rollbackManifest: RollbackManifestEntry[]
+  productionSafety: ProductionSafetyAudit
 }
 
 /** Refuses any report path that is not absolute, or that resolves (after
@@ -161,5 +182,9 @@ export function printSafeSummary(report: MembershipBackfillReport): void {
     targetChecksum: report.targetChecksum,
     observedChecksum: report.observedChecksum,
     applyAllowed: report.counts.unresolved === 0,
+    // Safe by construction: hashes/timestamps/taskId only — never a raw
+    // local file path (which could reveal operator filesystem/username
+    // structure) and never a Firestore document identifier.
+    productionSafety: report.productionSafety,
   }, null, 2))
 }

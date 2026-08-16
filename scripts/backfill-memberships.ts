@@ -29,9 +29,13 @@ import { computeObservedState, type TargetRelation } from './lib/observedState.t
 import { createPlannedRelations, readBackObservedState } from './lib/applyWrites.ts'
 import {
   writeReport, assertReportPathWritable, printSafeSummary, REPORT_SCHEMA_VERSION,
-  type MembershipBackfillReport, type ReportCounts, type CreatedPathRecord, type WriteFailureRecord,
+  type MembershipBackfillReport, type ReportCounts, type CreatedPathRecord, type WriteFailureRecord, type ProductionSafetyAudit,
 } from './lib/report.ts'
+import {
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, sha256OfFile, ProductionSafetyError,
+} from './lib/productionSafety.ts'
 import { relationKey, type Decision, type ConfirmedRelation } from './lib/types.ts'
+import type { CliOptions } from './lib/cli.ts'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -69,6 +73,10 @@ function emptyCounts(): ReportCounts {
     missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
     unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0, unresolved: 0,
   }
+}
+
+function emptyProductionSafety(): ProductionSafetyAudit {
+  return { maintenanceMode: null, backupReference: null, rollbackPlanReference: null, ownReportSha256: null }
 }
 
 function computeSourceChecksum(confirmed: readonly ConfirmedRelation[]): string {
@@ -122,12 +130,16 @@ async function main(): Promise<number> {
     throw err
   }
 
-  if (environment === 'production' && opts.mode !== 'verify') {
-    if (!opts.backupReference || !opts.rollbackReference || !opts.ackMaintenance) {
-      console.error('Production requires --backup-reference, --rollback-reference, and --ack-maintenance-readonly.')
-      return 3
-    }
-  }
+  // Independent review fix #6 (production preflight, follow-up round):
+  // mode-specific production requirements. `dry-run`/`verify` are strictly
+  // read-only and require NONE of backup-reference/rollback-reference/
+  // maintenance-mode — the previous version of this check required them
+  // for every mode except `verify` (so `dry-run` incorrectly demanded a
+  // backup reference for an operation that writes nothing). `apply` and
+  // `rollback-from-report` are the only modes that write to production;
+  // their specific, VERIFIED (not merely present) requirements are
+  // enforced later — for `apply`, once targetChecksum is known (see
+  // below); for `rollback-from-report`, inside runRollback().
   // SEC-005: staging execution is explicitly authorized this cycle
   // (EXTERNAL_ACTION_APPROVED: SEC-005 / ENVIRONMENT: staging, granted by
   // the repository owner) — emulator and staging both proceed past this
@@ -154,7 +166,7 @@ async function main(): Promise<number> {
   const db = initFirestore(expectedProjectId)
 
   if (opts.mode === 'rollback-from-report') {
-    return runRollback(db, opts.fromReport!, environment, expectedProjectId, runId, startedAt, opts.reportPath!)
+    return runRollback(db, opts.fromReport!, environment, expectedProjectId, runId, startedAt, opts.reportPath!, opts)
   }
 
   const [users, companies, existingMemberships] = await Promise.all([
@@ -203,11 +215,45 @@ async function main(): Promise<number> {
   let missing: { companyId: string; uid: string }[] = []
   let differing: { companyId: string; uid: string }[] = []
   let readBackError: string | null = null
+  let productionSafety: ProductionSafetyAudit = emptyProductionSafety()
 
   if (opts.mode === 'apply') {
     if (!plan.applyAllowed) {
       console.error(`Apply refused: ${counts.unresolved} unresolved item(s) (conflicts/orphans/owner-anomalies/companies-without-admin/dangling-memberships). Resolve via --decisions-file and retry — dangling memberships require repairing the underlying data, no decision can clear them.`)
     } else {
+      // Independent review fix #5/6/7 (production preflight, follow-up
+      // round): for a PRODUCTION apply, verify (not merely accept as
+      // present) backup-reference, rollback-reference (pre-apply plan,
+      // cross-checked against THIS run's own targetChecksum — see
+      // productionSafety.ts for why this resolves the circular
+      // ROLLBACK_REFERENCE problem), and that maintenance mode is
+      // ACTUALLY active right now (a real Firestore read, not an honor-
+      // system flag). Any failure refuses before a single write —
+      // `--ack-maintenance-readonly` remains required too, as an explicit
+      // additional human acknowledgement on top of the real check, not a
+      // substitute for it.
+      let productionSafetyOk = true
+      if (environment === 'production') {
+        try {
+          if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
+          const backupRef = verifyBackupReference(opts.backupReference, expectedProjectId)
+          if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
+          const rollbackPlanRef = verifyRollbackPlanReference(opts.rollbackReference, targetChecksum)
+          if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production apply.')
+          const maintenance = await assertMaintenanceModeActive(db)
+          productionSafety = {
+            maintenanceMode: maintenance,
+            backupReference: { sha256: backupRef.sha256, createdAtUtc: backupRef.createdAtUtc },
+            rollbackPlanReference: { sha256: rollbackPlanRef.sha256, targetChecksum: rollbackPlanRef.targetChecksum },
+            ownReportSha256: null,
+          }
+        } catch (err) {
+          if (err instanceof ProductionSafetyError) { console.error(`Production safety: ${err.message}`); productionSafetyOk = false } else throw err
+        }
+      }
+
+      if (environment === 'production' && !productionSafetyOk) return 3
+
       // Independent audit fix #2 (3rd round): success is captured directly
       // from each create()'s own WriteResult (applyWrites.ts) — no
       // follow-up get() that could turn a successful create into a
@@ -288,10 +334,23 @@ async function main(): Promise<number> {
       differing,
     },
     rollbackManifest: createdPaths.map(c => ({ companyId: c.companyId, uid: c.uid, path: c.path })),
+    productionSafety,
   }
 
   writeReport(opts.reportPath!, REPO_ROOT, report)
   printSafeSummary(report)
+
+  // Independent review fix #7 (production preflight, follow-up round):
+  // the POST-apply rollback artifact. `ownReportSha256` cannot be embedded
+  // IN the report itself (the report's own bytes would need to already
+  // contain the hash of those same bytes — self-referential) — instead,
+  // the hash of the file exactly as written is computed by reading it back
+  // and printed as an explicit, separate line, for the operator to record
+  // as THIS run's ROLLBACK_REFERENCE going forward (what a subsequent
+  // `--mode rollback-from-report --from-report <this path>` will consume).
+  if (opts.mode === 'apply' && environment === 'production' && createdPaths.length > 0) {
+    console.log(`Apply report SHA-256 (record this as the ROLLBACK_REFERENCE for this run): ${sha256OfFile(opts.reportPath!)}`)
+  }
 
   if (opts.mode === 'apply' && !plan.applyAllowed) return 1
   if (opts.mode === 'apply' && writeFailures.length > 0) return 1
@@ -346,6 +405,7 @@ async function runRollback(
   runId: string,
   startedAt: string,
   reportPath: string,
+  opts: CliOptions,
 ): Promise<number> {
   let sourceReportRaw: unknown
   try {
@@ -378,10 +438,51 @@ async function runRollback(
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],
+      productionSafety: emptyProductionSafety(),
     }
     writeReport(reportPath, REPO_ROOT, report)
     printSafeSummary(report)
     return 2
+  }
+
+  // Independent review fix #5/6 (production preflight, follow-up round):
+  // rollback-from-report also WRITES (deletes) production documents, so
+  // it needs the same real, verified maintenance-mode check as apply —
+  // `rollback-from-report` does NOT require --backup-reference/
+  // --rollback-reference (--from-report already IS the operative
+  // reference for this operation), but it does require
+  // --ack-maintenance-readonly AND a live, verified `system/maintenance`
+  // read confirming maintenance mode is actually active right now.
+  let productionSafety = emptyProductionSafety()
+  if (environment === 'production') {
+    try {
+      if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production rollback.')
+      const maintenance = await assertMaintenanceModeActive(db)
+      productionSafety = { ...emptyProductionSafety(), maintenanceMode: maintenance }
+    } catch (err) {
+      if (!(err instanceof ProductionSafetyError)) throw err
+      console.error(`Production safety: ${err.message}`)
+      const report: MembershipBackfillReport = {
+        schemaVersion: REPORT_SCHEMA_VERSION,
+        mode: 'rollback-from-report',
+        environment,
+        projectId,
+        sourceGitSha: readSourceGitSha(),
+        runId,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        counts: emptyCounts(),
+        sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
+        conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+        plannedCreates: [], createdPaths: [], writeFailures: [],
+        verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
+        rollbackManifest: [],
+        productionSafety: emptyProductionSafety(),
+      }
+      writeReport(reportPath, REPO_ROOT, report)
+      printSafeSummary(report)
+      return 3
+    }
   }
 
   const removed: { companyId: string; uid: string; path: string }[] = []
@@ -420,6 +521,7 @@ async function runRollback(
     writeFailures: [],
     verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
     rollbackManifest: removed,
+    productionSafety,
   }
   writeReport(reportPath, REPO_ROOT, report)
   printSafeSummary(report)

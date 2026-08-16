@@ -93,6 +93,34 @@ export function requireRole(membership: Membership, allowed: readonly Role[]): v
 }
 
 /**
+ * requireNotInMaintenanceMode — SEC-005 production preflight. Reads
+ * `system/maintenance` (never client-writable — only an operator running
+ * the SEC-005 runbook via the Admin SDK can set it) and refuses with
+ * `maintenance_mode` when `enabled === true`.
+ *
+ * This exists specifically because Firestore Rules are NEVER evaluated
+ * for Admin SDK callers — the `isMaintenanceModeActive()` Rules helper
+ * that blocks CLIENT writes to users/companies/company_data has zero
+ * effect on this Cloud Function, which writes via Admin SDK privileges.
+ * Without this explicit check, a live `createCompany` call could still
+ * create a NEW company/membership/user while a SEC-005 production apply
+ * is in flight, even with maintenance mode "on" from the client's
+ * perspective. Fail-closed: a read failure is treated the same as
+ * `enabled === true` — never silently treated as "maintenance is off".
+ */
+export async function requireNotInMaintenanceMode(db: Firestore): Promise<void> {
+  let snap
+  try {
+    snap = await db.collection('system').doc('maintenance').get()
+  } catch {
+    throw new AppError('maintenance_mode')
+  }
+  if (snap.exists && snap.data()?.enabled === true) {
+    throw new AppError('maintenance_mode')
+  }
+}
+
+/**
  * validateRequest — the only sanctioned way to turn `request.data: unknown`
  * into a typed value. Schemas are strict (extra fields fail); on failure,
  * throws a generic `invalid_request` AppError with NO details — never the

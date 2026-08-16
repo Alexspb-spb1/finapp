@@ -27,6 +27,7 @@ export const APP_ERROR_CODES = [
   'insufficient_role',
   'last_admin',
   'idempotency_conflict',
+  'maintenance_mode',
   'internal_error',
 ] as const
 
@@ -53,6 +54,7 @@ const HTTPS_CODE_FOR: Record<AppErrorCode, HttpsErrorCode> = {
   insufficient_role: 'permission-denied',
   last_admin: 'failed-precondition',
   idempotency_conflict: 'aborted',
+  maintenance_mode: 'failed-precondition',
   internal_error: 'internal',
 }
 
