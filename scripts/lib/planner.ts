@@ -4,9 +4,10 @@
 import {
   relationKey, splitRelationKey,
   type LegacyExtractionResult, type Decision, type PlanResult, type PlannedCreate,
-  type ConflictRecord, type OrphanRecord, type OwnerAnomalyRecord, type UnknownUserRecord, type MalformedClaimRecord,
+  type ConflictRecord, type OrphanRecord, type OrphanReason, type OwnerAnomalyRecord, type UnknownUserRecord, type MalformedClaimRecord,
 } from './types.ts'
 import { classifyExistingMembership, isStrictlyValidActiveMembership } from './membershipValidation.ts'
+import { sortRelations } from './checksum.ts'
 
 export interface BuildPlanParams {
   extraction: LegacyExtractionResult
@@ -164,9 +165,18 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
   // left is only removable via a user-level `exclude` decision
   // (`userLevelExcludedUids`) — there is no other way to silently ignore
   // it; the source data must be fixed, or explicitly acknowledged.
+  //
+  // Independent audit fix #3 (3rd round): a membership document's own
+  // schema being strictly valid is NOT enough to "count" here — it must
+  // ALSO reference a company that actually exists. A membership dangling
+  // under a `companyId` that no longer has a `companies/{companyId}`
+  // document must never suppress an unknownUsers entry (that would let a
+  // structurally-orphaned relic silently launder a genuinely-unresolved
+  // user into looking resolved).
   const uidsWithValidMembership = new Set<string>()
   for (const [key, data] of existingMemberships) {
-    const [, uid] = splitRelationKey(key)
+    const [companyId, uid] = splitRelationKey(key)
+    if (!allCompanyIds.has(companyId)) continue
     if (isStrictlyValidActiveMembership(uid, data)) uidsWithValidMembership.add(uid)
   }
   const unknownUsers: UnknownUserRecord[] = extraction.unknownUsers
@@ -174,6 +184,34 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     .filter(u => !userLevelExcludedUids.has(u.uid))
   const malformedClaims: MalformedClaimRecord[] = extraction.malformedClaims
     .filter(m => !userLevelExcludedUids.has(m.uid))
+
+  // ── Step 7: existing-membership integrity — dangling documents surfaced ──
+  // Independent audit fix #3 (3rd round): an EXISTING
+  // `companies/{companyId}/members/{uid}` document that is strictly valid
+  // on its OWN schema (right shape, real Timestamps, known role, active
+  // status) but references a company or user that no longer exists is
+  // dangling data, not a trustworthy relation — it must never silently pass
+  // as "fine" just because nothing else in this run touches it. It is
+  // surfaced here as a blocking orphan (the SAME acknowledgement model as
+  // every other orphan — `exclude` dismisses the LISTING, but never changes
+  // the independently-computed facts above: it can never retroactively
+  // start counting as a protecting admin or as coverage for an unknown
+  // user — those checks read `allCompanyIds`/`allUserIds` directly, not
+  // whether an orphan was excluded).
+  const pushedOrphanKeys = new Set(unresolvedOrphans.map(o => relationKey(o.companyId, o.uid)))
+  for (const [key, data] of existingMemberships) {
+    const [companyId, uid] = splitRelationKey(key)
+    if (!isStrictlyValidActiveMembership(uid, data)) continue // already untrusted on its own — not this step's concern
+    const companyExists = allCompanyIds.has(companyId)
+    const userExists = allUserIds.has(uid)
+    if (companyExists && userExists) continue
+    const decision = decisionByKey.get(key)
+    if (decision && decision.resolution === 'exclude') continue // acknowledged
+    if (pushedOrphanKeys.has(key)) continue // already reported (e.g. also a legacy-claim orphan for the same pair)
+    pushedOrphanKeys.add(key)
+    const reason: OrphanReason = companyExists ? 'missing_user' : 'missing_company'
+    unresolvedOrphans.push({ companyId, uid, reason })
+  }
 
   const applyAllowed =
     unresolvedConflicts.length === 0 &&
@@ -184,8 +222,15 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     malformedClaims.length === 0
 
   return {
-    plannedCreates: plannedCreates.sort((a, b) => (a.companyId + a.uid).localeCompare(b.companyId + b.uid)),
-    skipped: skipped.sort((a, b) => (a.companyId + a.uid).localeCompare(b.companyId + b.uid)),
+    // Independent audit fix #4 (3rd round): `(a.companyId + a.uid).localeCompare(...)`
+    // collides whenever one identifier's suffix matches the other's prefix
+    // — e.g. companyId='a',uid='bc' and companyId='ab',uid='c' both
+    // concatenate to "abc", making the two entries indistinguishable to the
+    // comparator (non-deterministic relative order). `sortRelations()`
+    // (checksum.ts) is the existing, already-proven collision-free
+    // comparator — an actual two-field (companyId, then uid) comparison.
+    plannedCreates: sortRelations(plannedCreates),
+    skipped: sortRelations(skipped),
     unresolvedConflicts,
     unresolvedOrphans,
     unresolvedOwnerAnomalies,

@@ -28,6 +28,14 @@ users/malformed claims, confirm_role re-validation, full decisionsChecksum,
 collision-free relationKey, schema-strict observed state). Every section
 below already reflects this second round's fixed behavior.
 
+**This document was updated a THIRD time after a follow-up independent
+review, also `REVIEW_RESULT: CHANGES REQUIRED`** — see "Independent audit
+fixes — third round" at the very end for the 4 additional categories fixed
+(rollback manifest pair-set completeness, durable post-create accounting
+via WriteResult, existing-membership integrity against missing
+companies/users, collision-free plannedCreates/skipped ordering). Every
+section below already reflects this third round's fixed behavior.
+
 ## Data model — legacy → canonical mapping
 
 | Legacy source | Canonical target |
@@ -89,9 +97,20 @@ canonical document created is always:
     regardless of decision (see "Independent audit fixes" below).
 - **Orphan** — a relation that references something that doesn't exist:
   - `missing_company` — a legacy field names a `companyId` with no
-    `companies/{companyId}` document.
+    `companies/{companyId}` document. Also produced (3rd round fix #3) for
+    an EXISTING `companies/{companyId}/members/{uid}` document that is
+    strictly schema-valid on its own but whose parent company no longer
+    exists — dangling data, surfaced rather than silently trusted.
   - `missing_user` — `companies/{companyId}.ownerId` names a uid with no
-    `users/{uid}` document.
+    `users/{uid}` document. Also produced (3rd round fix #3) for an
+    EXISTING membership document that is strictly schema-valid on its own
+    but whose `uid` has no `users/{uid}` document — this is what stops a
+    dangling admin membership from satisfying the last-admin gate for a
+    real company. Excluding this orphan only dismisses the LISTING; it
+    never makes the underlying document start counting as a protecting
+    admin or as coverage for an unknown user — `computeExistingActiveAdmins()`
+    and the `unknownUsers` suppression check both read company/user
+    existence directly, independent of any decision.
   Orphans are **never** turned into a membership — "excluded without a
   record" per the task's rule 8 means no membership document is ever
   created for them, but the orphan itself IS recorded in the report and
@@ -347,13 +366,20 @@ the full `counts` object (`usersRead` … `unresolved`), and four checksums:
   skips), role+status only (`schemaValid` always implicitly `true` for a target
   relation, see `observedChecksum` below).
 - **`observedChecksum`** — same shape, computed from an ACTUAL read-back
-  after `apply`/`verify`; `null` for `dry-run` (nothing was applied yet).
+  after `apply`/`verify`; `null` for `dry-run` (nothing was applied yet),
+  and also `null` whenever the read-back itself failed outright (see
+  `readBackError` below — 3rd round fix #2).
   Each observed relation also carries an explicit `schemaValid` flag (2nd
   round fix #7: `isStrictlyValidActiveMembership()` run against the
   read-back document) — a document with the "right" role/status but a wrong
   uid, forged/missing timestamps, or extra fields produces `schemaValid:
   false`, which changes `observedChecksum` even though role/status alone
   would have matched.
+- **`readBackError`** (`string | null`) — non-null only when the post-write
+  read-back call itself failed (as opposed to an individual target relation
+  simply being absent, which is `missing[]`) — an honest signal that
+  `observedChecksum`/`verification` could not be computed at all this run.
+  Exit code stays non-zero whenever this is set.
 
 All checksums are computed via `scripts/lib/checksum.ts`: canonical
 (recursively key-sorted) JSON, SHA-256 hex. Timestamps (`createdAt`/`updatedAt`)
@@ -382,11 +408,41 @@ the identical `targetChecksum` (proven by `scripts/backfill-memberships.emulator
 
 ## Partial-write-failure handling
 
-Each planned create is attempted independently and its outcome (success or
-failure) is recorded individually in `createdPaths`/`writeFailures` — the
-report **never claims** the whole migration was atomic. If N of M planned
-creates succeed, the report shows exactly which N paths were created and
-which failed with what error, and the exit code is non-zero.
+Each planned create is attempted independently (`scripts/lib/applyWrites.ts`,
+`createPlannedRelations()`) and its outcome (success or failure) is recorded
+individually in `createdPaths`/`writeFailures` — the report **never claims**
+the whole migration was atomic. If N of M planned creates succeed, the
+report shows exactly which N paths were created and which failed with what
+error, and the exit code is non-zero.
+
+**Durable accounting after a successful create (3rd round fix #2).** A
+successful creation is captured SOLELY from `DocumentReference.create()`'s
+own `WriteResult` — there is no follow-up `get()` call to confirm it, so
+there is no read that could fail and erase a known-successful create from
+the report. (`writeResult.writeTime` IS both the `createTime` and
+`updateTime` of a freshly created document, so no accuracy is lost by not
+re-reading it.) The broader post-write read-back — used to compute
+`observedChecksum`/`missing`/`differing` across ALL target relations, not
+just the ones just created — is separately wrapped
+(`readBackObservedState()`): if THAT call fails outright (not an individual
+document, the whole read), the failure is captured as `readBackError:
+string | null` on the report instead of propagating as an uncaught
+rejection that would have aborted the process before `writeReport()` ever
+ran (which would have silently discarded the already-known
+`createdPaths`/`rollbackManifest`). The exit code stays non-zero whenever
+`readBackError` is non-null.
+
+**Report-write durability (3rd round fix #2).** `assertReportPathWritable()`
+(`scripts/lib/report.ts`) proves the report destination is writable —
+directory creatable, permissions sufficient — via a zero-byte probe
+write+delete at the exact target path, called immediately after path-safety
+validation and BEFORE any credential acquisition or Firestore write. Losing
+the ability to write the report only after `apply` has already created (or
+`rollback` has already deleted) real documents would leave an unrecoverable
+audit/rollback gap. `writeReport()` itself now writes to a temporary file in
+the same directory and atomically renames it into place — a crash or
+interruption mid-write can never leave a truncated/corrupted report at the
+target path.
 
 The observed checksum (`scripts/lib/observedState.ts`,
 `computeObservedState()`) is computed **exclusively from documents actually
@@ -410,13 +466,27 @@ sufficient (the same function is used for both apply and verify).
 runtime-validates the **entire source report** before touching Firestore at
 all (`scripts/lib/rollbackValidation.ts`, `validateSourceReportForRollback`):
 correct `schemaVersion`, `mode === 'apply'`, matching `environment`/`projectId`,
-every `rollbackManifest` entry using the exact canonical path
-`companies/{companyId}/members/{uid}` with no duplicate pairs, and every
-entry cross-referenced against both `createdPaths` (must have matching
-`createTimeIso`/`updateTimeIso`) and `plannedCreates` (must have a known
-`role` and `status === 'active'`). **Any single structural problem — a
-tampered report, wrong-project report, or a non-apply report — rejects the
-entire rollback with zero deletions attempted.**
+every `rollbackManifest` entry AND every `createdPaths` entry independently
+validated (canonical path `companies/{companyId}/members/{uid}`, no
+duplicate pairs within either array — 3rd round fix #1: `createdPaths`
+entries were previously never validated on their own, only looked up), and
+**exact pair-set equality between `rollbackManifest` and `createdPaths`** —
+not just "every manifest entry has a matching createdPaths record" but also
+the reverse: every `createdPaths` record has a matching manifest entry. A
+report with two created documents but only one manifest entry (the exact
+bug the 3rd round review flagged) is now rejected outright rather than
+producing a partial rollback that silently leaves one document behind while
+reporting success. An empty `rollbackManifest` is accepted as valid ONLY
+when `createdPaths` is ALSO empty and the report's own `counts.created` is
+`0` — a manifest truncated to empty while `createdPaths`/`counts.created`
+still show real creates is refused, never treated as "nothing to roll
+back". Every entry is also cross-referenced against `plannedCreates` (must
+have a known `role` and `status === 'active'`, and must be **exactly one**
+unambiguous record for that pair — a duplicate/ambiguous `plannedCreates`
+entry for the same pair is rejected, never resolved by taking "the first
+one"). **Any single structural problem — a tampered report, wrong-project
+report, a non-apply report, or an incomplete manifest/createdPaths pair-set
+— rejects the entire rollback with zero deletions attempted.**
 
 Only once the source report validates does the tool attempt deletions, one
 per manifest entry, and only if, right now:
@@ -527,3 +597,50 @@ this same branch; the full technical writeup is in
    contributes `schemaValid: false` to the checksum) whenever it fails
    strict canonical-schema validation — not only when its role/status
    textually differs from the target.
+
+## Independent audit fixes — third round
+
+A follow-up independent review, also `REVIEW_RESULT: CHANGES REQUIRED`,
+found 4 more categories of blocking findings. All 4 were fixed in a third
+follow-up commit on this same branch; the full technical writeup is in
+`docs/remediation/reports/SEC-005.md`, section "Исправления по итогам
+ТРЕТЬЕГО независимого аудита". Summary:
+
+1. `validateSourceReportForRollback()` used to check only that every
+   `rollbackManifest` entry had a matching `createdPaths` record — never
+   the reverse. A report with two created documents but only one manifest
+   entry passed validation and produced a rollback that silently deleted
+   only one of the two documents while reporting success. It now requires
+   exact pair-set equality between `rollbackManifest` and `createdPaths`,
+   independently validates every entry in BOTH arrays (canonical path, no
+   duplicates), requires an empty manifest to also have empty
+   `createdPaths` AND `counts.created === 0`, and requires every created
+   pair to match exactly one (never an ambiguous/duplicate)
+   `plannedCreates` record.
+2. `ref.create()` and its follow-up `ref.get()` used to share one
+   try/catch — a successful create followed by a failed metadata read was
+   recorded as a write failure and dropped entirely from
+   `createdPaths`/`rollbackManifest`. `scripts/lib/applyWrites.ts`'s
+   `createPlannedRelations()` now determines success solely from
+   `DocumentReference.create()`'s own `WriteResult` (no second read at
+   all), and the broader post-write read-back is separately wrapped so a
+   failure there is recorded as an honest `readBackError` on the report
+   instead of aborting the process before the report is ever written.
+   `assertReportPathWritable()` proves the report destination is writable
+   before any Firestore write; `writeReport()` now writes atomically
+   (temp file + rename).
+3. A membership document's own schema being valid was never enough on its
+   own — a document under a company that no longer exists could suppress
+   an `unknownUsers` entry, and a valid-looking admin membership whose uid
+   had no `users/{uid}` document could satisfy the last-admin gate for a
+   real company. Both are now cross-checked against `allCompanyIds`/
+   `allUserIds` and, when dangling, surfaced as a blocking
+   `missing_company`/`missing_user` orphan — independent of whether that
+   orphan is later acknowledged via a decision, which never retroactively
+   makes the underlying document trustworthy again.
+4. `plannedCreates`/`skipped` sorting used
+   `(a.companyId + a.uid).localeCompare(...)`, which collides whenever one
+   identifier's suffix matches the other's prefix (e.g. `('a','bc')` and
+   `('ab','c')` both concatenate to `"abc"`). `planner.ts` now uses the
+   existing, already-proven collision-free `sortRelations()` helper
+   (`checksum.ts`) instead.

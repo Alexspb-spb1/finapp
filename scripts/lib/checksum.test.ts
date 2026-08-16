@@ -40,6 +40,24 @@ describe('sortRelations', () => {
     const sorted = sortRelations(a)
     expect(sorted.map(r => `${r.companyId}:${r.uid}`)).toEqual(['co_a:u1', 'co_a:u9', 'co_b:u2'])
   })
+
+  // ── Independent audit fix #4 (3rd round) ────────────────────────────────
+  // A comparator built from `(a.companyId + a.uid)` string concatenation
+  // collides for these two pairs — both produce "abc" — which is exactly
+  // the bug the review flagged in planner.ts's final sort. sortRelations()
+  // is the correct, collision-free two-field comparator that must be used
+  // instead.
+  it('does not collide on companyId/uid string-concatenation boundaries — forward order', () => {
+    const a = [{ companyId: 'a', uid: 'bc' }, { companyId: 'ab', uid: 'c' }]
+    const sorted = sortRelations(a)
+    expect(sorted.map(r => `${r.companyId}|${r.uid}`)).toEqual(['a|bc', 'ab|c'])
+  })
+
+  it('does not collide on companyId/uid string-concatenation boundaries — reversed input order', () => {
+    const a = [{ companyId: 'ab', uid: 'c' }, { companyId: 'a', uid: 'bc' }]
+    const sorted = sortRelations(a)
+    expect(sorted.map(r => `${r.companyId}|${r.uid}`)).toEqual(['a|bc', 'ab|c'])
+  })
 })
 
 describe('computeRelationSetChecksum — order independence (task requirement)', () => {

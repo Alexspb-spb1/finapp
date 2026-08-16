@@ -5,7 +5,8 @@
 // absolute path OUTSIDE the repository (validated by the CLI). Never
 // written into the repo, never printed to stdout in full.
 import { dirname } from 'node:path'
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import type {
   ConflictRecord, OrphanRecord, OwnerAnomalyRecord, PlannedCreate, UnknownUserRecord, MalformedClaimRecord,
 } from './types.ts'
@@ -76,6 +77,12 @@ export interface MembershipBackfillReport {
   decisionsChecksum: string
   targetChecksum: string
   observedChecksum: string | null
+  /** Independent audit fix #2 (3rd round): non-null when the post-write
+   * read-back itself failed (as opposed to an individual document simply
+   * being absent, which is captured in `verification.missing`) — an
+   * honest signal that `observedChecksum`/`verification` could not be
+   * computed at all, distinct from "computed and everything matched". */
+  readBackError: string | null
   conflicts: ConflictRecord[]
   orphans: OrphanRecord[]
   ownerAnomalies: OwnerAnomalyRecord[]
@@ -96,10 +103,38 @@ export function assertSafeReportPath(reportPath: string, repoRoot: string): void
   assertPathOutsideRepo('--report-path', reportPath, repoRoot)
 }
 
+/** Independent audit fix #2 (3rd round): proves the report destination is
+ * actually writable — directory creatable, permissions sufficient —
+ * BEFORE the first real Firestore write happens (called early in `main()`,
+ * right after path-safety validation). Losing the ability to write the
+ * report only after `apply` has already created real documents would
+ * leave an unrecoverable audit/rollback gap: the operator would have no
+ * record of what was created and no `rollbackManifest` to undo it with.
+ * Writes and immediately removes a zero-byte probe file at the exact
+ * target path — the same path `writeReport()` will use — so a permissions
+ * or filesystem problem is caught here, not after real writes occur. */
+export function assertReportPathWritable(reportPath: string, repoRoot: string): void {
+  assertSafeReportPath(reportPath, repoRoot)
+  mkdirSync(dirname(reportPath), { recursive: true })
+  const probePath = `${reportPath}.write-probe-${randomUUID()}`
+  writeFileSync(probePath, '', { encoding: 'utf8', mode: 0o600 })
+  unlinkSync(probePath)
+}
+
+/** Writes the report atomically: the full content is written to a
+ * temporary file in the SAME directory (so the subsequent rename stays on
+ * one filesystem/volume and is atomic), then renamed into place.
+ * Independent audit fix #2 (3rd round) — "make the final report
+ * replacement atomic where practical": a crash or interruption mid-write
+ * can never leave a truncated/corrupted report at `reportPath` — either
+ * the old content (if any) remains, or the complete new content lands,
+ * never a partial write. */
 export function writeReport(reportPath: string, repoRoot: string, report: MembershipBackfillReport): void {
   assertSafeReportPath(reportPath, repoRoot)
   mkdirSync(dirname(reportPath), { recursive: true })
-  writeFileSync(reportPath, JSON.stringify(report, null, 2), { encoding: 'utf8', mode: 0o600 })
+  const tmpPath = `${reportPath}.tmp-${randomUUID()}`
+  writeFileSync(tmpPath, JSON.stringify(report, null, 2), { encoding: 'utf8', mode: 0o600 })
+  renameSync(tmpPath, reportPath)
 }
 
 /** Only safe aggregates — project ID, mode, checksums, counts. Never

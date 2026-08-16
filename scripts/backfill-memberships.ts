@@ -26,8 +26,9 @@ import { computeRelationSetChecksum, computeDecisionsChecksum, canonicalStringif
 import { assertPathOutsideRepo, UnsafePathError } from './lib/pathSafety.ts'
 import { validateSourceReportForRollback } from './lib/rollbackValidation.ts'
 import { computeObservedState, type TargetRelation } from './lib/observedState.ts'
+import { createPlannedRelations, readBackObservedState } from './lib/applyWrites.ts'
 import {
-  writeReport, printSafeSummary, REPORT_SCHEMA_VERSION,
+  writeReport, assertReportPathWritable, printSafeSummary, REPORT_SCHEMA_VERSION,
   type MembershipBackfillReport, type ReportCounts, type CreatedPathRecord, type WriteFailureRecord,
 } from './lib/report.ts'
 import { relationKey, type Decision, type ConfirmedRelation } from './lib/types.ts'
@@ -94,8 +95,15 @@ async function main(): Promise<number> {
     assertPathOutsideRepo('--report-path', opts.reportPath!, REPO_ROOT)
     if (opts.decisionsFile) assertPathOutsideRepo('--decisions-file', opts.decisionsFile, REPO_ROOT)
     if (opts.fromReport) assertPathOutsideRepo('--from-report', opts.fromReport, REPO_ROOT)
+    // Independent audit fix #2 (3rd round): prove the report destination is
+    // actually writable BEFORE any credential acquisition or Firestore
+    // I/O — losing the ability to write the report only AFTER apply has
+    // already created (or rollback has already deleted) real documents
+    // would leave an unrecoverable audit/rollback gap.
+    assertReportPathWritable(opts.reportPath!, REPO_ROOT)
   } catch (err) {
     if (err instanceof UnsafePathError) { console.error(`Path safety: ${err.message}`); return 2 }
+    if (err instanceof Error) { console.error(`Report path is not writable: ${err.message}`); return 2 }
     throw err
   }
 
@@ -147,9 +155,11 @@ async function main(): Promise<number> {
   const [users, companies, existingMemberships] = await Promise.all([
     readAllUsers(db), readAllCompanies(db), readAllExistingMemberships(db),
   ])
-  const existingActiveAdmins = computeExistingActiveAdmins(existingMemberships)
   const allCompanyIds = new Set(companies.map(c => c.docId))
   const allUserIds = new Set(users.map(u => u.docId))
+  // Independent audit fix #3 (3rd round): an admin membership whose uid has
+  // no users/{uid} document must never satisfy the last-admin gate.
+  const existingActiveAdmins = computeExistingActiveAdmins(existingMemberships, allUserIds)
   const extraction = extractLegacyRelations(users, companies)
   const plan = buildPlan({ extraction, decisions: decisionsResult.decisions, existingMemberships, existingActiveAdmins, allCompanyIds, allUserIds })
 
@@ -181,47 +191,46 @@ async function main(): Promise<number> {
     unresolved: plan.unresolvedConflicts.length + plan.unresolvedOrphans.length + plan.unresolvedOwnerAnomalies.length + plan.companiesWithoutAdmin.length + plan.unknownUsers.length + plan.malformedClaims.length,
   }
 
-  const createdPaths: CreatedPathRecord[] = []
-  const writeFailures: WriteFailureRecord[] = []
+  let createdPaths: CreatedPathRecord[] = []
+  let writeFailures: WriteFailureRecord[] = []
   let observedChecksum: string | null = null
   let missing: { companyId: string; uid: string }[] = []
   let differing: { companyId: string; uid: string }[] = []
+  let readBackError: string | null = null
 
   if (opts.mode === 'apply') {
     if (!plan.applyAllowed) {
       console.error(`Apply refused: ${counts.unresolved} unresolved item(s) (conflicts/orphans/owner-anomalies/companies-without-admin). Resolve via --decisions-file and retry.`)
     } else {
-      for (const create of plan.plannedCreates) {
-        const ref = db.collection('companies').doc(create.companyId).collection('members').doc(create.uid)
-        try {
-          const now = new Date()
-          await ref.create({
-            uid: create.uid,
-            role: create.role,
-            status: create.status,
-            createdAt: now,
-            updatedAt: now,
-            ...(create.invitedBy ? { invitedBy: create.invitedBy } : {}),
-          })
-          const written = await ref.get()
-          createdPaths.push({
-            companyId: create.companyId, uid: create.uid, path: ref.path,
-            createTimeIso: written.createTime?.toDate().toISOString(),
-            updateTimeIso: written.updateTime?.toDate().toISOString(),
-          })
-          counts.created += 1
-        } catch (err) {
-          writeFailures.push({ companyId: create.companyId, uid: create.uid, error: err instanceof Error ? err.message : 'unknown error' })
-        }
+      // Independent audit fix #2 (3rd round): success is captured directly
+      // from each create()'s own WriteResult (applyWrites.ts) — no
+      // follow-up get() that could turn a successful create into a
+      // reported "write failure". createdPaths/counts.created below are
+      // therefore durable the instant this call returns, regardless of
+      // what happens next (including the read-back below failing).
+      const writeResult = await createPlannedRelations(db, plan.plannedCreates)
+      createdPaths = writeResult.createdPaths
+      writeFailures = writeResult.writeFailures
+      counts.created = createdPaths.length
+
+      // Independent audit fix #4 (2nd round, unchanged): read back REAL
+      // current state — a document that failed to write is a genuine
+      // MISSING entry in this checksum, never silently treated as if it
+      // had the expected role/status.
+      //
+      // Independent audit fix #2 (3rd round): the read-back itself is now
+      // wrapped (applyWrites.ts's readBackObservedState) so a failure IN
+      // the read-back call can never erase the createdPaths/counts.created
+      // captured just above, and can never prevent writeReport() below
+      // from running — it is recorded honestly via `readBackError` instead.
+      const readBack = await readBackObservedState(db, targetRelations)
+      if (readBack.ok) {
+        observedChecksum = readBack.observedChecksum
+        missing = readBack.missing
+        differing = readBack.differing
+      } else {
+        readBackError = readBack.error
       }
-      // Independent audit fix #4: read back REAL current state — a document
-      // that failed to write is a genuine MISSING entry in this checksum,
-      // never silently treated as if it had the expected role/status.
-      const readBack = await readAllExistingMemberships(db)
-      const observed = computeObservedState(targetRelations, readBack)
-      observedChecksum = observed.observedChecksum
-      missing = observed.missing
-      differing = observed.differing
     }
   }
 
@@ -246,6 +255,7 @@ async function main(): Promise<number> {
     decisionsChecksum: decisionsResult.checksum,
     targetChecksum,
     observedChecksum,
+    readBackError,
     conflicts: plan.unresolvedConflicts,
     orphans: plan.unresolvedOrphans,
     ownerAnomalies: plan.unresolvedOwnerAnomalies,
@@ -278,6 +288,12 @@ async function main(): Promise<number> {
 
   if (opts.mode === 'apply' && !plan.applyAllowed) return 1
   if (opts.mode === 'apply' && writeFailures.length > 0) return 1
+  // Independent audit fix #2 (3rd round): an explicit, named check — the
+  // read-back itself failing must produce a non-zero exit even though
+  // `observedChecksum !== targetChecksum` below would already be true in
+  // this case (observedChecksum stays null) — this makes the intent
+  // unambiguous rather than relying on that as an implicit side effect.
+  if (opts.mode === 'apply' && readBackError !== null) return 1
   if (opts.mode === 'apply' && observedChecksum !== targetChecksum) return 1
   if (opts.mode === 'verify' && !report.verification.matchesTarget) return 1
   return 0
@@ -350,7 +366,7 @@ async function runRollback(
       startedAt,
       finishedAt: new Date().toISOString(),
       counts: emptyCounts(),
-      sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null,
+      sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
       conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [],
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
@@ -385,6 +401,7 @@ async function runRollback(
     decisionsChecksum: sourceReport.decisionsChecksum,
     targetChecksum: sourceReport.targetChecksum,
     observedChecksum: null,
+    readBackError: null,
     conflicts: refused.map(r => ({ companyId: r.companyId, uid: r.uid, reason: 'existing_membership_conflict' as const })),
     orphans: [],
     ownerAnomalies: [],

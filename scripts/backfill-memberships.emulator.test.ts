@@ -657,4 +657,100 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     expect(result.report?.verification.matchesTarget).toBe(false)
     expect(result.report?.conflicts).toContainEqual({ companyId, uid, reason: 'existing_membership_conflict' })
   })
+
+  // ── Independent audit (3rd round) fix #1 — rollback manifest completeness ──
+  it('rollback rejects a report where ONE of TWO manifest entries was removed, and leaves BOTH documents untouched', async () => {
+    const uid1 = uniqueId('u'); const companyId1 = uniqueId('co')
+    const uid2 = uniqueId('u'); const companyId2 = uniqueId('co')
+    await seedCompany(companyId1)
+    await seedCompany(companyId2)
+    await seedUser(uid1, { companyId: companyId1, role: 'admin' })
+    await seedUser(uid2, { companyId: companyId2, role: 'admin' })
+
+    const applyReportPath = reportPath()
+    const applyResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', applyReportPath, '--mode', 'apply'])
+    expect(applyResult.code).toBe(0)
+    expect(applyResult.report?.counts.created).toBe(2)
+    expect(await getMembership(companyId1, uid1)).toBeDefined()
+    expect(await getMembership(companyId2, uid2)).toBeDefined()
+
+    // Tamper: drop ONE of the two rollbackManifest entries, but leave
+    // createdPaths (and counts.created) showing both were created — the
+    // exact bug the review flagged.
+    const tampered = JSON.parse(readFileSync(applyReportPath, 'utf8')) as MembershipBackfillReport
+    tampered.rollbackManifest = tampered.rollbackManifest.filter(m => m.uid !== uid2)
+    expect(tampered.rollbackManifest).toHaveLength(1)
+    expect(tampered.createdPaths).toHaveLength(2)
+    const tamperedPath = reportPath()
+    writeFileSync(tamperedPath, JSON.stringify(tampered))
+
+    const rollbackResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-report', '--from-report', tamperedPath])
+
+    expect(rollbackResult.code).toBe(2)
+    // BOTH documents remain — not even the one WITH a manifest entry was
+    // deleted, because the whole report was rejected before any I/O.
+    expect(await getMembership(companyId1, uid1)).toBeDefined()
+    expect(await getMembership(companyId2, uid2)).toBeDefined()
+  })
+
+  // ── Independent audit (3rd round) fix #3 — existing orphaned membership integrity ──
+  it('an existing membership under a NONEXISTENT company blocks apply and verify with zero writes', async () => {
+    const uid = uniqueId('u'); const ghostCompanyId = uniqueId('co_ghost')
+    // The company document itself is never created — only the membership doc.
+    await seedExistingMembership(ghostCompanyId, uid, { uid, role: 'viewer', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now() })
+
+    const applyResult = runCli(baseArgs('apply'))
+    expect(applyResult.code).toBe(1)
+    expect(applyResult.report?.counts.created).toBe(0)
+    expect(applyResult.report?.orphans).toContainEqual({ companyId: ghostCompanyId, uid, reason: 'missing_company' })
+
+    const verifyResult = runCli(baseArgs('verify'))
+    expect(verifyResult.code).toBe(1)
+    expect(verifyResult.report?.verification.matchesTarget).toBe(false)
+  })
+
+  it('an existing admin membership whose uid has NO user document blocks apply and verify with zero writes', async () => {
+    const companyId = uniqueId('co'); const ghostUid = uniqueId('u_ghost')
+    await seedCompany(companyId)
+    // The admin membership doc exists and is otherwise strictly valid, but
+    // users/{ghostUid} is never created.
+    await seedExistingMembership(companyId, ghostUid, { uid: ghostUid, role: 'admin', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now() })
+
+    const applyResult = runCli(baseArgs('apply'))
+    expect(applyResult.code).toBe(1)
+    expect(applyResult.report?.counts.created).toBe(0)
+    expect(applyResult.report?.orphans).toContainEqual({ companyId, uid: ghostUid, reason: 'missing_user' })
+    // The dangling admin membership must not have satisfied the last-admin
+    // gate for this (otherwise real) company.
+    expect(applyResult.report?.counts.unresolved).toBeGreaterThanOrEqual(1)
+
+    const verifyResult = runCli(baseArgs('verify'))
+    expect(verifyResult.code).toBe(1)
+    expect(verifyResult.report?.verification.matchesTarget).toBe(false)
+  })
+
+  // ── Independent audit (3rd round) fix #4 — collision-free deterministic ordering ──
+  it('plannedCreates ordering is deterministic end-to-end for companyId/uid pairs that collide under string concatenation', async () => {
+    const suffix = uniqueId('x')
+    const companyA = `a${suffix}`; const uidBc = `bc${suffix}`
+    const companyAb = `ab${suffix}`; const uidC = `c${suffix}`
+    await seedCompany(companyA)
+    await seedCompany(companyAb)
+    await seedUser(uidBc, { companyId: companyA, role: 'viewer' })
+    await seedUser(uidC, { companyId: companyAb, role: 'viewer' })
+    // Both companies need an admin to pass the last-admin gate — seed one each.
+    const adminA = uniqueId('admin'); const adminAb = uniqueId('admin')
+    await seedUser(adminA, { companyId: companyA, role: 'admin' })
+    await seedUser(adminAb, { companyId: companyAb, role: 'admin' })
+
+    const result = runCli(baseArgs('dry-run'))
+
+    expect(result.code).toBe(0)
+    const pairs = result.report?.plannedCreates.map(c => `${c.companyId}/${c.uid}`) ?? []
+    const bcIndex = pairs.indexOf(`${companyA}/${uidBc}`)
+    const cIndex = pairs.indexOf(`${companyAb}/${uidC}`)
+    expect(bcIndex).toBeGreaterThanOrEqual(0)
+    expect(cIndex).toBeGreaterThanOrEqual(0)
+    expect(bcIndex).not.toBe(cIndex) // both present as distinct entries, never collapsed/collided
+  })
 })

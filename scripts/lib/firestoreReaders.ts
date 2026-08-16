@@ -42,14 +42,27 @@ export async function readAllExistingMemberships(db: Firestore): Promise<Map<str
  * as a source of candidate relations. Independent audit fix #1: reuses the
  * same strict validator as candidate reconciliation, so a corrupted
  * document (extra fields, unknown role, non-active status, malformed
- * timestamps, uid mismatch) can never count as a protecting admin. */
-export function computeExistingActiveAdmins(existingMemberships: ReadonlyMap<string, Record<string, unknown>>): Map<string, Set<string>> {
+ * timestamps, uid mismatch) can never count as a protecting admin.
+ *
+ * Independent audit fix #3 (3rd round): a document's OWN schema being
+ * valid is not enough — `allUserIds` (every `users/{uid}` that actually
+ * exists right now) is required so an admin membership referencing a uid
+ * with no user document can never satisfy the last-admin gate either.
+ * (A dangling `companyId` is a non-issue here structurally: the gate only
+ * ever looks up entries for companyIds drawn from `allCompanyIds`, so an
+ * admin membership under a nonexistent company is never looked up in the
+ * first place — but it IS still surfaced separately, see planner.ts.) */
+export function computeExistingActiveAdmins(
+  existingMemberships: ReadonlyMap<string, Record<string, unknown>>,
+  allUserIds: ReadonlySet<string>,
+): Map<string, Set<string>> {
   const result = new Map<string, Set<string>>()
   for (const entry of existingMemberships) {
     const key = entry[0]
     const data = entry[1]
     const [companyId, uid] = splitRelationKey(key)
     if (!isStrictlyValidActiveMembership(uid, data)) continue
+    if (!allUserIds.has(uid)) continue
     if (data.role !== 'admin') continue
     if (!result.has(companyId)) result.set(companyId, new Set())
     result.get(companyId)!.add(uid)
