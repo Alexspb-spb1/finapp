@@ -71,6 +71,12 @@ export function assertEnvironmentGuard(input: EnvironmentGuardInput): string {
 
 export class CycleExecutionError extends Error {}
 
+/** The only modes `assertCycleExecutionAllowed()` ever lets through for
+ * `environment === 'production'` — see below. Kept as a narrow local
+ * union (not the full `ReportMode`) so this file does not need to import
+ * `report.ts` just for a type. */
+export type CycleExecutionMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from-report' | 'rollback-from-plan'
+
 /**
  * Cycle-scoped execution authorization — deliberately SEPARATE from
  * assertEnvironmentGuard() above, which only checks project-ID
@@ -78,20 +84,38 @@ export class CycleExecutionError extends Error {}
  * given remediation cycle happens to be authorized for. A single cycle may
  * be granted `EXTERNAL_ACTION_APPROVED: <TASK-ID>` / `ENVIRONMENT:
  * staging` without that implying anything about production — production
- * requires its own, separate `PRODUCTION_ACTION_APPROVED` grant with a
- * verified `BACKUP_REFERENCE`/`ROLLBACK_REFERENCE` (CLAUDE.md §5).
+ * requires its own, separate grant (CLAUDE.md §5).
  *
  * SEC-005 has been granted `EXTERNAL_ACTION_APPROVED: SEC-005` /
  * `ENVIRONMENT: staging` — `emulator` and `staging` are both allowed to
- * proceed past this gate. `production` remains UNCONDITIONALLY refused —
- * this check does not accept or consult any flag (backup-reference,
- * rollback-reference, ack-maintenance-readonly, or otherwise); no
- * PRODUCTION_ACTION_APPROVED grant has been given this cycle, and none can
- * make this function return without throwing for `production`.
+ * proceed past this gate for ANY mode.
+ *
+ * `production` was granted `PRODUCTION_PREFLIGHT_APPROVED: SEC-005` —
+ * explicitly scoped to "deploy maintenance protection, create+verify
+ * backup, read-only dry-run"; apply/backfill remains explicitly forbidden
+ * ("Backfill/apply пока запрещён"). This function reflects EXACTLY that
+ * scope: `environment === 'production'` is allowed to proceed ONLY when
+ * `mode === 'dry-run'` (never writes — no `DocumentReference.create()`
+ * anywhere in the dry-run path). `apply`, `verify` (requires a decisions
+ * file tied to a completed apply — meaningless without one), `rollback-
+ * from-report`, and `rollback-from-plan` all remain UNCONDITIONALLY
+ * refused for production — this check does not accept or consult any
+ * other flag (backup-reference, rollback-reference, ack-maintenance-
+ * readonly, or otherwise) for those modes; no broader
+ * `PRODUCTION_ACTION_APPROVED` grant (with verified `BACKUP_REFERENCE`/
+ * `ROLLBACK_REFERENCE`, per CLAUDE.md §5) has been given this cycle for
+ * an actual backfill, and none can make this function return without
+ * throwing for any production mode other than `dry-run`.
+ *
+ * `mode` is OPTIONAL: callers with no `ReportMode` concept of their own —
+ * e.g. `scripts/ops/set-maintenance-mode.ts`, whose only "modes" are
+ * enable/disable, neither of which is authorized for production this
+ * cycle — simply omit it, which always refuses `production` (`undefined
+ * !== 'dry-run'`), the same as passing an explicitly-unauthorized mode.
  */
-export function assertCycleExecutionAllowed(environment: Environment): void {
-  if (environment === 'production') {
-    throw new CycleExecutionError('production backfill requires a separate, explicit PRODUCTION_ACTION_APPROVED grant (with verified BACKUP_REFERENCE/ROLLBACK_REFERENCE) from the repository owner, which has not been given this cycle.')
+export function assertCycleExecutionAllowed(environment: Environment, mode?: CycleExecutionMode): void {
+  if (environment === 'production' && mode !== 'dry-run') {
+    throw new CycleExecutionError(`production${mode ? ` ${mode}` : ''} requires a separate, explicit PRODUCTION_ACTION_APPROVED grant (with verified BACKUP_REFERENCE/ROLLBACK_REFERENCE) from the repository owner, which has not been given this cycle — only PRODUCTION_PREFLIGHT_APPROVED: SEC-005 (read-only dry-run) has been granted.`)
   }
 }
 

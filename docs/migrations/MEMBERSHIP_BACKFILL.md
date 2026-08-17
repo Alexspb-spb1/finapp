@@ -397,13 +397,23 @@ consistency table above — it decides whether THIS remediation cycle is
 allowed to run against a given external environment AT ALL, independent of
 whether the flags are individually well-formed. `--environment emulator`
 and `--environment staging` are both currently allowed to proceed past
-this gate (staging under the `EXTERNAL_ACTION_APPROVED: SEC-005` /
-`ENVIRONMENT: staging` grant — see "Staging authorization" below).
-**`--environment production` is refused unconditionally** — this check
-never inspects `--backup-reference`/`--rollback-reference`/
-`--ack-maintenance-readonly` or any other flag; no combination of flags can
-make it pass, because no `PRODUCTION_ACTION_APPROVED` grant has been
-given.
+this gate for ANY mode (staging under the `EXTERNAL_ACTION_APPROVED:
+SEC-005` / `ENVIRONMENT: staging` grant — see "Staging authorization"
+below).
+
+**`--environment production` is allowed past this gate ONLY for `--mode
+dry-run`** (`PRODUCTION_PREFLIGHT_APPROVED: SEC-005` — "разрешаю deploy
+maintenance-защиты, создание и проверку backup и read-only dry-run в
+finapp-prod-10a83. Backfill/apply пока запрещён." — see "Production
+preflight authorization" below for the full grant and what was actually
+run under it). `apply`, `verify`, `rollback-from-report`, and
+`rollback-from-plan` remain refused UNCONDITIONALLY for production — this
+check never inspects `--backup-reference`/`--rollback-reference`/
+`--ack-maintenance-readonly` or any other flag for those modes; no
+combination of flags can make them pass, because no broader
+`PRODUCTION_ACTION_APPROVED` grant (with verified `BACKUP_REFERENCE`/
+`ROLLBACK_REFERENCE`, per CLAUDE.md §5) has been given for an actual
+backfill.
 
 ## Emulator walkthrough (safe — run this)
 
@@ -499,14 +509,87 @@ node scripts/backfill-memberships.ts \
   --report-path /absolute/path/outside/repo/sec005-staging-apply.json
 ```
 
-## Future production execution (template — NOT run in this cycle)
+## Production preflight authorization (PRODUCTION_PREFLIGHT_APPROVED: SEC-005)
+
+The repository owner granted:
+
+```text
+PRODUCTION_PREFLIGHT_APPROVED: SEC-005 — разрешаю deploy maintenance-защиты,
+создание и проверку backup и read-only dry-run в finapp-prod-10a83.
+Backfill/apply пока запрещён.
+```
+
+This is narrower than, and distinct from, CLAUDE.md §5's
+`PRODUCTION_ACTION_APPROVED` grant (which would additionally require a
+verified `BACKUP_REFERENCE`/`ROLLBACK_REFERENCE` and would authorize
+`apply` itself). It covers exactly three actions against real production
+infrastructure, in this order:
+
+1. **Deploy** the already-emulator-tested maintenance-mode-aware
+   `firestore.rules` and `functions` (the `isMaintenanceModeActive()`
+   Rules gate and `createCompany`'s `requireNotInMaintenanceMode()`
+   check) to `finapp-prod-10a83`.
+2. **Create and verify** a real production backup (`gcloud firestore
+   export`, including `members`, restored to an isolated project and
+   checksum-verified) — producing a VERIFICATION-ONLY manifest with
+   independently verified counts/checksums; NOT valid as an
+   `--backup-reference` for `apply` (see below for why).
+3. **Run `--mode dry-run`** against `finapp-prod-10a83` — read-only,
+   writes nothing.
+
+`apply`/backfill remains explicitly forbidden by this grant
+("Backfill/apply пока запрещён") — this is NOT
+`PRODUCTION_ACTION_APPROVED`, and does not authorize creating a single
+`companies/{companyId}/members/{uid}` document in production.
+
+**Maintenance mode is deliberately NOT enabled under this grant.** None of
+the three authorized actions require it: `gcloud firestore export` doesn't
+consult it, backup verification happens entirely in an isolated restore
+project, and `--mode dry-run` never checks maintenance mode live (see
+"Production mode-specific requirements" above — only `apply`/
+`rollback-from-report`/`rollback-from-plan` do). Enabling
+`system/maintenance` would have a real effect on live production users
+(blocking client Firestore writes and `createCompany`) that this grant
+did not explicitly request, so it was treated as out of scope for this
+round.
+
+**Code change enabling this**: `assertCycleExecutionAllowed()`
+(`scripts/lib/firebaseAdmin.ts`) now allows `environment === 'production'`
+to proceed past the cycle-execution gate ONLY when `mode === 'dry-run'` —
+every other production mode (`apply`, `verify`, `rollback-from-report`,
+`rollback-from-plan`) remains unconditionally refused, exactly as before.
+This code change is the ONLY thing this specific round actually did —
+deploy, backup creation/verification, and the real production dry-run
+itself each require their own separate go-ahead and are not yet
+performed. See "Environment/project guards" above and
+`docs/remediation/reports/SEC-005.md` for the full technical writeup and
+current status.
+
+**The backup created under this grant is verification-only — it can
+NEVER be used as `--backup-reference` for a future `apply`.** Two
+independent reasons: (1) `MAX_BACKUP_AGE_MS` (24h) will almost certainly
+have elapsed by the time a separate `PRODUCTION_ACTION_APPROVED` round
+for `apply` is authorized; (2) `verifyBackupReference()` requires
+`createdAtUtc >= system/maintenance.enabledAt`, and maintenance mode is
+deliberately not enabled under this grant, so this backup has no valid
+`enabledAt` to satisfy that check against. A future `apply` will require
+its OWN fresh backup, taken AFTER maintenance mode has been separately
+authorized and enabled — see "Future production execution" below for
+that full sequence. This preflight's backup exists solely to prove the
+export → import → checksum-verify → manifest mechanism works end-to-end
+against real production data.
+
+## Future production execution (template — for a future PRODUCTION_ACTION_APPROVED round)
 
 Requires `PRODUCTION_ACTION_APPROVED: SEC-005` from the repository owner,
 PLUS a successful, reviewed staging rehearsal first. **The production gate
 (`assertCycleExecutionAllowed`, `scripts/lib/firebaseAdmin.ts`) still
-refuses `production` unconditionally in this cycle** — none of the
-commands below can actually run until that gate is separately lifted by a
-future authorized round. This section documents the exact intended flow,
+refuses every production mode EXCEPT `dry-run` unconditionally** — the
+`apply`/rollback commands below cannot actually run until that gate is
+separately lifted, mode by mode, by a future authorized round; only
+`dry-run` (Step 5a/5b below) is real and runnable under the current
+`PRODUCTION_PREFLIGHT_APPROVED: SEC-005` grant. This section documents the
+exact intended flow for the REMAINING (apply/rollback) steps,
 corrected after independent review (see the changelog note at the top of
 this document), so it is ready when that authorization is given.
 
