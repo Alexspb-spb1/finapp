@@ -33,7 +33,7 @@ import {
   type EmergencyReconstructionAudit, type EmergencyReconstructionRefusal,
 } from './lib/report.ts'
 import {
-  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, verifyStrictDryRunReport, sha256OfFile, ProductionSafetyError,
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, validateStrictDryRunReportContent, sha256OfFile, ProductionSafetyError,
 } from './lib/productionSafety.ts'
 import { isStrictlyValidActiveMembership } from './lib/membershipValidation.ts'
 import { relationKey, type Decision, type ConfirmedRelation } from './lib/types.ts'
@@ -202,6 +202,7 @@ async function main(): Promise<number> {
   ]
   const targetChecksum = computeRelationSetChecksum(targetRelations)
   const sourceChecksum = computeSourceChecksum(extraction.confirmed)
+  const sourceGitSha = readSourceGitSha()
 
   const counts: ReportCounts = {
     usersRead: users.length,
@@ -254,7 +255,7 @@ async function main(): Promise<number> {
           if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
           const backupRef = verifyBackupReference(opts.backupReference, expectedProjectId, maintenance.enabledAt)
           if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
-          const rollbackPlanRef = verifyRollbackPlanReference(opts.rollbackReference, targetChecksum, expectedProjectId)
+          const rollbackPlanRef = verifyRollbackPlanReference(opts.rollbackReference, { sourceGitSha, sourceChecksum, decisionsChecksum: decisionsResult.checksum, targetChecksum }, expectedProjectId)
           productionSafety = {
             maintenanceMode: maintenance,
             backupReference: { sha256: backupRef.sha256, createdAtUtc: backupRef.createdAtUtc, membersCount: backupRef.membersCount },
@@ -312,7 +313,7 @@ async function main(): Promise<number> {
     mode: opts.mode,
     environment,
     projectId: expectedProjectId,
-    sourceGitSha: readSourceGitSha(),
+    sourceGitSha,
     runId,
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -363,7 +364,13 @@ async function main(): Promise<number> {
   // and printed as an explicit, separate line, for the operator to record
   // as THIS run's ROLLBACK_REFERENCE going forward (what a subsequent
   // `--mode rollback-from-report --from-report <this path>` will consume).
-  if (opts.mode === 'apply' && environment === 'production' && createdPaths.length > 0) {
+  // Final-round fix #5: printed for EVERY environment, not just production
+  // — `rollback-from-report` now requires `--expected-report-sha256`
+  // unconditionally (item 6 of the previous round), so an emulator/staging
+  // apply needs this line too; gating it to production only would leave
+  // the emulator/staging walkthrough unable to actually follow its own
+  // documented rollback command.
+  if (opts.mode === 'apply' && createdPaths.length > 0) {
     console.log(`Apply report SHA-256 (record this as the ROLLBACK_REFERENCE for this run): ${sha256OfFile(opts.reportPath!)}`)
   }
 
@@ -597,10 +604,12 @@ async function runRollback(
  * it could never undo the *creation* apply performed.
  *
  * Instead, candidates are reconstructed from a SEPARATELY VERIFIED dry-run
- * report's `plannedCreates` (`verifyStrictDryRunReport()` — the same
- * strict structural validation `--rollback-reference` requires: real
- * schema, matching environment/project, zero unresolved items). Each
- * candidate is deleted ONLY if:
+ * report's `plannedCreates` (`validateStrictDryRunReportContent()` — the
+ * same strict structural validation `--rollback-reference` requires: real
+ * schema, matching environment/project, zero unresolved items, no
+ * duplicate pairs — applied to the raw bytes AFTER the
+ * `--expected-plan-sha256` integrity check below has already passed).
+ * Each candidate is deleted ONLY if:
  *   1. a live document exists at that exact path;
  *   2. it matches the planned uid/role/status EXACTLY;
  *   3. it passes strict canonical-schema validation
@@ -672,13 +681,30 @@ async function runRollbackFromPlan(
     }
   }
 
-  let strict
+  // Final-round fix #1 (second round): the integrity check runs BEFORE
+  // any JSON parsing or Firestore I/O — identical pattern to
+  // rollback-from-report's --expected-report-sha256 check above. A
+  // missing/mismatched hash means the tool has NOT yet even parsed
+  // --from-plan, let alone read/deleted anything.
+  let fromPlanRaw: string
   try {
-    strict = verifyStrictDryRunReport(fromPlanPath, projectId, environment)
+    fromPlanRaw = readFileSync(fromPlanPath, 'utf8')
+  } catch {
+    return refusedReport('--from-plan could not be read.', 2)
+  }
+  const actualPlanSha256 = sha256Hex(fromPlanRaw)
+  if (actualPlanSha256 !== opts.expectedPlanSha256) {
+    return refusedReport(`--from-plan content does not match --expected-plan-sha256 (expected ${opts.expectedPlanSha256}, got ${actualPlanSha256}) — the plan may have been tampered with, corrupted, or is the wrong file.`, 3)
+  }
+
+  let strictContent
+  try {
+    strictContent = validateStrictDryRunReportContent(fromPlanRaw, projectId, environment)
   } catch (err) {
     if (err instanceof ProductionSafetyError) return refusedReport(`--from-plan ${err.message}`, 2)
     throw err
   }
+  const strict = { sha256: actualPlanSha256, plannedCreates: strictContent.plannedCreates, targetChecksum: strictContent.targetChecksum }
 
   const removed: { companyId: string; uid: string; path: string }[] = []
   const skippedNotFound: { companyId: string; uid: string }[] = []

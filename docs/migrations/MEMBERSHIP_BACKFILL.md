@@ -323,6 +323,7 @@ node scripts/backfill-memberships.ts \
   --from-report /absolute/path/to/an/apply-report.json  (rollback-from-report only)
   --expected-report-sha256 <64-hex-char SHA-256>        (rollback-from-report only, REQUIRED)
   --from-plan /absolute/path/to/a/dry-run-report.json   (rollback-from-plan only)
+  --expected-plan-sha256 <64-hex-char SHA-256>          (rollback-from-plan only, REQUIRED)
   --ack-emergency-reconstruction                        (rollback-from-plan only, REQUIRED)
   --backup-reference /absolute/path/to/backup-manifest.json    (production apply only)
   --rollback-reference /absolute/path/to/a/dry-run-report.json (production apply only)
@@ -333,30 +334,32 @@ node scripts/backfill-memberships.ts \
 
 ### Production mode-specific requirements
 
-**Corrected twice after independent review.** An earlier, never-committed
-preflight used a single blanket check
+**Corrected three times after independent review.** An earlier,
+never-committed preflight used a single blanket check
 (`backup-reference`/`rollback-reference`/`ack-maintenance` required for
 ANY non-`verify` production mode) — fixed in the first preflight-safety
 round. A follow-up review then found `rollback-from-report` had no
 integrity check on `--from-report` itself, and the "lost apply-report"
-emergency scenario had no real recovery path — both fixed below
-(`--expected-report-sha256`, `rollback-from-plan`). The actual per-mode
-requirements, implemented in `scripts/backfill-memberships.ts` and
-`scripts/lib/productionSafety.ts`:
+emergency scenario had no real recovery path — both fixed
+(`--expected-report-sha256`, `rollback-from-plan`) in the final round. A
+SECOND follow-up review of that same final round found `rollback-from-plan`
+itself had no equivalent integrity check on `--from-plan` — fixed below
+(`--expected-plan-sha256`). The actual per-mode requirements, implemented
+in `scripts/backfill-memberships.ts` and `scripts/lib/productionSafety.ts`:
 
-| Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | `--expected-report-sha256` | `--ack-emergency-reconstruction` | Maintenance mode checked live? |
-|---|---|---|---|---|---|---|
-| `dry-run` | not required | not required | not required | n/a | n/a | no — dry-run writes nothing |
-| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified against this run's own `targetChecksum`** (`verifyRollbackPlanReference` — see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
-| `verify` | not required | not required | not required | n/a | n/a | no — verify only reads |
-| `rollback-from-report` | not required | not required | required | **required** — verified against `--from-report`'s actual bytes BEFORE any parsing/I/O | n/a | **yes** (`assertMaintenanceModeActive`, fail-closed) |
-| `rollback-from-plan` | not required | not required | required | n/a | **required** — explicit acknowledgement this is the degraded, last-resort path | **yes** (`assertMaintenanceModeActive`, fail-closed) |
+| Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | `--expected-report-sha256` | `--expected-plan-sha256` | `--ack-emergency-reconstruction` | Maintenance mode checked live? |
+|---|---|---|---|---|---|---|---|
+| `dry-run` | not required | not required | not required | n/a | n/a | n/a | no — dry-run writes nothing |
+| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified: `sourceGitSha`/`sourceChecksum`/`decisionsChecksum`/`targetChecksum` must ALL exactly match this run's own values** (`verifyRollbackPlanReference` — see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | n/a | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
+| `verify` | not required | not required | not required | n/a | n/a | n/a | no — verify only reads |
+| `rollback-from-report` | not required | not required | required | **required** — verified against `--from-report`'s actual bytes BEFORE any parsing/I/O | n/a | n/a | **yes** (`assertMaintenanceModeActive`, fail-closed) |
+| `rollback-from-plan` | not required | not required | required | n/a | **required** — verified against `--from-plan`'s actual bytes BEFORE any parsing/I/O | **required** — explicit acknowledgement this is the degraded, last-resort path | **yes** (`assertMaintenanceModeActive`, fail-closed) |
 
 Any production-safety check failing for `apply`/`rollback-from-report`/
 `rollback-from-plan` refuses BEFORE the first write/delete (exit 3 for a
-verification failure; the `--expected-report-sha256` integrity check for
-`rollback-from-report` also refuses with exit 3, checked before even
-parsing `--from-report` as JSON) — the same exit code family as the
+verification failure; the `--expected-report-sha256`/`--expected-plan-sha256`
+integrity checks also refuse with exit 3, checked before even parsing
+`--from-report`/`--from-plan` as JSON) — the same exit code family as the
 project-ID guards below, since this is the same class of "precondition
 not met" failure.
 
@@ -416,19 +419,37 @@ FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 node scripts/backfill-memberships.ts \
   --decisions-file /tmp/sec005-decisions.json \
   --report-path /tmp/sec005-apply.json
 
+# apply prints (for EVERY environment, not just production — final-round
+# fix #5, second round):
+#   Apply report SHA-256 (record this as the ROLLBACK_REFERENCE for this run): <sha256 hex>
+# Copy that value — --expected-report-sha256 below requires it exactly.
+# If you didn't capture the printed line, recompute it yourself instead of
+# guessing: `sha256sum /tmp/sec005-apply.json` (Linux/macOS) or
+# `Get-FileHash /tmp/sec005-apply.json -Algorithm SHA256` (PowerShell) — both
+# must match scripts/lib/checksum.ts's sha256Hex() exactly (SHA-256 over the
+# raw file bytes, lowercase hex).
+
 # Verify:
 FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 node scripts/backfill-memberships.ts \
   --environment emulator --project demo-finapp --mode verify \
+  --decisions-file /tmp/sec005-decisions.json \
   --report-path /tmp/sec005-verify.json
 
-# Rollback (emulator only, in this cycle):
+# Rollback (emulator only, in this cycle) — --expected-report-sha256 is
+# REQUIRED for every environment, not just production:
 FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 node scripts/backfill-memberships.ts \
   --environment emulator --project demo-finapp --mode rollback-from-report \
-  --from-report /tmp/sec005-apply.json --report-path /tmp/sec005-rollback.json
+  --from-report /tmp/sec005-apply.json \
+  --expected-report-sha256 <the SHA-256 printed by apply above> \
+  --report-path /tmp/sec005-rollback.json
 ```
 
 `npm run test:migration` runs the full automated proof of this flow
-(`firebase emulators:exec --project demo-finapp --only firestore "vitest run scripts"`).
+(`firebase emulators:exec --project demo-finapp --only firestore "vitest run
+scripts --no-file-parallelism"` — `--no-file-parallelism` is required
+because two emulator-backed test files independently wipe the SAME shared
+`demo-finapp` project in their own `beforeEach` hooks; see "Independent
+audit fixes — production preflight, final round" for why).
 
 ## Staging authorization (EXTERNAL_ACTION_APPROVED: SEC-005 / ENVIRONMENT: staging)
 
@@ -559,20 +580,59 @@ manifest (BASE-003.md §6.1 schema, extended per "Backup reference
 verification" below) at an absolute path outside the repository — this is
 the file `--backup-reference` will point to.
 
-### Step 5 — dry-run / review (produces the pre-apply `--rollback-reference`)
+### Step 5 — dry-run / review / resolved dry-run (produces the pre-apply `--rollback-reference`)
+
+**Corrected after independent review (final round, second pass, item 4)** —
+a single, decisions-less dry-run cannot become `--rollback-reference`:
+`verifyRollbackPlanReference()` now requires the reference's
+`decisionsChecksum` to EXACTLY match apply's own (see "Two-phase
+ROLLBACK_REFERENCE" below) — a dry-run run WITHOUT `--decisions-file` has
+the EMPTY-array `decisionsChecksum`, which can never match an apply that
+actually supplies a real decisions file. The correct sequence has THREE
+sub-steps, not one:
+
+**5a. Discovery dry-run** (no `--decisions-file` yet — this is purely to
+find what needs a decision):
 
 ```bash
 node scripts/backfill-memberships.ts \
   --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
-  --mode dry-run --report-path /absolute/path/outside/repo/sec005-prod-dry-run.json
+  --mode dry-run --report-path /absolute/path/outside/repo/sec005-prod-discovery-dry-run.json
 ```
 
-Review the report, prepare a decisions file for every conflict/orphan/
-owner-anomaly it found. This dry-run report's path is what
-`apply`'s `--rollback-reference` will point to (see "Two-phase
-ROLLBACK_REFERENCE" below) — keep it.
+Review the report; prepare `/absolute/path/outside/repo/sec005-prod-decisions.json`
+for every conflict/orphan/owner-anomaly it found.
+
+**5b. Resolved dry-run** (the SAME `--decisions-file` apply will use — this
+report, not the discovery one, is the actual `--rollback-reference`):
+
+```bash
+node scripts/backfill-memberships.ts \
+  --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
+  --mode dry-run --decisions-file /absolute/path/outside/repo/sec005-prod-decisions.json \
+  --report-path /absolute/path/outside/repo/sec005-prod-resolved-dry-run.json
+```
+
+Confirm `counts.unresolved === 0` in this report — if not, the decisions
+file is still incomplete; go back to 5a's findings.
+
+**5c. Save this report's SHA-256** — needed twice later: once implicitly
+(as the file `--rollback-reference` points to in Step 6), and once
+explicitly as `--expected-plan-sha256` if an emergency `rollback-from-plan`
+is ever needed (see "Emergency scenario: apply-report lost" below):
+
+```bash
+sha256sum /absolute/path/outside/repo/sec005-prod-resolved-dry-run.json
+# or: Get-FileHash ... -Algorithm SHA256   (PowerShell)
+```
+
+Record this value in the incident/runbook log alongside the file path —
+this is the value this document calls `<resolved-dry-run-sha256>` below.
 
 ### Step 6 — apply
+
+**Uses the SAME `--decisions-file` as Step 5b**, and Step 5b's report
+(not Step 5a's) as `--rollback-reference`:
 
 ```bash
 node scripts/backfill-memberships.ts \
@@ -580,9 +640,17 @@ node scripts/backfill-memberships.ts \
   --apply --decisions-file /absolute/path/outside/repo/sec005-prod-decisions.json \
   --report-path /absolute/path/outside/repo/sec005-prod-apply.json \
   --backup-reference /absolute/path/outside/repo/sec005-prod-backup-manifest.json \
-  --rollback-reference /absolute/path/outside/repo/sec005-prod-dry-run.json \
+  --rollback-reference /absolute/path/outside/repo/sec005-prod-resolved-dry-run.json \
   --ack-maintenance-readonly
 ```
+
+`verifyRollbackPlanReference()` cross-checks `sourceGitSha`,
+`sourceChecksum`, `decisionsChecksum`, AND `targetChecksum` between this
+`--rollback-reference` and THIS apply run's own computed values — all four
+must match exactly (final-round fix #2, second round). Using Step 5b's
+report with the SAME `--decisions-file` is what makes this possible;
+Step 5a's report (or a dry-run with a different/no decisions file) will
+be refused here, before any write.
 
 On success, the tool prints (never embeds in the report itself):
 
@@ -667,14 +735,24 @@ more than "the file parses and has the right project ID":
   `.companyDataDocsCount` must each be a non-negative integer — not merely
   present, but a real, well-formed count (a negative number or a `1.5`
   float is refused).
+- `manifest.firestore.membersChecksum` must be present as a valid
+  64-character hex SHA-256 digest — **strengthened in the final
+  preflight-safety round, second pass (item 3)**: the SOURCE (production)
+  `members` checksum, computed at export time, so it can be compared
+  against the restore's own checksum below (not merely a count, which
+  could hide a doc-for-doc substitution with the same total).
 - `manifest.restore.verificationResult === 'PASS'` — **this is the fix for
   independent-review item 2**: the backup must have actually been
   restored to an isolated project and verified there (see "Restore
   verification" below), not merely exported. `manifest.restore.membersCount`
   must be a non-negative integer AND equal `manifest.firestore.membersCount`
   (the restore confirmed the SAME count the export claimed — not just any
-  count), `manifest.restore.membersChecksum` must be a non-empty string,
-  and `manifest.restore.verifiedAtUtc` must be a valid timestamp.
+  count); `manifest.restore.membersChecksum` must ALSO be a valid
+  64-character hex SHA-256 digest AND EXACTLY EQUAL
+  `manifest.firestore.membersChecksum` (final-round fix #3, second round —
+  previously only checked for presence, never actually compared to the
+  source checksum); `manifest.restore.verifiedAtUtc` must be a valid
+  timestamp.
 - **`manifest.createdAtUtc` must be AT OR AFTER the live, currently-active
   `system/maintenance.enabledAt`** (read via `assertMaintenanceModeActive()`,
   checked BEFORE this function is even called — see "Production
@@ -715,12 +793,19 @@ verify the `members` collection group**, not just
    simple `collectionGroup('members').count()` read against the restored
    project) and confirm it **equals** `firestore.membersCount` from the
    backup manifest.
-3. Compute a checksum over the restored `members` documents using the
-   same mechanism this tool already uses for its own checksums
-   (`scripts/lib/checksum.ts`'s canonical-JSON + SHA-256 approach) and
-   confirm it matches an equivalent checksum taken at export time — not
-   just a raw count match, which could hide a doc-for-doc substitution
-   with the same total.
+3. Compute a SHA-256 checksum over the restored `members` documents using
+   the same mechanism this tool already uses for its own checksums
+   (`scripts/lib/checksum.ts`'s canonical-JSON + SHA-256 approach), and
+   ALSO compute the equivalent checksum over the SOURCE (production)
+   `members` documents at export time — record both in the manifest as
+   `firestore.membersChecksum` (source) and `restore.membersChecksum`
+   (restored). **Strengthened in the final preflight-safety round, second
+   pass (item 3)**: `verifyBackupReference()` now requires BOTH to be
+   present as valid 64-character hex SHA-256 digests AND requires them to
+   be EXACTLY EQUAL — not just a raw count match (which could hide a
+   doc-for-doc substitution with the same total), and not just checking
+   that `restore.membersChecksum` exists (which could be any value at all
+   without ever being compared to the source).
 4. This restore-verification procedure is **not automated by this tool**
    in this round — it requires a real GCP project and a real restore
    cycle, which is out of scope for a round explicitly constrained to
@@ -754,20 +839,33 @@ phases:
    - `environment === 'production'` and `projectId === '--project'`'s
      value — a staging or emulator dry-run can never authorize a
      production apply;
-   - `sourceGitSha` is present and non-empty;
+   - `sourceGitSha` is present, non-empty, and (final-round fix #2, second
+     round) never `"unknown"` — a dry-run whose own build could not be
+     traced to a commit can never authorize production, and neither can a
+     CURRENT apply run whose own `sourceGitSha` is `"unknown"` (checked
+     first, before the reference file is even read);
    - `sourceChecksum`, `decisionsChecksum`, and `targetChecksum` are each
      present as a well-formed 64-character hex SHA-256 digest — not just
      "some string";
    - `counts.unresolved === 0` — a dry-run plan that still has unresolved
      conflicts/orphans/anomalies cannot be treated as fully reviewed and
      approved;
-   - AND, finally, `targetChecksum === <this run's own computed
-     targetChecksum>` — proving the operator reviewed the exact same
-     planned change set that is about to be applied, not a stale or
-     unrelated (even if otherwise valid) dry-run.
+   - `plannedCreates` contains no duplicate `(companyId, uid)` pair
+     (final-round fix #2, second round);
+   - AND, finally — **strengthened in the final preflight-safety round,
+     second pass (item 2)**: `sourceGitSha`, `sourceChecksum`,
+     `decisionsChecksum`, AND `targetChecksum` must ALL FOUR exactly equal
+     THIS apply run's own computed values, not `targetChecksum` alone —
+     proving the dry-run was built from the exact same code, the exact
+     same legacy source data, AND the exact same `--decisions-file`, not
+     merely a dry-run that happens to compute a coincidentally-matching
+     final `targetChecksum`. This is why apply's `--decisions-file` must
+     be the SAME one used to produce the "resolved dry-run" report passed
+     as `--rollback-reference` — see "Future production execution", Step
+     5, above.
    This is not a description of a future rollback — it is proof the
-   operator actually looked at a genuine, fully-resolved plan before
-   running `apply`.
+   operator actually looked at a genuine, fully-resolved plan, built from
+   the exact same code/data/decisions, before running `apply`.
 2. **Post-apply** (printed to stdout, never embedded in the report file
    itself — a file cannot contain a hash of itself): the SHA-256 of the
    just-written apply-report file (`sha256OfFile()`, computed after
@@ -839,23 +937,32 @@ different, riskier problem dressed up as one.
 ### `--mode rollback-from-plan` — reconstruction from a verified dry-run report
 
 If a dry-run report from immediately before the lost `apply` still
-exists (the SAME file that would have been used as `--rollback-reference`
-— see "Two-phase ROLLBACK_REFERENCE" above), it can be used to
-RECONSTRUCT rollback candidates, with real Firestore state cross-checked
-before every single deletion:
+exists — the SAME Step 5b "resolved dry-run" report that was used as
+`--rollback-reference` (see "Two-phase ROLLBACK_REFERENCE" above and
+Step 5c's saved SHA-256 above) — it can be used to RECONSTRUCT rollback
+candidates, with real Firestore state cross-checked before every single
+deletion:
 
 ```bash
 node scripts/backfill-memberships.ts \
   --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
-  --mode rollback-from-plan --from-plan <path-to-the-surviving-dry-run-report.json> \
+  --mode rollback-from-plan --from-plan /absolute/path/outside/repo/sec005-prod-resolved-dry-run.json \
+  --expected-plan-sha256 <resolved-dry-run-sha256, saved in Step 5c> \
   --report-path /absolute/path/outside/repo/sec005-prod-emergency-rollback.json \
   --ack-maintenance-readonly --ack-emergency-reconstruction
 ```
 
-- `--from-plan` is validated by the SAME `verifyStrictDryRunReport()` used
-  for `--rollback-reference` — real schema, matching environment/project,
-  all checksums well-formed, `counts.unresolved === 0`. A minimal forged
-  or incomplete file is rejected before any Firestore access.
+- **`--expected-plan-sha256` is REQUIRED** (final-round fix #1, second
+  round) — `sha256Hex()` of `--from-plan`'s actual raw bytes is computed
+  and compared BEFORE the file is even parsed as JSON, let alone before
+  any Firestore read/delete. If Step 5c's SHA-256 wasn't saved at the
+  time, recompute it the same way (`sha256sum`/`Get-FileHash`, as in Step
+  5c) — never guess or omit it.
+- `--from-plan` is then validated by the SAME strict structural checks
+  `--rollback-reference` uses — real schema, matching environment/project,
+  all checksums well-formed, `counts.unresolved === 0`, no duplicate
+  `(companyId, uid)` pairs in `plannedCreates`. A minimal forged or
+  incomplete file is rejected before any Firestore access.
 - `--ack-emergency-reconstruction` is a SEPARATE, additional
   acknowledgement from `--ack-maintenance-readonly` — the operator must
   explicitly accept that this is the degraded, last-resort path, never a
@@ -1594,3 +1701,55 @@ shared `demo-finapp` Firestore Emulator project in their own `beforeEach`
 hooks could race under vitest's default cross-file parallelism, producing
 spurious failures unrelated to any code defect (root-caused and confirmed
 by running the affected test in isolation, where it passed reliably).
+
+## Independent audit fixes — production preflight, final round, second pass
+
+A SECOND follow-up independent review of the "final round" above found 5
+more categories of blocking issues in that round's own fixes. All 5 are
+fixed here, in code and documentation, in a single commit
+`fix(sec-005): close second pass of final production preflight review`.
+Full technical writeup: `docs/remediation/reports/SEC-005.md`, section
+"Исправления SEC-005 по итогам второго прохода финального независимого
+ревью". Summary:
+
+1. **`rollback-from-plan` now requires `--expected-plan-sha256`**,
+   verified against `--from-plan`'s actual raw bytes BEFORE any JSON
+   parsing or Firestore read/delete — the exact same integrity-check
+   pattern `rollback-from-report`'s `--expected-report-sha256` already
+   used, extended to close the equivalent gap in the newer emergency
+   mode. See "Emergency scenario: apply-report lost" above.
+2. **`--rollback-reference` is now linked to the CURRENT apply run
+   exactly**: `verifyRollbackPlanReference()` requires `sourceGitSha`,
+   `sourceChecksum`, `decisionsChecksum`, AND `targetChecksum` to ALL
+   match, not `targetChecksum` alone. A production run whose OWN
+   `sourceGitSha` is `"unknown"` is refused outright, before the
+   reference file is even read. `plannedCreates` is now also checked for
+   duplicate `(companyId, uid)` pairs. See "Two-phase ROLLBACK_REFERENCE"
+   above.
+3. **Backup manifest now requires a SOURCE members checksum too**:
+   `firestore.membersChecksum` (new field, valid 64-hex SHA-256) is
+   required alongside the existing `restore.membersChecksum`, and the two
+   must be EXACTLY EQUAL — previously `restore.membersChecksum` was only
+   checked for presence, never actually compared to anything. See "Backup
+   reference verification" above.
+4. **Runbook Step 5 corrected**: a single decisions-less dry-run can never
+   become `--rollback-reference` now that item 2 requires an exact
+   `decisionsChecksum` match — the runbook is now discovery dry-run (no
+   decisions) → prepare decisions file → RESOLVED dry-run (same
+   `--decisions-file` apply will use) → save its SHA-256 → apply (same
+   `--decisions-file`, this resolved report as `--rollback-reference`).
+   The emergency `rollback-from-plan` example now uses this saved SHA-256
+   as `--expected-plan-sha256`. See "Future production execution", Step
+   5, above.
+5. **Emulator/staging rollback examples corrected**: `apply` now prints
+   its report's SHA-256 for EVERY environment, not just production (the
+   print was gated to `environment === 'production'` even though
+   `--expected-report-sha256` was already unconditionally required for
+   `rollback-from-report`) — the emulator walkthrough's rollback command
+   now actually matches what the CLI requires, with a fallback
+   `sha256sum`/`Get-FileHash` recipe documented for when the printed line
+   wasn't captured. See "Emulator walkthrough" above.
+
+**Production was not read or modified at any point in this round** — all
+verification is against the Firestore Emulator and unit-level fake
+Firestore stubs.

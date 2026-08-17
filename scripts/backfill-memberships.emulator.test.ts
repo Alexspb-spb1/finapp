@@ -494,7 +494,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
       // Simulate the apply report being lost — only the dry-run report
       // (produced BEFORE apply, structurally identical to a genuine
       // --rollback-reference) survives.
-      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction'])
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction', '--expected-plan-sha256', sha256OfReportFile(dryRunPath)])
 
       expect(result.code).toBe(0)
       expect(await getMembership(companyId, uid)).toBeUndefined()
@@ -511,7 +511,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
       runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', dryRunPath, '--mode', 'dry-run'])
       // Deliberately do NOT apply — the planned candidate was never created.
 
-      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction'])
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction', '--expected-plan-sha256', sha256OfReportFile(dryRunPath)])
 
       expect(result.code).toBe(0)
       expect(result.report?.emergencyReconstruction?.skippedNotFound).toEqual([{ companyId, uid }])
@@ -533,7 +533,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
       const now = Timestamp.now()
       await db.collection('companies').doc(companyId).collection('members').doc(uid).set({ uid, role: 'viewer', status: 'active', createdAt: now, updatedAt: now })
 
-      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction'])
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction', '--expected-plan-sha256', sha256OfReportFile(dryRunPath)])
 
       expect(result.code).toBe(1)
       expect(result.report?.emergencyReconstruction?.refused).toHaveLength(1)
@@ -548,7 +548,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
       runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', applyReportPath, '--mode', 'apply'])
       expect(await getMembership(companyId, uid)).toBeDefined()
 
-      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', applyReportPath, '--ack-emergency-reconstruction'])
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', applyReportPath, '--ack-emergency-reconstruction', '--expected-plan-sha256', sha256OfReportFile(applyReportPath)])
 
       expect(result.code).toBe(2)
       expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted — refused before any I/O
@@ -564,9 +564,58 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
       const dryRunResult = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', dryRunPath, '--mode', 'dry-run'])
       expect(dryRunResult.report?.counts.unresolved).toBeGreaterThan(0)
 
-      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction'])
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction', '--expected-plan-sha256', sha256OfReportFile(dryRunPath)])
 
       expect(result.code).toBe(2)
+    })
+
+    // ── Final-round fix #1 (second round): --expected-plan-sha256 verified before any parsing/I/O ──
+    it('refuses a FULL, well-formed dry-run report (with a matching EXISTING live membership) when --expected-plan-sha256 is wrong — zero Firestore reads/deletes', async () => {
+      const uid = uniqueId('u'); const companyId = uniqueId('co')
+      await seedCompany(companyId)
+      await seedUser(uid, { companyId, role: 'admin' })
+
+      const dryRunPath = reportPath()
+      runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', dryRunPath, '--mode', 'dry-run'])
+      runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'apply'])
+      // A real, existing membership document now sits in Firestore, exactly
+      // matching what the dry-run's plannedCreates describes.
+      const before = await getMembership(companyId, uid)
+      expect(before).toBeDefined()
+
+      const wrongHash = '0'.repeat(64)
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction', '--expected-plan-sha256', wrongHash])
+
+      expect(result.code).toBe(3)
+      // Proves the reconstruction loop (which reads then possibly deletes
+      // each planned candidate) never ran at all: emergencyReconstruction
+      // stays null (only ever populated AFTER the loop completes), not an
+      // empty-but-present object.
+      expect(result.report?.emergencyReconstruction).toBeNull()
+      const after = await getMembership(companyId, uid)
+      expect(after).toEqual(before) // byte-for-byte unchanged — never read-then-rewritten, never deleted
+    })
+
+    it('refuses a --from-plan tampered AFTER being hashed — even a single byte change is caught before parsing', async () => {
+      const uid = uniqueId('u'); const companyId = uniqueId('co')
+      await seedCompany(companyId)
+      await seedUser(uid, { companyId, role: 'admin' })
+
+      const dryRunPath = reportPath()
+      runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', dryRunPath, '--mode', 'dry-run'])
+      runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'apply'])
+      const expectedHash = sha256OfReportFile(dryRunPath)
+
+      // Tamper AFTER computing the hash the operator would have recorded.
+      const tampered = JSON.parse(readFileSync(dryRunPath, 'utf8')) as MembershipBackfillReport
+      ;(tampered as unknown as Record<string, unknown>).targetChecksum = '1'.repeat(64)
+      writeFileSync(dryRunPath, JSON.stringify(tampered))
+
+      const result = runCli(['--environment', 'emulator', '--project', PROJECT_ID, '--report-path', reportPath(), '--mode', 'rollback-from-plan', '--from-plan', dryRunPath, '--ack-emergency-reconstruction', '--expected-plan-sha256', expectedHash])
+
+      expect(result.code).toBe(3)
+      expect(result.report?.emergencyReconstruction).toBeNull()
+      expect(await getMembership(companyId, uid)).toBeDefined() // NOT deleted
     })
   })
 

@@ -33,6 +33,13 @@ export interface CliOptions {
    * is a last-resort, weaker-evidence recovery path (no real apply report
    * exists), never a default/automatic choice. */
   ackEmergencyReconstruction: boolean
+  /** `--mode rollback-from-plan` only (final-round fix #1, second round) —
+   * the SHA-256 the operator recorded for `--from-plan` (e.g. when the
+   * resolved dry-run report was first produced); verified against
+   * `--from-plan`'s actual bytes BEFORE any JSON parsing or Firestore
+   * read/delete — a tampered, corrupted, or swapped plan is refused
+   * outright, with zero Firestore I/O. */
+  expectedPlanSha256: string | undefined
 }
 
 function readFlagValue(args: string[], index: number, flag: string): string {
@@ -60,6 +67,7 @@ export function parseCliArgs(args: readonly string[]): CliOptions {
     ackMaintenance: false,
     expectedReportSha256: undefined,
     ackEmergencyReconstruction: false,
+    expectedPlanSha256: undefined,
   }
 
   let environmentSet = false
@@ -96,6 +104,7 @@ export function parseCliArgs(args: readonly string[]): CliOptions {
       case '--ack-maintenance-readonly': { opts.ackMaintenance = true; break }
       case '--expected-report-sha256': { opts.expectedReportSha256 = readFlagValue(mutableArgs, i, arg); i++; break }
       case '--ack-emergency-reconstruction': { opts.ackEmergencyReconstruction = true; break }
+      case '--expected-plan-sha256': { opts.expectedPlanSha256 = readFlagValue(mutableArgs, i, arg); i++; break }
       default:
         throw new CliArgError(`Unknown argument: ${arg}`)
     }
@@ -121,6 +130,12 @@ export function parseCliArgs(args: readonly string[]): CliOptions {
     if (!opts.ackEmergencyReconstruction) {
       throw new CliArgError('--mode rollback-from-plan requires --ack-emergency-reconstruction — this is a last-resort, weaker-evidence recovery path for when the actual apply report has been lost; it must never be a default choice.')
     }
+    if (!opts.expectedPlanSha256) {
+      throw new CliArgError('--mode rollback-from-plan requires --expected-plan-sha256 <the SHA-256 recorded for --from-plan> — verified against --from-plan\'s actual bytes before any parsing or Firestore access, so a tampered or swapped plan is refused outright.')
+    }
+  }
+  if (opts.expectedPlanSha256 !== undefined && !SHA256_HEX_PATTERN.test(opts.expectedPlanSha256)) {
+    throw new CliArgError('--expected-plan-sha256 must be a 64-character hex SHA-256 digest.')
   }
 
   return opts

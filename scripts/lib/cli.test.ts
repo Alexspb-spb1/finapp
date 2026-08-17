@@ -60,17 +60,27 @@ describe('parseCliArgs — required flags', () => {
 
   // ── Final-round fix #7: rollback-from-plan requires --from-plan + --ack-emergency-reconstruction ──
   it('rollback-from-plan requires --from-plan', () => {
-    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--ack-emergency-reconstruction'])).toThrow(CliArgError)
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--ack-emergency-reconstruction', '--expected-plan-sha256', HEX64])).toThrow(CliArgError)
   })
 
   it('rollback-from-plan requires --ack-emergency-reconstruction even with --from-plan given', () => {
-    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json'])).toThrow(CliArgError)
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--expected-plan-sha256', HEX64])).toThrow(CliArgError)
   })
 
-  it('accepts rollback-from-plan when both --from-plan and --ack-emergency-reconstruction are given', () => {
-    const opts = parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction'])
+  // ── Final-round fix #1 (second round): rollback-from-plan requires --expected-plan-sha256 ──
+  it('rollback-from-plan requires --expected-plan-sha256 even with --from-plan and --ack-emergency-reconstruction given', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction'])).toThrow(CliArgError)
+  })
+
+  it('rejects a malformed (non-hex, wrong-length) --expected-plan-sha256', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction', '--expected-plan-sha256', 'not-a-hash'])).toThrow(CliArgError)
+  })
+
+  it('accepts rollback-from-plan when --from-plan, --ack-emergency-reconstruction, and --expected-plan-sha256 are all given', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction', '--expected-plan-sha256', HEX64])
     expect(opts.fromPlan).toBe('/tmp/dry-run.json')
     expect(opts.ackEmergencyReconstruction).toBe(true)
+    expect(opts.expectedPlanSha256).toBe(HEX64)
   })
 })
 
