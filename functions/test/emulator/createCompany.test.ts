@@ -4,13 +4,14 @@
 // Functions Emulator (not a direct in-process function call), using real
 // Auth Emulator-issued identities and real Firestore Emulator documents —
 // no mocked Firestore for these checks (CLAUDE.md §8.6, task instructions).
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { FunctionsError } from 'firebase/functions'
 import { Timestamp } from 'firebase-admin/firestore'
 import {
   createTestUser, signOutClient, callCreateCompany,
   getCompanyDoc, getCompanyDataDoc, getMembershipDoc, getUserDoc, countCompaniesOwnedBy,
   seedRawUserDoc, getBootstrapReceipt, countAuditEvents,
+  setMaintenanceMode, clearMaintenanceMode,
 } from './helpers'
 
 function appCodeOf(err: unknown): string | undefined {
@@ -230,5 +231,66 @@ describe('createCompany — real callable pipeline through the Functions Emulato
 
     await callCreateCompany({ ...basePayload, idempotencyKey }) // retry, same key
     expect(await countAuditEvents(first.companyId)).toBe(1)
+  })
+
+  // ── SEC-005 production preflight: maintenance mode ──────────────────────
+  describe('SEC-005 production preflight: maintenance mode', () => {
+    afterEach(async () => {
+      await clearMaintenanceMode()
+    })
+
+    it('refuses with maintenance_mode when system/maintenance.enabled is true, and creates nothing', async () => {
+      await setMaintenanceMode(true)
+      const { uid } = await createTestUser(true, 'maintenance-blocked')
+      await expect(
+        callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() }),
+      ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'maintenance_mode')
+      expect(await countCompaniesOwnedBy(uid)).toBe(0)
+    })
+
+    it('succeeds normally once maintenance mode is disabled again', async () => {
+      await setMaintenanceMode(true)
+      await clearMaintenanceMode()
+      const { uid } = await createTestUser(true, 'maintenance-cleared')
+      const result = (await callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() })) as { companyId: string }
+      expect(result.companyId).toBeTruthy()
+      expect(await countCompaniesOwnedBy(uid)).toBe(1)
+    })
+
+    it('succeeds normally when system/maintenance does not exist at all (the default, pre-runbook state)', async () => {
+      const { uid } = await createTestUser(true, 'maintenance-absent')
+      await callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() })
+      expect(await countCompaniesOwnedBy(uid)).toBe(1)
+    })
+
+    // ── Final-round fix #2: TOCTOU race — maintenance check must be INSIDE the transaction ──
+    it('closes the maintenance-mode TOCTOU race: enabling maintenance mode WHILE a createCompany call is in flight still creates zero documents', async () => {
+      const { uid } = await createTestUser(true, 'maintenance-race')
+
+      // Fired in the SAME tick, before awaiting anything.
+      // callCreateCompany()'s real call goes through the Functions
+      // Emulator's HTTP layer and performs SEVERAL sequential round trips
+      // (adminAuth.getUser(), the bootstrap-receipt txn.get(), the
+      // maintenance txn.get(), the user-profile txn.get(), then a
+      // multi-document commit) before it can possibly succeed.
+      // setMaintenanceMode() is a single, direct Admin SDK `.set()` — one
+      // round trip. Firing it several times (not just once) closes the
+      // remaining timing gap: ANY one of these landing inside
+      // createCompany's transaction's live read-to-commit window is
+      // enough to force Firestore's automatic optimistic-concurrency
+      // retry — the whole point of reading system/maintenance via
+      // `txn.get()` (requireNotInMaintenanceMode(db, txn) in
+      // functions/src/lib/authz.ts) instead of a plain pre-transaction
+      // read (the previous implementation, which this test would have
+      // caught failing: a plain read taken before the race window could
+      // pass, then the transaction could still commit after maintenance
+      // mode went active).
+      const createPromise = callCreateCompany({ ...basePayload, idempotencyKey: crypto.randomUUID() })
+      const maintenancePromises = Array.from({ length: 8 }, () => setMaintenanceMode(true))
+
+      await expect(createPromise).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'maintenance_mode')
+      await Promise.all(maintenancePromises)
+      expect(await countCompaniesOwnedBy(uid)).toBe(0)
+    })
   })
 })

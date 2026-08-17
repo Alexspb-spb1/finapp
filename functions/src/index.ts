@@ -20,7 +20,7 @@
 import { onCall } from 'firebase-functions/v2/https'
 import { FieldValue, type Transaction } from 'firebase-admin/firestore'
 import { db, adminAuth } from './lib/admin'
-import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, validateRequest } from './lib/authz'
+import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, requireNotInMaintenanceMode, validateRequest } from './lib/authz'
 import { AppError, toSafeHttpsError } from './lib/errors'
 import { writeAuditEvent } from './lib/audit'
 import { runBootstrapIdempotent } from './lib/bootstrapIdempotency'
@@ -85,6 +85,15 @@ export const createCompany = onCall(async request => {
         inn: input.inn ?? null,
       },
       run: async (txn: Transaction) => {
+        // SEC-005 production preflight: Firestore Rules never apply to
+        // this Admin SDK write path, so maintenance mode needs its own
+        // explicit check — read via txn.get() (requireNotInMaintenanceMode's
+        // txn parameter), so it is part of THIS transaction's read set and
+        // closes the TOCTOU window between the check and commit (see the
+        // function's doc comment in lib/authz.ts). Must stay the first
+        // statement in run(), before any other read/write.
+        await requireNotInMaintenanceMode(db, txn)
+
         const userRef = db.collection('users').doc(auth.uid)
 
         // Guard against bootstrapping a SECOND "first company" for a uid

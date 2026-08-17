@@ -123,6 +123,28 @@ service cloud.firestore {
       return roleForCompanyIn(companyId, ['admin']);
     }
 
+    // SEC-005 production preflight — maintenance/read-only mode. Reads
+    // system/maintenance (never client-writable — falls through to the
+    // deny-by-default catch-all at the end of this file, so ONLY the
+    // Admin SDK, i.e. an operator running the SEC-005 runbook, can ever
+    // set it). `get()`/`exists()` inside a Rules function are NOT subject
+    // to the `allow read` rules of the target document — this works even
+    // though there is no explicit read rule for `system/{doc}`. When
+    // active, every client write rule below additionally requires
+    // `!isMaintenanceModeActive()` — this is what actually prevents a
+    // live user's browser (or any other client SDK caller) from writing
+    // users/companies/company_data while a SEC-005 production apply is in
+    // flight. It does NOT and cannot affect Admin SDK callers (the
+    // migration tool itself, or a Cloud Function using Admin SDK
+    // privileges) — Firestore Rules are never evaluated for Admin SDK
+    // requests at all; those need their own explicit check (see
+    // functions/src/lib/authz.ts's requireNotInMaintenanceMode(), used by
+    // the createCompany callable).
+    function isMaintenanceModeActive() {
+      return exists(/databases/$(database)/documents/system/maintenance) &&
+        get(/databases/$(database)/documents/system/maintenance).data.enabled == true;
+    }
+
     // ── users/{userId} ───────────────────────────────────────────────────
     //
     // КРИТИЧЕСКОЕ ограничение (закрывает BASE-004 CRITICAL): поля, влияющие
@@ -183,15 +205,19 @@ service cloud.firestore {
       // на авторизацию — role/companyId/companies должны отсутствовать в
       // создаваемом документе. Реальное назначение компании/роли —
       // отдельная доверенная операция (см. план, breaking change #1).
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
       allow create: if isSignedIn() && callerUid() == userId &&
         request.resource.data.id == userId &&
-        !request.resource.data.keys().hasAny(authSensitiveFields());
+        !request.resource.data.keys().hasAny(authSensitiveFields()) &&
+        !isMaintenanceModeActive();
 
       // Обновление СВОЕГО профиля — только явный allowlist полей, никогда
       // не auth-поля. Никаких self-update role/companyId/companies.
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
       allow update: if isSignedIn() && callerUid() == userId &&
         request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(selfEditableFields());
+          .hasOnly(selfEditableFields()) &&
+        !isMaintenanceModeActive();
 
       // Управление ДРУГИМИ пользователями (смена роли, добавление в
       // компанию, удаление сотрудника admin'ом) через клиентские Rules
@@ -224,17 +250,21 @@ service cloud.firestore {
       // пользователю — не расширяет доступ к ЧУЖИМ данным (новая компания
       // изначально ничья, кроме создателя). Владелец фиксируется как сам
       // вызывающий и далее НЕ может быть переопределён (см. update ниже).
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
       allow create: if isSignedIn() &&
         request.resource.data.id == companyId &&
-        request.resource.data.ownerId == callerUid();
+        request.resource.data.ownerId == callerUid() &&
+        !isMaintenanceModeActive();
 
       // Изменение — только подтверждённый admin ЭТОЙ ЖЕ компании, и только
       // разрешённые поля (ownerId и id неизменны с клиента).
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
       allow update: if isAdminOf(companyId) &&
         request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(companyEditableFields()) &&
         request.resource.data.ownerId == resource.data.ownerId &&
-        request.resource.data.id == resource.data.id;
+        request.resource.data.id == resource.data.id &&
+        !isMaintenanceModeActive();
 
       allow delete: if false;
     }
@@ -258,13 +288,17 @@ service cloud.firestore {
       // Создание — только подтверждённому участнику компании (закрывает
       // HIGH-риск BASE-004: раньше create не проверял membership вообще).
       // viewer не пишет — минимум accountant/admin.
-      allow create: if roleForCompanyIn(companyId, ['accountant', 'admin']);
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
+      allow create: if roleForCompanyIn(companyId, ['accountant', 'admin']) &&
+        !isMaintenanceModeActive();
 
-      allow update: if roleForCompanyIn(companyId, ['admin']);
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
+      allow update: if roleForCompanyIn(companyId, ['admin']) && !isMaintenanceModeActive();
       allow update: if
         roleForCompanyIn(companyId, ['accountant']) &&
         !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(adminOnlyFields());
+          .hasAny(adminOnlyFields()) &&
+        !isMaintenanceModeActive();
 
       allow delete: if false;
     }

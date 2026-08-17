@@ -41,3 +41,14 @@ functions/.secret.local
 
 # Bank/HAR captures — never commit (may contain session tokens)
 *.har
+
+# SEC-005 membership backfill — full reports/decisions contain sensitive
+# uid/companyId identifiers and must never be committed. --report-path and
+# --decisions-file are required to be absolute paths OUTSIDE this repo
+# checkout (enforced in scripts/lib/report.ts) — these patterns are
+# defense-in-depth only, in case an operator runs the tool from inside the
+# repo with a relative/local path by mistake. Does not hide any source code
+# or documentation.
+*.membership-backfill-report.json
+*.membership-backfill-decisions.json
+/migration-reports/

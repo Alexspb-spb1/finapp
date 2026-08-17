@@ -93,6 +93,48 @@ export function requireRole(membership: Membership, allowed: readonly Role[]): v
 }
 
 /**
+ * requireNotInMaintenanceMode — SEC-005 production preflight. Reads
+ * `system/maintenance` (never client-writable — only an operator running
+ * the SEC-005 runbook via the Admin SDK can set it) and refuses with
+ * `maintenance_mode` when `enabled === true`.
+ *
+ * This exists specifically because Firestore Rules are NEVER evaluated
+ * for Admin SDK callers — the `isMaintenanceModeActive()` Rules helper
+ * that blocks CLIENT writes to users/companies/company_data has zero
+ * effect on this Cloud Function, which writes via Admin SDK privileges.
+ * Fail-closed: a read failure is treated the same as `enabled === true` —
+ * never silently treated as "maintenance is off".
+ *
+ * **Must be called with the mutating call's own `Transaction`** (the
+ * optional `txn` parameter — same pattern as `requireActiveMember()` and
+ * `assertNotLastAdmin()` above), and awaited before any `txn.set()`/
+ * `txn.update()`/`txn.delete()` in that same transaction. Reading via
+ * `txn.get()` makes this document part of the transaction's read set, so
+ * Firestore's optimistic-concurrency control forces the WHOLE transaction
+ * to retry — re-running this check against the fresh value — if
+ * `system/maintenance` is written by another operation after this read but
+ * before this transaction commits. A plain pre-transaction `db...get()`
+ * (the original SEC-005 implementation) could not close that window: an
+ * operator enabling maintenance mode a moment after such a check passed,
+ * but before the transaction it gated had committed, would not stop that
+ * transaction from creating a company. Called without `txn`, this performs
+ * a plain (non-transactional) read instead — useful for callers with no
+ * transaction of their own, but offers no such guarantee.
+ */
+export async function requireNotInMaintenanceMode(db: Firestore, txn?: Transaction): Promise<void> {
+  const ref = db.collection('system').doc('maintenance')
+  let snap
+  try {
+    snap = txn ? await txn.get(ref) : await ref.get()
+  } catch {
+    throw new AppError('maintenance_mode')
+  }
+  if (snap.exists && snap.data()?.enabled === true) {
+    throw new AppError('maintenance_mode')
+  }
+}
+
+/**
  * validateRequest — the only sanctioned way to turn `request.data: unknown`
  * into a typed value. Schemas are strict (extra fields fail); on failure,
  * throws a generic `invalid_request` AppError with NO details — never the

@@ -67,6 +67,8 @@ jobs:
 
       - run: npm run test:rules
 
+      - run: npm run test:migration
+
       - run: npm run build
 
   functions:

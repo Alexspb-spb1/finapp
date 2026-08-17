@@ -904,3 +904,67 @@ describe('BASE-004A-FIX-02: scoped member queries for additional companies', () 
     await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), { ownerId: MULTI_COMPANY_UID }))
   })
 })
+
+// ── SEC-005 production preflight — maintenance mode blocks client writes ────
+describe('SEC-005 production preflight: maintenance mode blocks client writes', () => {
+  async function setMaintenanceMode(enabled: boolean): Promise<void> {
+    await testEnv.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'system', 'maintenance'), { enabled, taskId: 'SEC-005' })
+    })
+  }
+
+  it('client cannot create a new company while maintenance mode is active', async () => {
+    await setMaintenanceMode(true)
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(setDoc(doc(db, 'companies', 'new_co_synthetic'), {
+      id: 'new_co_synthetic', ownerId: ADMIN_A,
+    }))
+  })
+
+  it('client cannot update an existing company while maintenance mode is active', async () => {
+    await setMaintenanceMode(true)
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_A), { name: 'Renamed during maintenance' }))
+  })
+
+  it('client cannot self-create a users/{uid} profile while maintenance mode is active', async () => {
+    await setMaintenanceMode(true)
+    const db = testEnv.authenticatedContext(NO_PROFILE_UID).firestore()
+    await assertFails(setDoc(doc(db, 'users', NO_PROFILE_UID), { id: NO_PROFILE_UID }))
+  })
+
+  it('client cannot self-update a users/{uid} profile field while maintenance mode is active', async () => {
+    await setMaintenanceMode(true)
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(updateDoc(doc(db, 'users', ADMIN_A), { name: 'Renamed during maintenance' }))
+  })
+
+  it('client cannot create/update company_data while maintenance mode is active', async () => {
+    await setMaintenanceMode(true)
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(updateDoc(doc(db, 'company_data', COMPANY_A), { closingDate: '2026-06-30' }))
+  })
+
+  it('reads still work while maintenance mode is active — only writes are blocked', async () => {
+    await setMaintenanceMode(true)
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertSucceeds(getDoc(doc(db, 'companies', COMPANY_A)))
+  })
+
+  it('writes work normally once maintenance mode is explicitly disabled again', async () => {
+    await setMaintenanceMode(true)
+    await setMaintenanceMode(false)
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertSucceeds(updateDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A Renamed' }))
+  })
+
+  it('writes work normally when system/maintenance does not exist at all (the default, pre-runbook state)', async () => {
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertSucceeds(updateDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A Renamed' }))
+  })
+
+  it('system/maintenance itself is never client-writable, even by an admin, even outside maintenance mode', async () => {
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(setDoc(doc(db, 'system', 'maintenance'), { enabled: false }))
+  })
+})
