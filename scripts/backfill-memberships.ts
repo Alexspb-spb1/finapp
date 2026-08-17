@@ -30,12 +30,12 @@ import { createPlannedRelations, readBackObservedState } from './lib/applyWrites
 import {
   writeReport, assertReportPathWritable, printSafeSummary, REPORT_SCHEMA_VERSION,
   type MembershipBackfillReport, type ReportCounts, type CreatedPathRecord, type WriteFailureRecord, type ProductionSafetyAudit,
-  type EmergencyReconstructionAudit, type EmergencyReconstructionRefusal,
+  type EmergencyReconstructionAudit,
 } from './lib/report.ts'
 import {
-  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, validateStrictDryRunReportContent, sha256OfFile, ProductionSafetyError,
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, sha256OfFile, ProductionSafetyError,
 } from './lib/productionSafety.ts'
-import { isStrictlyValidActiveMembership } from './lib/membershipValidation.ts'
+import { runEmergencyReconstruction } from './lib/emergencyReconstruction.ts'
 import { relationKey, type Decision, type ConfirmedRelation } from './lib/types.ts'
 import type { CliOptions } from './lib/cli.ts'
 
@@ -258,7 +258,7 @@ async function main(): Promise<number> {
           const rollbackPlanRef = verifyRollbackPlanReference(opts.rollbackReference, { sourceGitSha, sourceChecksum, decisionsChecksum: decisionsResult.checksum, targetChecksum }, expectedProjectId)
           productionSafety = {
             maintenanceMode: maintenance,
-            backupReference: { sha256: backupRef.sha256, createdAtUtc: backupRef.createdAtUtc, membersCount: backupRef.membersCount },
+            backupReference: { sha256: backupRef.sha256, createdAtUtc: backupRef.createdAtUtc, membersCount: backupRef.membersCount, membersChecksum: backupRef.membersChecksum },
             rollbackPlanReference: { sha256: rollbackPlanRef.sha256, targetChecksum: rollbackPlanRef.targetChecksum },
             ownReportSha256: null,
           }
@@ -603,30 +603,21 @@ async function runRollback(
  * delete anything (see MEMBERSHIP_BACKFILL.md, "Production rollback"), so
  * it could never undo the *creation* apply performed.
  *
- * Instead, candidates are reconstructed from a SEPARATELY VERIFIED dry-run
- * report's `plannedCreates` (`validateStrictDryRunReportContent()` — the
- * same strict structural validation `--rollback-reference` requires: real
- * schema, matching environment/project, zero unresolved items, no
- * duplicate pairs — applied to the raw bytes AFTER the
- * `--expected-plan-sha256` integrity check below has already passed).
- * Each candidate is deleted ONLY if:
- *   1. a live document exists at that exact path;
- *   2. it matches the planned uid/role/status EXACTLY;
- *   3. it passes strict canonical-schema validation
- *      (isStrictlyValidActiveMembership — real Timestamps, no extra
- *      fields, active status);
- *   4. the delete itself succeeds under the SAME `lastUpdateTime`
- *      precondition rollback-from-report uses, closing the read-then-
- *      delete race.
- * Any candidate that fails any of these is REFUSED, never guessed at —
- * this reconstruction is deliberately weaker evidence than a real apply
- * report's `createdPaths` (no create-time proof this exact backfill run
- * created the document), so it never attempts a "best effort" delete of
- * something merely plausible. If no verified dry-run report exists either,
- * the operator has no automated path at all — MEMBERSHIP_BACKFILL.md's
- * "Emergency scenario: apply-report lost" documents this as an honest
- * BLOCKED / manual-recovery case, not something this function pretends to
- * solve.
+ * This function is a thin CLI-orchestration wrapper — the actual
+ * integrity-check → structural-validation → maintenance-check →
+ * Firestore-reads/deletes sequence lives in
+ * `scripts/lib/emergencyReconstruction.ts`'s `runEmergencyReconstruction()`
+ * (final-round fix #1, third pass — extracted specifically so that ORDER
+ * is directly unit-testable with a read-counting fake Firestore, since
+ * this file cannot itself be `import`ed by a unit test without executing
+ * the whole CLI via its own module-level `main()` call below). See that
+ * module's doc comment for the full per-candidate contract (exact match
+ * required, strict schema validation, `lastUpdateTime` delete
+ * precondition, REFUSED never guessed at). If no verified dry-run report
+ * exists either, the operator has no automated path at all —
+ * MEMBERSHIP_BACKFILL.md's "Emergency scenario: apply-report lost"
+ * documents this as an honest BLOCKED / manual-recovery case, not
+ * something this function pretends to solve.
  */
 async function runRollbackFromPlan(
   db: import('firebase-admin/firestore').Firestore,
@@ -638,9 +629,8 @@ async function runRollbackFromPlan(
   reportPath: string,
   opts: CliOptions,
 ): Promise<number> {
-  function refusedReport(errorMessage: string, exitCode: number): number {
-    console.error(`Emergency reconstruction refused: ${errorMessage}`)
-    const report: MembershipBackfillReport = {
+  function baseReport(): MembershipBackfillReport {
+    return {
       schemaVersion: REPORT_SCHEMA_VERSION,
       mode: 'rollback-from-plan',
       environment,
@@ -658,110 +648,37 @@ async function runRollbackFromPlan(
       productionSafety: emptyProductionSafety(),
       emergencyReconstruction: null,
     }
+  }
+
+  // Delegated to scripts/lib/emergencyReconstruction.ts — see that
+  // module's doc comment for exactly why (the safety-critical operation
+  // order needs to be unit-testable with a read-counting fake Firestore,
+  // which this CLI file's own module-level main() call prevents).
+  const result = await runEmergencyReconstruction({
+    db, fromPlanPath, environment, projectId,
+    expectedPlanSha256: opts.expectedPlanSha256,
+    ackMaintenance: opts.ackMaintenance,
+  })
+
+  if (!result.ok) {
+    console.error(`Emergency reconstruction refused: ${result.errorMessage}`)
+    const report = baseReport()
     writeReport(reportPath, REPO_ROOT, report)
     printSafeSummary(report)
-    return exitCode
+    return result.exitCode
   }
 
-  // Same production-safety requirement as rollback-from-report — this is
-  // still a production write. --ack-emergency-reconstruction (required by
-  // parseCliArgs() for this mode) is a SEPARATE, additional acknowledgement
-  // from --ack-maintenance-readonly: the operator must explicitly accept
-  // that this is the degraded, weaker-evidence recovery path, not the
-  // normal one.
-  let productionSafety = emptyProductionSafety()
-  if (environment === 'production') {
-    try {
-      if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production emergency reconstruction.')
-      const maintenance = await assertMaintenanceModeActive(db)
-      productionSafety = { ...emptyProductionSafety(), maintenanceMode: maintenance }
-    } catch (err) {
-      if (!(err instanceof ProductionSafetyError)) throw err
-      return refusedReport(err.message, 3)
-    }
-  }
-
-  // Final-round fix #1 (second round): the integrity check runs BEFORE
-  // any JSON parsing or Firestore I/O — identical pattern to
-  // rollback-from-report's --expected-report-sha256 check above. A
-  // missing/mismatched hash means the tool has NOT yet even parsed
-  // --from-plan, let alone read/deleted anything.
-  let fromPlanRaw: string
-  try {
-    fromPlanRaw = readFileSync(fromPlanPath, 'utf8')
-  } catch {
-    return refusedReport('--from-plan could not be read.', 2)
-  }
-  const actualPlanSha256 = sha256Hex(fromPlanRaw)
-  if (actualPlanSha256 !== opts.expectedPlanSha256) {
-    return refusedReport(`--from-plan content does not match --expected-plan-sha256 (expected ${opts.expectedPlanSha256}, got ${actualPlanSha256}) — the plan may have been tampered with, corrupted, or is the wrong file.`, 3)
-  }
-
-  let strictContent
-  try {
-    strictContent = validateStrictDryRunReportContent(fromPlanRaw, projectId, environment)
-  } catch (err) {
-    if (err instanceof ProductionSafetyError) return refusedReport(`--from-plan ${err.message}`, 2)
-    throw err
-  }
-  const strict = { sha256: actualPlanSha256, plannedCreates: strictContent.plannedCreates, targetChecksum: strictContent.targetChecksum }
-
-  const removed: { companyId: string; uid: string; path: string }[] = []
-  const skippedNotFound: { companyId: string; uid: string }[] = []
-  const refused: EmergencyReconstructionRefusal[] = []
-
-  for (const candidate of strict.plannedCreates) {
-    const ref = db.collection('companies').doc(candidate.companyId).collection('members').doc(candidate.uid)
-    const snap = await ref.get()
-    if (!snap.exists) { skippedNotFound.push({ companyId: candidate.companyId, uid: candidate.uid }); continue }
-    const data = snap.data()!
-    if (data.uid !== candidate.uid || data.role !== candidate.role || data.status !== candidate.status) {
-      refused.push({ companyId: candidate.companyId, uid: candidate.uid, reason: 'live document does not exactly match the planned candidate (uid/role/status) — refusing to guess' })
-      continue
-    }
-    if (!isStrictlyValidActiveMembership(candidate.uid, data as Record<string, unknown>)) {
-      refused.push({ companyId: candidate.companyId, uid: candidate.uid, reason: 'live document does not pass strict membership schema validation' })
-      continue
-    }
-    try {
-      await ref.delete({ lastUpdateTime: snap.updateTime! })
-      removed.push({ companyId: candidate.companyId, uid: candidate.uid, path: ref.path })
-    } catch {
-      refused.push({ companyId: candidate.companyId, uid: candidate.uid, reason: 'concurrent modification detected at delete time' })
-    }
-  }
-
-  const emergencyReconstruction: EmergencyReconstructionAudit = {
-    sourceDryRunSha256: strict.sha256,
-    skippedNotFound,
-    refused,
-  }
+  const { removed, skippedNotFound, refused, sourceDryRunSha256, targetChecksum, maintenanceMode } = result.outcome
+  const emergencyReconstruction: EmergencyReconstructionAudit = { sourceDryRunSha256, skippedNotFound, refused }
+  const productionSafety: ProductionSafetyAudit = maintenanceMode === null
+    ? emptyProductionSafety()
+    : { ...emptyProductionSafety(), maintenanceMode }
 
   const report: MembershipBackfillReport = {
-    schemaVersion: REPORT_SCHEMA_VERSION,
-    mode: 'rollback-from-plan',
-    environment,
-    projectId,
-    sourceGitSha: readSourceGitSha(),
-    runId,
-    startedAt,
-    finishedAt: new Date().toISOString(),
+    ...baseReport(),
     counts: { ...emptyCounts(), conflicts: refused.length, unresolved: refused.length },
-    sourceChecksum: '',
-    decisionsChecksum: '',
-    targetChecksum: strict.targetChecksum,
-    observedChecksum: null,
-    readBackError: null,
+    targetChecksum,
     conflicts: refused.map(r => ({ companyId: r.companyId, uid: r.uid, reason: 'existing_membership_conflict' as const })),
-    orphans: [],
-    ownerAnomalies: [],
-    unknownUsers: [],
-    malformedClaims: [],
-    danglingMemberships: [],
-    plannedCreates: [],
-    createdPaths: [],
-    writeFailures: [],
-    verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
     rollbackManifest: removed,
     productionSafety,
     emergencyReconstruction,

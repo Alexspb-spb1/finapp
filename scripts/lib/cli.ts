@@ -102,9 +102,15 @@ export function parseCliArgs(args: readonly string[]): CliOptions {
       case '--backup-reference': { opts.backupReference = readFlagValue(mutableArgs, i, arg); i++; break }
       case '--rollback-reference': { opts.rollbackReference = readFlagValue(mutableArgs, i, arg); i++; break }
       case '--ack-maintenance-readonly': { opts.ackMaintenance = true; break }
-      case '--expected-report-sha256': { opts.expectedReportSha256 = readFlagValue(mutableArgs, i, arg); i++; break }
+      // Final-round fix #3 (third pass): normalized to lowercase HERE, at
+      // the single point of entry, so every downstream comparison
+      // (sha256Hex() always produces lowercase; PowerShell's
+      // Get-FileHash, which the docs point operators at, produces
+      // UPPERCASE by default) is a simple, case-sensitive `===` — no
+      // caller needs to remember to compare case-insensitively.
+      case '--expected-report-sha256': { opts.expectedReportSha256 = readFlagValue(mutableArgs, i, arg).toLowerCase(); i++; break }
       case '--ack-emergency-reconstruction': { opts.ackEmergencyReconstruction = true; break }
-      case '--expected-plan-sha256': { opts.expectedPlanSha256 = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--expected-plan-sha256': { opts.expectedPlanSha256 = readFlagValue(mutableArgs, i, arg).toLowerCase(); i++; break }
       default:
         throw new CliArgError(`Unknown argument: ${arg}`)
     }

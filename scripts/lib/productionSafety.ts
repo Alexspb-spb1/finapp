@@ -221,6 +221,16 @@ export function verifyBackupReference(
   if (!isValidIsoTimestamp(restore.verifiedAtUtc)) {
     throw new ProductionSafetyError('--backup-reference manifest.restore.verifiedAtUtc is missing or not a valid timestamp.')
   }
+  // Final-round fix #4 (third pass): a restore cannot have been verified
+  // before the backup it restores was even created, and it cannot have
+  // been verified in the future relative to right now — either would mean
+  // the timestamps are fabricated/inconsistent, not merely "unusual".
+  if (Date.parse(restore.verifiedAtUtc as string) < Date.parse(createdAtUtc)) {
+    throw new ProductionSafetyError('--backup-reference manifest.restore.verifiedAtUtc predates manifest.createdAtUtc — the restore cannot have been verified before the backup it restores was even created.')
+  }
+  if (Date.parse(restore.verifiedAtUtc as string) > Date.parse(nowIso)) {
+    throw new ProductionSafetyError('--backup-reference manifest.restore.verifiedAtUtc is in the future relative to now.')
+  }
 
   if (Date.parse(createdAtUtc) < Date.parse(maintenanceEnabledAtIso)) {
     throw new ProductionSafetyError('--backup-reference manifest.createdAtUtc predates maintenance mode being enabled — a backup taken before maintenance mode was on cannot be trusted as a consistent, write-frozen snapshot.')

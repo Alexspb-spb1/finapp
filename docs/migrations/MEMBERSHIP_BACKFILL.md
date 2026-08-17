@@ -334,7 +334,7 @@ node scripts/backfill-memberships.ts \
 
 ### Production mode-specific requirements
 
-**Corrected three times after independent review.** An earlier,
+**Corrected four times after independent review.** An earlier,
 never-committed preflight used a single blanket check
 (`backup-reference`/`rollback-reference`/`ack-maintenance` required for
 ANY non-`verify` production mode) — fixed in the first preflight-safety
@@ -343,9 +343,13 @@ integrity check on `--from-report` itself, and the "lost apply-report"
 emergency scenario had no real recovery path — both fixed
 (`--expected-report-sha256`, `rollback-from-plan`) in the final round. A
 SECOND follow-up review of that same final round found `rollback-from-plan`
-itself had no equivalent integrity check on `--from-plan` — fixed below
-(`--expected-plan-sha256`). The actual per-mode requirements, implemented
-in `scripts/backfill-memberships.ts` and `scripts/lib/productionSafety.ts`:
+itself had no equivalent integrity check on `--from-plan` — fixed
+(`--expected-plan-sha256`). A THIRD follow-up review then found that
+`rollback-from-plan`'s new integrity check was itself checked AFTER the
+maintenance-mode check (a real Firestore read) rather than before — fixed
+below by reordering. The actual per-mode requirements, implemented in
+`scripts/backfill-memberships.ts`, `scripts/lib/productionSafety.ts`, and
+`scripts/lib/emergencyReconstruction.ts`:
 
 | Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | `--expected-report-sha256` | `--expected-plan-sha256` | `--ack-emergency-reconstruction` | Maintenance mode checked live? |
 |---|---|---|---|---|---|---|---|
@@ -353,7 +357,7 @@ in `scripts/backfill-memberships.ts` and `scripts/lib/productionSafety.ts`:
 | `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified: `sourceGitSha`/`sourceChecksum`/`decisionsChecksum`/`targetChecksum` must ALL exactly match this run's own values** (`verifyRollbackPlanReference` — see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | n/a | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
 | `verify` | not required | not required | not required | n/a | n/a | n/a | no — verify only reads |
 | `rollback-from-report` | not required | not required | required | **required** — verified against `--from-report`'s actual bytes BEFORE any parsing/I/O | n/a | n/a | **yes** (`assertMaintenanceModeActive`, fail-closed) |
-| `rollback-from-plan` | not required | not required | required | n/a | **required** — verified against `--from-plan`'s actual bytes BEFORE any parsing/I/O | **required** — explicit acknowledgement this is the degraded, last-resort path | **yes** (`assertMaintenanceModeActive`, fail-closed) |
+| `rollback-from-plan` | not required | not required | required | n/a | **required, checked FIRST** — verified against `--from-plan`'s actual bytes, and the plan structurally validated, BEFORE `assertMaintenanceModeActive()` or any candidate read/delete (final-round fix #1, third pass — see `runEmergencyReconstruction()`, `scripts/lib/emergencyReconstruction.ts`) | **required** — explicit acknowledgement this is the degraded, last-resort path | **yes, checked AFTER the hash/structure checks above** (`assertMaintenanceModeActive`, fail-closed) |
 
 Any production-safety check failing for `apply`/`rollback-from-report`/
 `rollback-from-plan` refuses BEFORE the first write/delete (exit 3 for a
@@ -616,18 +620,36 @@ node scripts/backfill-memberships.ts \
 Confirm `counts.unresolved === 0` in this report — if not, the decisions
 file is still incomplete; go back to 5a's findings.
 
-**5c. Save this report's SHA-256** — needed twice later: once implicitly
-(as the file `--rollback-reference` points to in Step 6), and once
-explicitly as `--expected-plan-sha256` if an emergency `rollback-from-plan`
-is ever needed (see "Emergency scenario: apply-report lost" below):
+**5c. Save this report's SHA-256 — SEPARATELY from the report file itself,
+BEFORE `apply` runs.** Needed once explicitly, as `--expected-plan-sha256`,
+IF an emergency `rollback-from-plan` is ever needed later (see "Emergency
+scenario: apply-report lost" below):
 
 ```bash
 sha256sum /absolute/path/outside/repo/sec005-prod-resolved-dry-run.json
 # or: Get-FileHash ... -Algorithm SHA256   (PowerShell)
 ```
 
-Record this value in the incident/runbook log alongside the file path —
-this is the value this document calls `<resolved-dry-run-sha256>` below.
+**Record this value in a location INDEPENDENT of the plan file itself**
+— an incident/runbook log, a ticket, a password manager note, anything
+that is not simply "another copy sitting next to the plan file on the
+same disk". **Corrected after independent review (final round, third
+pass, item 2)**: an earlier version of this step allowed recomputing this
+hash FROM the surviving plan file itself, after an incident, if the
+originally-recorded value was lost. That defeats the entire purpose of
+`--expected-plan-sha256` — a hash computed from the very file it is
+supposed to validate can never detect that the file was tampered with; it
+always "matches itself" by construction, tampered or not. The hash's
+value as an integrity check comes ENTIRELY from having been recorded
+independently, at a moment (right now, in Step 5c, before any incident)
+when the file's own integrity was not in question. If this
+independently-recorded value is ever lost or cannot be produced from
+anywhere other than the plan file being validated, the correct outcome is
+`BLOCKED — требуется действие владельца` (see "If the independently-saved
+hash is lost" in "Emergency scenario: apply-report lost" below) — never
+"just recompute it from the file you're trying to verify".
+
+This is the value this document calls `<resolved-dry-run-sha256>` below.
 
 ### Step 6 — apply
 
@@ -752,7 +774,12 @@ more than "the file parses and has the right project ID":
   `manifest.firestore.membersChecksum` (final-round fix #3, second round —
   previously only checked for presence, never actually compared to the
   source checksum); `manifest.restore.verifiedAtUtc` must be a valid
-  timestamp.
+  timestamp AND satisfy `manifest.createdAtUtc <= restore.verifiedAtUtc
+  <= nowIso` (final-round fix #4, third pass) — a restore cannot have
+  been verified before the backup it restores was even created, and
+  cannot have been verified in the future relative to the moment `apply`
+  actually runs; either would mean the timestamps are fabricated or
+  internally inconsistent, not merely unusual.
 - **`manifest.createdAtUtc` must be AT OR AFTER the live, currently-active
   `system/maintenance.enabledAt`** (read via `assertMaintenanceModeActive()`,
   checked BEFORE this function is even called — see "Production
@@ -770,6 +797,16 @@ This is a real content check, not a presence check — passing
 `--backup-reference` pointing at an unrelated, failed, un-restored,
 `members`-less, stale, or pre-maintenance manifest refuses `apply` (exit
 3) before any Firestore write, the same way a missing flag would.
+
+**Recorded in the report's safe audit section (final-round fix #5, third
+pass).** On success, `verifyBackupReference()`'s returned `membersChecksum`
+(the SOURCE checksum — the SAME value `firestore.membersChecksum` and
+`restore.membersChecksum` were just confirmed to exactly equal) is stored
+in `report.productionSafety.backupReference.membersChecksum`, alongside
+the existing `sha256`/`createdAtUtc`/`membersCount` fields — included in
+`printSafeSummary()`'s stdout output like the rest of `productionSafety`.
+Its presence there is itself proof the source/restore checksum match
+succeeded, not merely an echo of an unverified manifest field.
 
 ## Restore verification — members collection group
 
@@ -955,9 +992,18 @@ node scripts/backfill-memberships.ts \
 - **`--expected-plan-sha256` is REQUIRED** (final-round fix #1, second
   round) — `sha256Hex()` of `--from-plan`'s actual raw bytes is computed
   and compared BEFORE the file is even parsed as JSON, let alone before
-  any Firestore read/delete. If Step 5c's SHA-256 wasn't saved at the
-  time, recompute it the same way (`sha256sum`/`Get-FileHash`, as in Step
-  5c) — never guess or omit it.
+  any Firestore read/delete (final-round fix #1, third pass: this
+  ordering is now enforced BEFORE `assertMaintenanceModeActive()` too —
+  see `scripts/lib/emergencyReconstruction.ts` — so a wrong or missing
+  hash produces ZERO Firestore reads of ANY kind, not just zero deletes).
+  **This value MUST be the one saved independently in Step 5c — never
+  recomputed from the surviving `--from-plan` file itself** (corrected
+  after independent review, final round, third pass, item 2: recomputing
+  the expected hash from the very file it is meant to validate can never
+  catch tampering, since a file always "matches itself"). If the
+  independently-saved Step 5c value is lost, see "If the
+  independently-saved hash is lost" below — never substitute a
+  freshly-recomputed value.
 - `--from-plan` is then validated by the SAME strict structural checks
   `--rollback-reference` uses — real schema, matching environment/project,
   all checksums well-formed, `counts.unresolved === 0`, no duplicate
@@ -988,11 +1034,39 @@ node scripts/backfill-memberships.ts \
   `--ack-emergency-reconstruction` acknowledgement and is documented as a
   last resort, not a substitute for `rollback-from-report`.
 
+### If the independently-saved hash is lost: BLOCKED — manual recovery
+
+**Added after independent review (final round, third pass, item 2).** If
+the surviving dry-run report (Step 5b's file) still exists, but the
+independently-recorded SHA-256 from Step 5c is lost (never written down,
+the incident/runbook log itself was affected, etc.), `rollback-from-plan`
+is NOT usable — even though the plan file itself is sitting right there.
+**Do not recompute the hash from the surviving file and pass it as
+`--expected-plan-sha256`.** That would make the integrity check
+tautological: a hash computed from the exact file being validated always
+"matches" that file, whether or not the file was tampered with, corrupted,
+or silently substituted at some point since Step 5c. The check's entire
+value comes from the expected value having been recorded independently,
+at a moment before any incident — recomputing it now provides zero
+additional assurance over just trusting the file blindly, which is
+exactly the "accept the risk" outcome this whole mechanism exists to
+prevent.
+
+The honest status in this situation is `BLOCKED — требуется действие
+владельца`, same as the next case below:
+
+1. The operator does NOT run `rollback-from-plan` with a freshly-computed
+   hash.
+2. Proceed to "If no dry-run report survives either" below — from a
+   security standpoint, a surviving plan file with no independently
+   verifiable hash provides no more assurance than no plan file at all.
+
 ### If no dry-run report survives either: BLOCKED — manual recovery
 
-If neither the apply report NOR a matching dry-run report survives, this
-tool has **no automated recovery path**, and none should be improvised.
-The honest status is `BLOCKED — требуется действие владельца`:
+If neither the apply report NOR a matching dry-run report (with its
+independently-saved hash) survives, this tool has **no automated recovery
+path**, and none should be improvised. The honest status is `BLOCKED —
+требуется действие владельца`:
 
 1. The operator manually reviews `companies/*/members/*` in the Firebase
    Console (or via an ad-hoc, reviewed read-only script) against whatever
@@ -1073,6 +1147,20 @@ Firestore writes can originate:
   `scripts/ops/set-maintenance-mode.ts` ever disables it automatically, to
   avoid a window between verification and re-enabling client writes in
   which a client could write against an unverified state.
+  **`rollback-from-plan` is the one exception to "maintenance mode checked
+  first" — corrected after independent review (final round, third pass,
+  item 1)**: an earlier version checked maintenance mode BEFORE verifying
+  `--expected-plan-sha256`/validating `--from-plan`'s structure, meaning a
+  tampered or wrong `--from-plan` file could still trigger one real
+  Firestore read (the maintenance check) before being refused.
+  `runEmergencyReconstruction()` (`scripts/lib/emergencyReconstruction.ts`)
+  now runs the hash check and structural validation FIRST — pure,
+  file-local work with zero Firestore I/O — and only calls
+  `assertMaintenanceModeActive()` afterward, if both passed. Proven
+  directly by a unit test using a Firestore stub that counts every
+  `.get()`/`.delete()` call: a wrong `--expected-plan-sha256`, even in an
+  otherwise fully valid production-shaped flow, produces exactly zero of
+  either (`scripts/lib/emergencyReconstruction.test.ts`).
 
 ### `scripts/ops/set-maintenance-mode.ts` — the real operator script (item 8)
 
@@ -1749,6 +1837,64 @@ Full technical writeup: `docs/remediation/reports/SEC-005.md`, section
    now actually matches what the CLI requires, with a fallback
    `sha256sum`/`Get-FileHash` recipe documented for when the printed line
    wasn't captured. See "Emulator walkthrough" above.
+
+**Production was not read or modified at any point in this round** — all
+verification is against the Firestore Emulator and unit-level fake
+Firestore stubs.
+
+## Independent audit fixes — production preflight, final round, third pass
+
+A THIRD follow-up independent review found 5 more categories of blocking
+issues in the second pass above. All 5 are fixed here, in code and
+documentation, in a single commit `fix(sec-005): close third pass of
+final production preflight review`. Full technical writeup:
+`docs/remediation/reports/SEC-005.md`, section "Исправления SEC-005 по
+итогам третьего прохода финального независимого ревью". Summary:
+
+1. **`rollback-from-plan`'s operation order corrected**: the
+   `--expected-plan-sha256` integrity check and structural validation now
+   run BEFORE `assertMaintenanceModeActive()` (a real Firestore read) or
+   any candidate read/delete — previously the maintenance check ran
+   first, meaning a tampered/wrong `--from-plan` in a production-shaped
+   flow could still trigger one real Firestore read before being refused.
+   Extracted into a new module, `scripts/lib/emergencyReconstruction.ts`
+   (`runEmergencyReconstruction()`), specifically so this order is
+   directly unit-testable with a read-counting fake Firestore
+   (`scripts/lib/emergencyReconstruction.test.ts`) — a wrong hash, even
+   with a fully valid, realistic dry-run report, now produces exactly
+   zero `.get()`/`.delete()` calls. See "Maintenance/read-only mode"
+   above.
+2. **Removed the "recompute the hash from the surviving plan" runbook
+   advice.** Recomputing `--expected-plan-sha256` from the very file it
+   is meant to validate can never detect tampering (a file always
+   "matches itself"). Step 5c now says explicitly: save the hash
+   SEPARATELY from the plan file, BEFORE `apply` runs; if that
+   independently-saved value is ever lost, the documented outcome is
+   `BLOCKED — требуется действие владельца`, same as losing the plan file
+   itself — never a freshly-recomputed substitute. See "Future production
+   execution", Step 5c, and "Emergency scenario: apply-report lost", "If
+   the independently-saved hash is lost", above.
+3. **`--expected-report-sha256`/`--expected-plan-sha256` are now
+   case-normalized to lowercase at CLI parse time** — PowerShell's
+   `Get-FileHash -Algorithm SHA256` (which the docs point operators at)
+   prints UPPERCASE hex by default, while `sha256Hex()` always produces
+   lowercase; without normalization, a correctly-copied UPPERCASE value
+   would have been rejected as a "mismatch" even though the underlying
+   bytes matched. `SHA256_HEX_PATTERN`'s case-insensitive format check was
+   already correct; the actual `===` comparison against the computed hash
+   was not. Covered by new tests using uppercase and mixed-case input.
+4. **Backup manifest now requires `createdAtUtc <= restore.verifiedAtUtc
+   <= nowIso`** — a restore verified before its own backup was created,
+   or verified in the future relative to when `apply` runs, is refused.
+   See "Backup reference verification" above.
+5. **`ProductionSafetyAudit.backupReference` now includes
+   `membersChecksum`** — populated only after `verifyBackupReference()`
+   has already confirmed `firestore.membersChecksum` and
+   `restore.membersChecksum` exactly match, so its presence in the
+   report's safe audit section is itself proof that comparison succeeded.
+   Covered by a new `report.test.ts` suite (round-trip through
+   `writeReport()`, and inclusion in `printSafeSummary()`'s stdout
+   output).
 
 **Production was not read or modified at any point in this round** — all
 verification is against the Firestore Emulator and unit-level fake

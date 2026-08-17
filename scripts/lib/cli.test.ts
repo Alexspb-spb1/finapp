@@ -82,6 +82,33 @@ describe('parseCliArgs — required flags', () => {
     expect(opts.ackEmergencyReconstruction).toBe(true)
     expect(opts.expectedPlanSha256).toBe(HEX64)
   })
+
+  // ── Final-round fix #3 (third pass): case-insensitive hash normalization ──
+  // PowerShell's `Get-FileHash -Algorithm SHA256` (which the docs point
+  // operators at) prints UPPERCASE hex by default, while sha256Hex()
+  // (Node crypto) always produces lowercase — both must be accepted and
+  // compared as equal.
+  const HEX64_UPPER = HEX64.toUpperCase()
+  const HEX64_MIXED = HEX64.split('').map((c, i) => (i % 2 === 0 ? c.toUpperCase() : c)).join('')
+
+  it('normalizes an UPPERCASE --expected-report-sha256 (PowerShell Get-FileHash output) to lowercase', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'rollback-from-report', '--from-report', '/tmp/a.json', '--expected-report-sha256', HEX64_UPPER])
+    expect(opts.expectedReportSha256).toBe(HEX64)
+  })
+
+  it('normalizes a MIXED-case --expected-report-sha256 to lowercase', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'rollback-from-report', '--from-report', '/tmp/a.json', '--expected-report-sha256', HEX64_MIXED])
+    expect(opts.expectedReportSha256).toBe(HEX64_MIXED.toLowerCase())
+  })
+
+  it('accepts an UPPERCASE --expected-report-sha256 as valid format (rejects only non-hex content)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-report', '--from-report', '/tmp/a.json', '--expected-report-sha256', HEX64_UPPER])).not.toThrow()
+  })
+
+  it('normalizes an UPPERCASE --expected-plan-sha256 (PowerShell Get-FileHash output) to lowercase', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction', '--expected-plan-sha256', HEX64_UPPER])
+    expect(opts.expectedPlanSha256).toBe(HEX64)
+  })
 })
 
 describe('parseCliArgs — passthrough flags', () => {

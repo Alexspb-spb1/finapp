@@ -80,8 +80,13 @@ export interface ProductionSafetyAudit {
   maintenanceMode: { verifiedAt: string; enabledAt: string | null; enabledBy: string | null; taskId: string | null } | null
   /** `membersCount` — independent review fix #1: proves the verified backup
    * actually captured the `members` collection group, not merely that a
-   * manifest file existed. */
-  backupReference: { sha256: string; createdAtUtc: string; membersCount: number } | null
+   * manifest file existed. `membersChecksum` — final-round fix #5 (third
+   * pass): the SOURCE (production export) members checksum, recorded ONLY
+   * after `verifyBackupReference()` has already confirmed it exactly
+   * equals `restore.membersChecksum` — so its presence here is itself
+   * proof the source/restore checksums matched, not just an echo of an
+   * unverified manifest field. */
+  backupReference: { sha256: string; createdAtUtc: string; membersCount: number; membersChecksum: string } | null
   /** PRE-apply rollback plan reference — a dry-run report whose targetChecksum
    * was cross-checked against this run's own computed target BEFORE any write. */
   rollbackPlanReference: { sha256: string; targetChecksum: string } | null

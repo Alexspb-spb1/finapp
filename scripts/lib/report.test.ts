@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, readdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { assertReportPathWritable, writeReport, REPORT_SCHEMA_VERSION, type MembershipBackfillReport } from './report.ts'
+import { assertReportPathWritable, writeReport, printSafeSummary, REPORT_SCHEMA_VERSION, type MembershipBackfillReport } from './report.ts'
 import { UnsafePathError } from './pathSafety.ts'
 
 const REPO_ROOT = resolve(new URL('../..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
@@ -80,5 +80,42 @@ describe('writeReport — atomic replacement', () => {
     const parsed = JSON.parse(readFileSync(reportPath, 'utf8')) as MembershipBackfillReport
     expect(parsed.runId).toBe('run-2')
     expect(readdirSync(dir)).toEqual(['report.json'])
+  })
+})
+
+// ── Final-round fix #5 (third pass): productionSafety.backupReference.membersChecksum ──
+describe('productionSafety.backupReference.membersChecksum', () => {
+  const HEX64 = 'a'.repeat(64)
+
+  it('round-trips through writeReport/readback unchanged', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sec005-report-members-checksum-'))
+    const reportPath = join(dir, 'report.json')
+    const report = minimalReport({
+      productionSafety: {
+        maintenanceMode: null,
+        backupReference: { sha256: 'b'.repeat(64), createdAtUtc: '2026-01-01T00:00:00.000Z', membersCount: 3, membersChecksum: HEX64 },
+        rollbackPlanReference: null,
+        ownReportSha256: null,
+      },
+    })
+    writeReport(reportPath, REPO_ROOT, report)
+    const parsed = JSON.parse(readFileSync(reportPath, 'utf8')) as MembershipBackfillReport
+    expect(parsed.productionSafety.backupReference?.membersChecksum).toBe(HEX64)
+  })
+
+  it('is included in the safe stdout summary (printSafeSummary) alongside the rest of productionSafety', () => {
+    const report = minimalReport({
+      productionSafety: {
+        maintenanceMode: null,
+        backupReference: { sha256: 'b'.repeat(64), createdAtUtc: '2026-01-01T00:00:00.000Z', membersCount: 3, membersChecksum: HEX64 },
+        rollbackPlanReference: null,
+        ownReportSha256: null,
+      },
+    })
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    printSafeSummary(report)
+    const printed = JSON.parse(logSpy.mock.calls[0]![0] as string) as { productionSafety: MembershipBackfillReport['productionSafety'] }
+    expect(printed.productionSafety.backupReference?.membersChecksum).toBe(HEX64)
+    logSpy.mockRestore()
   })
 })

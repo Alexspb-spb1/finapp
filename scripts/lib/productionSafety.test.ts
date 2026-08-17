@@ -214,6 +214,27 @@ describe('verifyBackupReference', () => {
     expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).not.toThrow()
   })
 
+  // ── Final-round fix #4 (third pass): createdAtUtc <= restore.verifiedAtUtc <= nowIso ──
+  it('rejects restore.verifiedAtUtc BEFORE createdAtUtc — cannot verify a restore of a backup that did not exist yet', () => {
+    const path = tempFile('manifest.json', { ...validManifest, restore: { ...validManifest.restore, verifiedAtUtc: '2025-12-31T00:00:00.000Z' } })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(/verifiedAtUtc/)
+  })
+
+  it('rejects restore.verifiedAtUtc in the future relative to now', () => {
+    const path = tempFile('manifest.json', { ...validManifest, restore: { ...validManifest.restore, verifiedAtUtc: '2026-06-01T00:00:00.000Z' } })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).toThrow(/future/i)
+  })
+
+  it('accepts restore.verifiedAtUtc exactly equal to createdAtUtc (verified the instant it was created)', () => {
+    const path = tempFile('manifest.json', { ...validManifest, restore: { ...validManifest.restore, verifiedAtUtc: validManifest.createdAtUtc } })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).not.toThrow()
+  })
+
+  it('accepts restore.verifiedAtUtc exactly equal to nowIso (verified at the exact moment apply runs)', () => {
+    const path = tempFile('manifest.json', { ...validManifest, restore: { ...validManifest.restore, verifiedAtUtc: FRESH_NOW } })
+    expect(() => verifyBackupReference(path, PROJECT_ID, MAINTENANCE_ENABLED_AT, FRESH_NOW)).not.toThrow()
+  })
+
   // ── Final-round fix #1 (backup must postdate maintenance mode enable) ──
   it('rejects a backup created BEFORE maintenance mode was enabled', () => {
     const path = tempFile('manifest.json', { ...validManifest, createdAtUtc: '2025-12-31T23:00:00.000Z' })
