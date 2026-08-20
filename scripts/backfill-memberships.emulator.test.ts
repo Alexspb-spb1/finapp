@@ -1005,23 +1005,31 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
   })
 
   // ── SEC-005 staging authorization (EXTERNAL_ACTION_APPROVED: SEC-005 /
-  // ENVIRONMENT: staging) — production remains unconditionally refused. ──
+  // ENVIRONMENT: staging) + production dry-run authorization
+  // (PRODUCTION_PREFLIGHT_APPROVED: SEC-005 — "deploy maintenance
+  // protection, create+verify backup, read-only dry-run"; "Backfill/apply
+  // пока запрещён"). ─────────────────────────────────────────────────────
   //
   // NOTE on scope: these tests prove the CLI's CONTROL FLOW, not a live
-  // staging connection — per the task's own "emulator only; no
-  // staging/production access" constraint, nothing here ever attempts a
-  // real network call to a real GCP project. `--environment production` is
-  // refused by assertCycleExecutionAllowed() BEFORE initFirestore() is
-  // ever called, so that direction is safe to prove fully end-to-end via
-  // the real CLI binary with zero risk of any real I/O. The "staging is
-  // allowed past the gate" direction is proven directly and exhaustively
-  // at the unit level instead (`scripts/lib/firebaseAdmin.test.ts`,
+  // staging/production connection — per the task's own "emulator only; no
+  // staging/production access in the automated test suite" constraint,
+  // nothing here ever attempts a real network call to a real GCP project.
+  // `--environment production` with a non-dry-run mode is refused by
+  // assertCycleExecutionAllowed() BEFORE initFirestore() is ever called,
+  // so THAT direction is safe to prove fully end-to-end via the real CLI
+  // binary with zero risk of any real I/O. Two directions are deliberately
+  // NOT proven via the real CLI binary here, because doing so would let
+  // the process proceed toward a real (or credential-failing) Firestore
+  // connection attempt, which is out of scope for an automated test run:
+  // "staging is allowed past the gate" (any mode), and, as of the
+  // production dry-run grant, "production dry-run is allowed past the
+  // gate" — both are proven directly and exhaustively at the unit level
+  // instead (`scripts/lib/firebaseAdmin.test.ts`,
   // `assertCycleExecutionAllowed`) — the exact function this gate is
-  // implemented with — since proving it via the real CLI binary would
-  // require letting the process proceed to a real (or credential-failing)
-  // Firestore connection attempt for `finapp-staging`, which is out of
-  // scope for an automated test run.
-  it('production is refused (exit 4) even WITH every production-approval flag supplied — unconditional, no bypass', () => {
+  // implemented with. The real, authorized production dry-run itself is
+  // run manually, once, outside this automated suite — see
+  // `docs/remediation/reports/SEC-005.md` for its anonymized result.
+  it('production apply is refused (exit 4) even WITH every production-approval flag supplied — unconditional, no bypass', () => {
     const { FIRESTORE_EMULATOR_HOST: _emulatorHost, GCLOUD_PROJECT: _gcloudProject, GOOGLE_CLOUD_PROJECT: _googleCloudProject, ...envWithoutEmulator } = process.env
 
     // --backup-reference/--rollback-reference are now real filesystem
@@ -1029,11 +1037,11 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     // IDs) — path-safety validation (assertPathOutsideRepo) runs on them
     // BEFORE assertCycleExecutionAllowed(), so they must be absolute paths
     // outside the repo even though this test never expects them to be
-    // read (production is refused before that point regardless).
+    // read (production apply is refused before that point regardless).
     const result = runCliWithEnv([
       '--environment', 'production', '--project', 'finapp-prod-10a83', '--confirm-project', 'finapp-prod-10a83',
       '--backup-reference', reportPath(), '--rollback-reference', reportPath(), '--ack-maintenance-readonly',
-      '--report-path', reportPath(), '--mode', 'dry-run',
+      '--report-path', reportPath(), '--apply',
     ], envWithoutEmulator)
 
     expect(result.code).toBe(4)
@@ -1052,4 +1060,20 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
 
     expect(result.code).toBe(4)
   })
+
+  it.each(['rollback-from-report', 'rollback-from-plan'] as const)(
+    'production %s is refused (exit 4) — apply/backfill remains explicitly forbidden, only read-only dry-run is authorized',
+    mode => {
+      const { FIRESTORE_EMULATOR_HOST: _emulatorHost, GCLOUD_PROJECT: _gcloudProject, GOOGLE_CLOUD_PROJECT: _googleCloudProject, ...envWithoutEmulator } = process.env
+
+      const result = runCliWithEnv([
+        '--environment', 'production', '--project', 'finapp-prod-10a83', '--confirm-project', 'finapp-prod-10a83',
+        '--report-path', reportPath(), '--mode', mode,
+        ...(mode === 'rollback-from-report' ? ['--from-report', reportPath(), '--expected-report-sha256', '0'.repeat(64)] : []),
+        ...(mode === 'rollback-from-plan' ? ['--from-plan', reportPath(), '--expected-plan-sha256', '0'.repeat(64), '--ack-emergency-reconstruction'] : []),
+      ], envWithoutEmulator)
+
+      expect(result.code).toBe(4)
+    },
+  )
 })

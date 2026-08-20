@@ -152,11 +152,15 @@ async function main(): Promise<number> {
   // SEC-005: staging execution is explicitly authorized this cycle
   // (EXTERNAL_ACTION_APPROVED: SEC-005 / ENVIRONMENT: staging, granted by
   // the repository owner) — emulator and staging both proceed past this
-  // gate. Production remains UNCONDITIONALLY refused: assertCycleExecutionAllowed()
-  // never lets 'production' through, regardless of the flags checked just
-  // above — no PRODUCTION_ACTION_APPROVED grant has been given this cycle.
+  // gate for any mode. Production is authorized ONLY for --mode dry-run
+  // (PRODUCTION_PREFLIGHT_APPROVED: SEC-005 — "deploy maintenance
+  // protection, create+verify backup, read-only dry-run"; "Backfill/apply
+  // пока запрещён") — assertCycleExecutionAllowed() refuses every other
+  // production mode regardless of the flags checked just above; no
+  // broader PRODUCTION_ACTION_APPROVED grant for an actual backfill has
+  // been given this cycle.
   try {
-    assertCycleExecutionAllowed(environment)
+    assertCycleExecutionAllowed(environment, opts.mode)
   } catch (err) {
     if (err instanceof CycleExecutionError) { console.error(`Refusing to run against --environment ${environment}: ${err.message}`); return 4 }
     throw err
