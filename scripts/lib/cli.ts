@@ -71,49 +71,79 @@ export function parseCliArgs(args: readonly string[]): CliOptions {
   }
 
   let environmentSet = false
+  let modeExplicit = false
+  let applyFlagUsed = false
   const mutableArgs = [...args]
+
+  // Independent audit fixes, 4th round, item 3.7: EVERY flag — value-bearing
+  // or boolean — may appear at most once. There is no "last argument wins"
+  // anywhere in this parser; a repeated flag is always an ambiguous command
+  // and is refused outright, never silently resolved by taking the final
+  // occurrence.
+  const seenFlags = new Set<string>()
+  function markSeenOnce(flag: string): void {
+    if (seenFlags.has(flag)) {
+      throw new CliArgError(`${flag} was specified more than once — ambiguous, refusing (no "last argument wins").`)
+    }
+    seenFlags.add(flag)
+  }
 
   for (let i = 0; i < mutableArgs.length; i++) {
     const arg = mutableArgs[i]!
     switch (arg) {
       case '--mode': {
+        markSeenOnce(arg)
         const value = readFlagValue(mutableArgs, i, arg); i++
         if (!KNOWN_MODES.includes(value as ReportMode)) throw new CliArgError(`Unknown --mode: ${value}`)
         opts.mode = value as ReportMode
+        modeExplicit = true
         break
       }
       case '--apply': {
+        markSeenOnce(arg)
         opts.mode = 'apply'
+        applyFlagUsed = true
         break
       }
       case '--environment': {
+        markSeenOnce(arg)
         const value = readFlagValue(mutableArgs, i, arg); i++
         if (!KNOWN_ENVIRONMENTS.includes(value as Environment)) throw new CliArgError(`Unknown --environment: ${value}`)
         opts.environment = value as Environment
         environmentSet = true
         break
       }
-      case '--project': { opts.project = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--confirm-project': { opts.confirmProject = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--decisions-file': { opts.decisionsFile = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--report-path': { opts.reportPath = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--from-report': { opts.fromReport = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--from-plan': { opts.fromPlan = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--backup-reference': { opts.backupReference = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--rollback-reference': { opts.rollbackReference = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--ack-maintenance-readonly': { opts.ackMaintenance = true; break }
+      case '--project': { markSeenOnce(arg); opts.project = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--confirm-project': { markSeenOnce(arg); opts.confirmProject = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--decisions-file': { markSeenOnce(arg); opts.decisionsFile = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--report-path': { markSeenOnce(arg); opts.reportPath = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--from-report': { markSeenOnce(arg); opts.fromReport = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--from-plan': { markSeenOnce(arg); opts.fromPlan = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--backup-reference': { markSeenOnce(arg); opts.backupReference = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--rollback-reference': { markSeenOnce(arg); opts.rollbackReference = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--ack-maintenance-readonly': { markSeenOnce(arg); opts.ackMaintenance = true; break }
       // Final-round fix #3 (third pass): normalized to lowercase HERE, at
       // the single point of entry, so every downstream comparison
       // (sha256Hex() always produces lowercase; PowerShell's
       // Get-FileHash, which the docs point operators at, produces
       // UPPERCASE by default) is a simple, case-sensitive `===` — no
       // caller needs to remember to compare case-insensitively.
-      case '--expected-report-sha256': { opts.expectedReportSha256 = readFlagValue(mutableArgs, i, arg).toLowerCase(); i++; break }
-      case '--ack-emergency-reconstruction': { opts.ackEmergencyReconstruction = true; break }
-      case '--expected-plan-sha256': { opts.expectedPlanSha256 = readFlagValue(mutableArgs, i, arg).toLowerCase(); i++; break }
+      case '--expected-report-sha256': { markSeenOnce(arg); opts.expectedReportSha256 = readFlagValue(mutableArgs, i, arg).toLowerCase(); i++; break }
+      case '--ack-emergency-reconstruction': { markSeenOnce(arg); opts.ackEmergencyReconstruction = true; break }
+      case '--expected-plan-sha256': { markSeenOnce(arg); opts.expectedPlanSha256 = readFlagValue(mutableArgs, i, arg).toLowerCase(); i++; break }
       default:
         throw new CliArgError(`Unknown argument: ${arg}`)
     }
+  }
+
+  // Independent audit fixes, 4th round, item 3.7: `--apply` and an explicit
+  // `--mode` are two different ways of expressing the SAME setting — using
+  // both is never a legitimate combination (even `--apply --mode apply`,
+  // which happens to agree, is refused: there is no reason to specify the
+  // same thing twice, and allowing "agreeing" duplicates while rejecting
+  // "disagreeing" ones would itself be an inconsistent, surprising rule).
+  if (applyFlagUsed && modeExplicit) {
+    throw new CliArgError('--apply and --mode must not both be specified — ambiguous (use exactly one to select the mode).')
   }
 
   if (!environmentSet) throw new CliArgError('--environment is required (emulator|staging|production) — there is no default.')

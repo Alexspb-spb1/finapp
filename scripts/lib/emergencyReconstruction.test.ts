@@ -89,6 +89,17 @@ function makeCountingDb(opts: {
   return { db: db as unknown as Firestore, getCount: () => getCount, deleteCount: () => deleteCount }
 }
 
+function fullCounts(overrides: Record<string, number> = {}): Record<string, number> {
+  return {
+    usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
+    confirmedRelations: 0, plannedCreates: 1, created: 0, skipped: 0, conflicts: 0,
+    missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
+    unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0,
+    ownerIdAnomalies: 0, staleDecisions: 0, unusedDecisions: 0, unresolved: 0,
+    ...overrides,
+  }
+}
+
 const validDryRun = {
   schemaVersion: REPORT_SCHEMA_VERSION,
   mode: 'dry-run',
@@ -98,7 +109,7 @@ const validDryRun = {
   sourceChecksum: HEX64_A,
   decisionsChecksum: HEX64_B,
   targetChecksum: HEX64_C,
-  counts: { unresolved: 0 },
+  counts: fullCounts(),
   plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
 }
 
