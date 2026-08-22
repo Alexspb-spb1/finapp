@@ -9,12 +9,28 @@ import { writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type {
   ConflictRecord, OrphanRecord, OwnerAnomalyRecord, PlannedCreate, UnknownUserRecord, MalformedClaimRecord,
-  DanglingMembershipRecord,
+  DanglingMembershipRecord, OwnerIdAnomalyRecord, Decision,
 } from './types.ts'
 import type { Environment } from './firebaseAdmin.ts'
 import { assertPathOutsideRepo } from './pathSafety.ts'
 
-export const REPORT_SCHEMA_VERSION = 1
+/** Bumped 1 -> 2 for independent audit fixes, 4th round, item 3.3: v1
+ * discarded a finding's originating evidence (source kind, observed roles,
+ * invalid-role flag) at the moment an `OrphanRecord`/`ConflictRecord`/etc.
+ * was created — making it structurally impossible to determine, from a
+ * saved report alone, whether e.g. a `missing_company` orphan came from
+ * `users.home`, `users.companies[]`, or both. v2 reports carry that
+ * evidence (via each record's `evidenceFingerprint` plus the new
+ * `sourceKinds`/`observedRoles`/`hasInvalidRole` fields already present on
+ * the record types themselves — see types.ts), plus the new
+ * `ownerIdAnomalies`/`staleDecisions`/`unusedDecisions` sections and the
+ * full source-state checksum (`sourceStateChecksum` — see checksum.ts's
+ * computeFullSourceStateChecksum()). A v1 report can never satisfy any of
+ * this — `validateStrictDryRunReportContent()`/`validateSourceReportForRollback()`
+ * (productionSafety.ts / rollbackValidation.ts) now reject `schemaVersion
+ * !== 2` outright, with a clear "re-run against the current tool" error,
+ * rather than attempting to interpret a v1 report's different shape. */
+export const REPORT_SCHEMA_VERSION = 2
 
 export type ReportMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from-report' | 'rollback-from-plan'
 
@@ -37,6 +53,17 @@ export interface ReportCounts {
    * membership documents that physically exist but reference a missing
    * company/user — always non-decision-resolvable, always counted here. */
   danglingMemberships: number
+  /** `companies/{companyId}.ownerId` present but not a usable string —
+   * always non-decision-resolvable. Independent audit fixes, 4th round,
+   * item 3.4. */
+  ownerIdAnomalies: number
+  /** Decisions whose (identity, findingType) matched a current finding but
+   * whose evidenceFingerprint did not — always blocking. Independent audit
+   * fixes, 4th round, item 3.1. */
+  staleDecisions: number
+  /** Decisions that matched no current finding at all — always blocking.
+   * Independent audit fixes, 4th round, item 3.1. */
+  unusedDecisions: number
   unresolved: number
 }
 
@@ -134,6 +161,13 @@ export interface MembershipBackfillReport {
   finishedAt: string
   counts: ReportCounts
   sourceChecksum: string
+  /** Full normalized source-state fingerprint — checksum.ts's
+   * computeFullSourceStateChecksum(). Independent audit fixes, 4th round,
+   * item 3.2: broader than `sourceChecksum` (which only ever covered
+   * `extraction.confirmed`) — covers everything migration-relevant:
+   * conflicts/orphans/anomalies with their evidence, which users/companies
+   * exist, and normalized existing-membership state. */
+  sourceStateChecksum: string
   decisionsChecksum: string
   targetChecksum: string
   observedChecksum: string | null
@@ -153,6 +187,16 @@ export interface MembershipBackfillReport {
    * Firestore but references a missing company/user. Deliberately never
    * merged into `orphans` above; no decision can ever clear an entry here. */
   danglingMemberships: DanglingMembershipRecord[]
+  /** Independent audit fixes, 4th round, item 3.4 — see
+   * `OwnerIdAnomalyRecord`. Never decision-resolvable. */
+  ownerIdAnomalies: OwnerIdAnomalyRecord[]
+  /** Independent audit fixes, 4th round, item 3.1 — decisions whose
+   * (identity, findingType) matched a current finding but whose
+   * `evidenceFingerprint` did not. */
+  staleDecisions: Decision[]
+  /** Independent audit fixes, 4th round, item 3.1 — decisions that matched
+   * no current finding at all. */
+  unusedDecisions: Decision[]
   plannedCreates: PlannedCreate[]
   createdPaths: CreatedPathRecord[]
   writeFailures: WriteFailureRecord[]
@@ -214,6 +258,7 @@ export function printSafeSummary(report: MembershipBackfillReport): void {
     runId: report.runId,
     counts: report.counts,
     sourceChecksum: report.sourceChecksum,
+    sourceStateChecksum: report.sourceStateChecksum,
     decisionsChecksum: report.decisionsChecksum,
     targetChecksum: report.targetChecksum,
     observedChecksum: report.observedChecksum,

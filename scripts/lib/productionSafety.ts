@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import type { Firestore } from 'firebase-admin/firestore'
 import { sha256Hex } from './checksum.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
+import { isKnownRole } from './types.ts'
 
 export class ProductionSafetyError extends Error {}
 
@@ -323,16 +324,45 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
       throw new ProductionSafetyError(`.${field} is missing or not a valid SHA-256 hex digest.`)
     }
   }
+  // Independent audit fixes, 4th round, item 3.6: every count in the report
+  // must be a non-negative integer (a negative or fractional count can
+  // never legitimately arise from this tool and signals a hand-edited or
+  // corrupted report), and `counts.plannedCreates` must equal the actual
+  // length of the `plannedCreates` array below — a mismatch means the
+  // counts and the array disagree about what this plan actually contains.
   const counts = report.counts as Record<string, unknown> | undefined
-  if (!counts || typeof counts.unresolved !== 'number') {
-    throw new ProductionSafetyError('is missing counts.unresolved.')
+  if (!counts || typeof counts !== 'object') {
+    throw new ProductionSafetyError('is missing counts.')
+  }
+  for (const field of [
+    'usersRead', 'companiesRead', 'existingMembershipsRead', 'candidateRelations', 'confirmedRelations',
+    'plannedCreates', 'created', 'skipped', 'conflicts', 'missingCompanies', 'missingUsers',
+    'ownerWithoutAdminMembership', 'unknownUsers', 'malformedClaims', 'danglingMemberships',
+    'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions', 'unresolved',
+  ] as const) {
+    if (!isNonNegativeInteger(counts[field])) {
+      throw new ProductionSafetyError(`counts.${field} must be a non-negative integer.`)
+    }
   }
   if (counts.unresolved !== 0) {
     throw new ProductionSafetyError(`counts.unresolved is ${counts.unresolved}, expected 0 — this dry-run plan still has unresolved items and cannot be treated as fully approved.`)
   }
+  // Independent audit fixes, 4th round, item 3.6: `counts.unresolved` must
+  // itself agree with the specific unresolved-category counts it is
+  // supposed to be the sum of — a report claiming `unresolved: 0` while
+  // some individual category count is nonzero is internally inconsistent
+  // and refused outright, never trusted at face value.
+  const unresolvedComponents = ['conflicts', 'missingCompanies', 'missingUsers', 'ownerWithoutAdminMembership', 'unknownUsers', 'malformedClaims', 'danglingMemberships', 'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions'] as const
+  const unresolvedSum = unresolvedComponents.reduce((sum, field) => sum + (counts[field] as number), 0)
+  if (unresolvedSum !== 0) {
+    throw new ProductionSafetyError(`counts.unresolved is 0 but the sum of its component counts (${unresolvedComponents.join(', ')}) is ${unresolvedSum} — internally inconsistent, refusing.`)
+  }
   const plannedCreatesRaw = report.plannedCreates
   if (!Array.isArray(plannedCreatesRaw)) {
     throw new ProductionSafetyError('is missing plannedCreates.')
+  }
+  if (plannedCreatesRaw.length !== counts.plannedCreates) {
+    throw new ProductionSafetyError(`counts.plannedCreates (${counts.plannedCreates}) does not match the actual length of plannedCreates (${plannedCreatesRaw.length}).`)
   }
   const seenPairs = new Set<string>()
   const plannedCreates: PlannedCreateLike[] = plannedCreatesRaw.map((entry, index) => {
@@ -344,6 +374,16 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
       if (typeof rec[field] !== 'string' || (rec[field] as string).length === 0) {
         throw new ProductionSafetyError(`plannedCreates[${index}].${field} is missing.`)
       }
+    }
+    // Independent audit fixes, 4th round, item 3.6: "роли принимаются
+    // только из KNOWN_ROLES" / "status для создаваемых membership — только
+    // active" — the v1 validator only checked these were non-empty
+    // strings, accepting any arbitrary role/status value.
+    if (!isKnownRole(rec.role)) {
+      throw new ProductionSafetyError(`plannedCreates[${index}].role is not a known role.`)
+    }
+    if (rec.status !== 'active') {
+      throw new ProductionSafetyError(`plannedCreates[${index}].status must be "active".`)
     }
     const pairKey = JSON.stringify([rec.companyId, rec.uid])
     if (seenPairs.has(pairKey)) {
@@ -406,7 +446,31 @@ export interface RollbackPlanReference {
  * report); the executable rollback artifact (the apply report itself,
  * hashed) is recorded separately, AFTER apply, by the caller.
  */
-export function verifyRollbackPlanReference(path: string, current: StrictDryRunReportFields, expectedProjectId: string): RollbackPlanReference {
+/** Deterministic, order-independent structural equality of two
+ * `plannedCreates` sets — independent audit fixes, 4th round, item 3.6:
+ * "`plannedCreates` должны совпадать с текущим планом точно и
+ * детерминированно, а не только через четыре checksum-поля". A checksum
+ * match already implies this (same underlying canonical serialization),
+ * but a DIRECT structural comparison is asserted independently, so a future
+ * change to how the checksum is computed can never silently weaken this
+ * specific guarantee. */
+function plannedCreatesExactlyMatch(a: readonly PlannedCreateLike[], b: readonly PlannedCreateLike[]): boolean {
+  if (a.length !== b.length) return false
+  const canonicalize = (list: readonly PlannedCreateLike[]) =>
+    [...list]
+      .map(p => JSON.stringify({ companyId: p.companyId, uid: p.uid, role: p.role, status: p.status }))
+      .sort()
+  const canonA = canonicalize(a)
+  const canonB = canonicalize(b)
+  return canonA.every((v, i) => v === canonB[i])
+}
+
+export function verifyRollbackPlanReference(
+  path: string,
+  expectedPlanSha256: string,
+  current: StrictDryRunReportFields & { plannedCreates: readonly PlannedCreateLike[] },
+  expectedProjectId: string,
+): RollbackPlanReference {
   if (current.sourceGitSha === 'unknown') {
     throw new ProductionSafetyError('--rollback-reference cannot be verified: this run\'s own sourceGitSha is "unknown" — the commit producing this apply cannot be traced, which is not acceptable for production (final-round fix #2).')
   }
@@ -416,6 +480,19 @@ export function verifyRollbackPlanReference(path: string, current: StrictDryRunR
   } catch (err) {
     throw new ProductionSafetyError(`--rollback-reference could not be read: ${err instanceof Error ? err.message : 'unknown error'}`)
   }
+
+  // Independent audit fixes, 4th round, item 3.6: the SHA-256 the operator
+  // independently saved for this plan (`--expected-plan-sha256`) is checked
+  // against the RAW BYTES of `--rollback-reference` BEFORE any JSON
+  // parsing, credential acquisition, or Firestore I/O — the same ordering
+  // discipline `rollback-from-plan` already used, now also required for a
+  // production `apply`. A tampered or swapped plan produces zero reads and
+  // zero writes.
+  const actualPlanSha256 = sha256Hex(raw)
+  if (actualPlanSha256 !== expectedPlanSha256) {
+    throw new ProductionSafetyError(`--rollback-reference content does not match --expected-plan-sha256 (expected ${expectedPlanSha256}, got ${actualPlanSha256}) — the plan may have been tampered with, corrupted, or is the wrong file.`)
+  }
+
   let content: ReturnType<typeof validateStrictDryRunReportContent>
   try {
     content = validateStrictDryRunReportContent(raw, expectedProjectId, 'production')
@@ -436,7 +513,12 @@ export function verifyRollbackPlanReference(path: string, current: StrictDryRunR
   if (content.targetChecksum !== current.targetChecksum) {
     throw new ProductionSafetyError('--rollback-reference targetChecksum does not match this run\'s computed target — it does not describe the change this apply is about to make (re-run dry-run and supply its report).')
   }
-  return { path, sha256: sha256Hex(raw), targetChecksum: content.targetChecksum }
+  // Independent audit fixes, 4th round, item 3.6: direct structural
+  // comparison, not merely reliance on targetChecksum having matched above.
+  if (!plannedCreatesExactlyMatch(content.plannedCreates, current.plannedCreates)) {
+    throw new ProductionSafetyError('--rollback-reference plannedCreates does not exactly match this run\'s own planned creates — refusing despite matching checksums.')
+  }
+  return { path, sha256: actualPlanSha256, targetChecksum: content.targetChecksum }
 }
 
 // ── Post-apply rollback artifact ────────────────────────────────────────
