@@ -30,9 +30,12 @@ function invalidRoleConflict(overrides: Partial<ConflictRecord> = {}): ConflictR
 
 function orphan(overrides: Partial<OrphanRecord> = {}): OrphanRecord {
   const sourceKinds = overrides.sourceKinds ?? ['users.home']
-  const evidence = { sourceKinds, observedRoles: [] as string[], hasInvalidRole: false }
+  const observedRoles = overrides.observedRoles ?? []
+  const hasInvalidRole = overrides.hasInvalidRole ?? false
+  const proposedRole = overrides.proposedRole ?? null
+  const evidence = { sourceKinds, observedRoles, hasInvalidRole }
   const evidenceFingerprint = computeFindingFingerprint(evidence)
-  return { companyId: 'co_ghost', uid: 'u1', reason: 'missing_company', sourceKinds, evidenceFingerprint, ...overrides }
+  return { companyId: 'co_ghost', uid: 'u1', reason: 'missing_company', sourceKinds, observedRoles, hasInvalidRole, proposedRole, evidenceFingerprint, ...overrides }
 }
 
 function ownerAnomaly(overrides: Partial<OwnerAnomalyRecord> = {}): OwnerAnomalyRecord {

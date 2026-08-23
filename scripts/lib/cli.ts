@@ -146,6 +146,27 @@ export function parseCliArgs(args: readonly string[]): CliOptions {
     throw new CliArgError('--apply and --mode must not both be specified — ambiguous (use exactly one to select the mode).')
   }
 
+  // Independent audit fixes, 5th round, item 5: a mode-specific ALLOWLIST,
+  // not merely mode-specific REQUIREMENTS — the 4th round only checked that
+  // required flags for a mode were present, never that a flag belonging to
+  // a DIFFERENT mode was absent. `--mode dry-run --from-report x
+  // --expected-report-sha256 y` parsed successfully even though dry-run
+  // never reads either flag — silently accepting a nonsensical, misleading
+  // command instead of refusing it outright.
+  const UNIVERSAL_FLAGS = new Set(['--mode', '--apply', '--environment', '--project', '--confirm-project', '--decisions-file', '--report-path'])
+  const MODE_ALLOWED_FLAGS: Record<ReportMode, ReadonlySet<string>> = {
+    'dry-run': new Set(),
+    verify: new Set(),
+    apply: new Set(['--backup-reference', '--rollback-reference', '--ack-maintenance-readonly', '--expected-plan-sha256']),
+    'rollback-from-report': new Set(['--from-report', '--expected-report-sha256', '--ack-maintenance-readonly']),
+    'rollback-from-plan': new Set(['--from-plan', '--expected-plan-sha256', '--ack-emergency-reconstruction', '--ack-maintenance-readonly']),
+  }
+  const allowedForMode = MODE_ALLOWED_FLAGS[opts.mode]
+  for (const flag of seenFlags) {
+    if (UNIVERSAL_FLAGS.has(flag) || allowedForMode.has(flag)) continue
+    throw new CliArgError(`${flag} is not valid for --mode ${opts.mode} — refusing an unambiguous but nonsensical combination (allowed for this mode: ${allowedForMode.size > 0 ? [...allowedForMode].join(', ') : 'none beyond the universal flags'}).`)
+  }
+
   if (!environmentSet) throw new CliArgError('--environment is required (emulator|staging|production) — there is no default.')
   if (!opts.reportPath) throw new CliArgError('--report-path is required (absolute path outside the repository).')
   if (opts.mode === 'rollback-from-report') {

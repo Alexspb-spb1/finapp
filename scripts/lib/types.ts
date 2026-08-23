@@ -124,6 +124,23 @@ export interface OrphanRecord {
    * `['users.companies[]']`, or both. Independent audit fixes, 4th round,
    * item 3.3 — previously discarded entirely at orphan-creation time. */
   sourceKinds: RelationSourceKind[]
+  /** Sorted, deduplicated KNOWN roles observed among the contributing
+   * claim(s) — independent audit fixes, 5th round, item 4. The 4th round
+   * baked this into `evidenceFingerprint` but never exposed it on the
+   * record itself, so a human reading the report could not see WHICH
+   * role(s) were actually claimed for an orphan without recomputing the
+   * hash out-of-band. Empty array when no claim had a known role. */
+  observedRoles: Role[]
+  /** True when at least one contributing claim had a role value that
+   * failed `isKnownRole()` — a safe boolean flag, never the raw invalid
+   * value itself. Independent audit fixes, 5th round, item 4. */
+  hasInvalidRole: boolean
+  /** The single role that would be proposed if this company/user is
+   * created later — set ONLY when `observedRoles` has EXACTLY one entry
+   * AND `hasInvalidRole` is false (an unambiguous, valid claim); `null`
+   * when zero, multiple, or any invalid role was observed (ambiguous —
+   * never guessed at). Independent audit fixes, 5th round, item 4. */
+  proposedRole: Role | null
   evidenceFingerprint: string
 }
 
@@ -339,6 +356,18 @@ export interface PlanResult {
    * decisions должны блокировать apply и явно попадать в приватный
    * отчёт") — always blocking, never silently ignored. */
   unusedDecisions: Decision[]
+  /** Findings that WERE successfully resolved this run (via a matching,
+   * non-stale decision), each paired with the decision that resolved it —
+   * independent audit fixes, 5th round, item 4. Disjoint from the
+   * `unresolvedX` lists above: a given finding appears in exactly one of
+   * the two, never both. Never includes dangling memberships or owner-id
+   * anomalies (never decision-resolvable, so never "resolved" in this
+   * sense). */
+  resolvedConflicts: { finding: ConflictRecord; decision: Decision }[]
+  resolvedOrphans: { finding: OrphanRecord; decision: Decision }[]
+  resolvedOwnerAnomalies: { finding: OwnerAnomalyRecord; decision: Decision }[]
+  resolvedUnknownUsers: { finding: UnknownUserRecord; decision: Decision }[]
+  resolvedMalformedClaims: { finding: MalformedClaimRecord; decision: Decision }[]
   /** True only when the plan may safely proceed to apply. */
   applyAllowed: boolean
 }

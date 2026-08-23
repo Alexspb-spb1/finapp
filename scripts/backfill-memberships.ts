@@ -33,7 +33,7 @@ import {
   type EmergencyReconstructionAudit,
 } from './lib/report.ts'
 import {
-  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, sha256OfFile, ProductionSafetyError,
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanFileIntegrity, matchRollbackPlanAgainstCurrent, sha256OfFile, ProductionSafetyError,
 } from './lib/productionSafety.ts'
 import { runEmergencyReconstruction } from './lib/emergencyReconstruction.ts'
 import { assertCleanTrackedSourceRevision, realSourceRevisionDeps, SourceRevisionError } from './lib/sourceRevision.ts'
@@ -73,7 +73,8 @@ function emptyCounts(): ReportCounts {
   return {
     usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
     confirmedRelations: 0, plannedCreates: 0, created: 0, skipped: 0, conflicts: 0,
-    missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
+    missingCompanies: 0, missingUsers: 0, unresolvedMissingCompanies: 0, unresolvedMissingUsers: 0,
+    ownerWithoutAdminMembership: 0,
     unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0,
     ownerIdAnomalies: 0, staleDecisions: 0, unusedDecisions: 0, unresolved: 0,
   }
@@ -194,6 +195,33 @@ async function main(): Promise<number> {
     }
   }
 
+  // Independent audit fixes, 5th round, item 2: for a production `apply`,
+  // `--rollback-reference`'s raw-byte hash and structural schema are now
+  // verified HERE — before `initFirestore()`, before any credential
+  // acquisition, before any Firestore read. The 4th round's version of
+  // this check ran deep inside the apply branch below, AFTER
+  // `readAllUsers()`/`readAllCompanies()`/`readAllExistingMemberships()`
+  // had already executed for every mode (including apply) — so a
+  // tampered/wrong plan hash did NOT actually produce "zero Firestore
+  // I/O" as documented, only zero *writes*. `verifyRollbackPlanFileIntegrity()`
+  // takes no Firestore client at all, making that impossible to get wrong.
+  // The comparison against this run's own computed values (which DOES
+  // require the plan to be built first) happens later, via
+  // `matchRollbackPlanAgainstCurrent()`, reusing this already-verified file.
+  let verifiedRollbackPlanFile: ReturnType<typeof verifyRollbackPlanFileIntegrity> | undefined
+  if (environment === 'production' && opts.mode === 'apply') {
+    try {
+      if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production apply.')
+      if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
+      if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
+      if (!opts.expectedPlanSha256) throw new ProductionSafetyError('--expected-plan-sha256 is required for a production apply (verified against --rollback-reference before any parsing, credential acquisition, or Firestore I/O).')
+      verifiedRollbackPlanFile = verifyRollbackPlanFileIntegrity(opts.rollbackReference, opts.expectedPlanSha256, expectedProjectId)
+    } catch (err) {
+      if (err instanceof ProductionSafetyError) { console.error(`Production safety: ${err.message}`); return 3 }
+      throw err
+    }
+  }
+
   const runId = randomUUID()
   const startedAt = new Date().toISOString()
   const db = initFirestore(expectedProjectId)
@@ -239,8 +267,13 @@ async function main(): Promise<number> {
     created: 0,
     skipped: plan.skipped.length,
     conflicts: plan.unresolvedConflicts.length,
+    // DISCOVERED totals — every orphan found this run, including ones a
+    // decision already excluded (independent audit fixes, 5th round, item 3).
     missingCompanies: extraction.orphans.filter(o => o.reason === 'missing_company').length,
     missingUsers: extraction.orphans.filter(o => o.reason === 'missing_user').length,
+    // UNRESOLVED-only counterparts — post-decision, contribute to `unresolved`.
+    unresolvedMissingCompanies: plan.unresolvedOrphans.filter(o => o.reason === 'missing_company').length,
+    unresolvedMissingUsers: plan.unresolvedOrphans.filter(o => o.reason === 'missing_user').length,
     ownerWithoutAdminMembership: plan.unresolvedOwnerAnomalies.length,
     unknownUsers: plan.unknownUsers.length,
     malformedClaims: plan.malformedClaims.length,
@@ -282,18 +315,15 @@ async function main(): Promise<number> {
           const maintenance = await assertMaintenanceModeActive(db)
           if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
           const backupRef = verifyBackupReference(opts.backupReference, expectedProjectId, maintenance.enabledAt)
-          if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
-          // Independent audit fixes, 4th round, item 3.6: an independently
-          // saved --expected-plan-sha256 is now required for a production
-          // apply too (previously only rollback-from-plan required it) —
-          // checked against --rollback-reference's raw bytes BEFORE parsing,
-          // inside verifyRollbackPlanReference() itself.
-          if (!opts.expectedPlanSha256) throw new ProductionSafetyError('--expected-plan-sha256 is required for a production apply (verified against --rollback-reference before any parsing).')
-          const rollbackPlanRef = verifyRollbackPlanReference(
-            opts.rollbackReference,
-            opts.expectedPlanSha256,
-            { sourceGitSha, sourceChecksum, decisionsChecksum: decisionsResult.checksum, targetChecksum, plannedCreates: plan.plannedCreates },
-            expectedProjectId,
+          // Independent audit fixes, 5th round, item 2: the file's raw-byte
+          // hash and structural schema were already verified BEFORE
+          // initFirestore() above (`verifiedRollbackPlanFile`) — this step
+          // only compares that ALREADY-verified content against the
+          // current run's own computed values (pure, no I/O).
+          if (!verifiedRollbackPlanFile) throw new ProductionSafetyError('--rollback-reference/--expected-plan-sha256 were not verified before Firestore I/O — refusing (this should be unreachable; the pre-flight check above must run first).')
+          const rollbackPlanRef = matchRollbackPlanAgainstCurrent(
+            verifiedRollbackPlanFile,
+            { sourceGitSha, sourceChecksum, sourceStateChecksum, decisionsChecksum: decisionsResult.checksum, targetChecksum, plannedCreates: plan.plannedCreates },
           )
           productionSafety = {
             maintenanceMode: maintenance,
@@ -372,6 +402,11 @@ async function main(): Promise<number> {
     ownerIdAnomalies: plan.ownerIdAnomalies,
     staleDecisions: plan.staleDecisions,
     unusedDecisions: plan.unusedDecisions,
+    resolvedConflicts: plan.resolvedConflicts,
+    resolvedOrphans: plan.resolvedOrphans,
+    resolvedOwnerAnomalies: plan.resolvedOwnerAnomalies,
+    resolvedUnknownUsers: plan.resolvedUnknownUsers,
+    resolvedMalformedClaims: plan.resolvedMalformedClaims,
     plannedCreates: plan.plannedCreates,
     createdPaths,
     writeFailures,
@@ -503,6 +538,7 @@ async function runRollback(
       sourceChecksum: '', sourceStateChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
       conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
       ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+      resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],
@@ -543,6 +579,7 @@ async function runRollback(
       sourceChecksum: '', sourceStateChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
       conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
       ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+      resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],
@@ -584,6 +621,7 @@ async function runRollback(
         sourceChecksum: '', sourceStateChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
         conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
         ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+        resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
         plannedCreates: [], createdPaths: [], writeFailures: [],
         verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
         rollbackManifest: [],
@@ -631,6 +669,7 @@ async function runRollback(
     ownerIdAnomalies: [],
     staleDecisions: [],
     unusedDecisions: [],
+    resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
     plannedCreates: [],
     createdPaths: [],
     writeFailures: [],
@@ -693,6 +732,7 @@ async function runRollbackFromPlan(
       sourceChecksum: '', sourceStateChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
       conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
       ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+      resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],

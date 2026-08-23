@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { Timestamp } from 'firebase-admin/firestore'
 import type { Firestore } from 'firebase-admin/firestore'
 import {
-  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, verifyStrictDryRunReport,
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanFileIntegrity, matchRollbackPlanAgainstCurrent, verifyStrictDryRunReport,
   validateStrictDryRunReportContent, sha256OfFile, ProductionSafetyError, MAX_BACKUP_AGE_MS,
 } from './productionSafety.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
@@ -25,7 +25,8 @@ function fullCounts(overrides: Record<string, number> = {}): Record<string, numb
   return {
     usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
     confirmedRelations: 0, plannedCreates: 0, created: 0, skipped: 0, conflicts: 0,
-    missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
+    missingCompanies: 0, missingUsers: 0, unresolvedMissingCompanies: 0, unresolvedMissingUsers: 0,
+    ownerWithoutAdminMembership: 0,
     unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0,
     ownerIdAnomalies: 0, staleDecisions: 0, unusedDecisions: 0, unresolved: 0,
     ...overrides,
@@ -42,6 +43,7 @@ const PROJECT_ID = 'finapp-prod-10a83'
 const HEX64_A = 'a'.repeat(64)
 const HEX64_B = 'b'.repeat(64)
 const HEX64_C = 'c'.repeat(64)
+const HEX64_D = 'd'.repeat(64)
 const MAINTENANCE_ENABLED_AT = '2026-01-01T00:00:00.000Z'
 const FRESH_NOW = '2026-01-01T02:00:00.000Z' // 2h after maintenance enabled
 
@@ -290,6 +292,7 @@ describe('verifyStrictDryRunReport', () => {
     projectId: PROJECT_ID,
     sourceGitSha: 'abc123def',
     sourceChecksum: HEX64_A,
+    sourceStateChecksum: HEX64_D,
     decisionsChecksum: HEX64_B,
     targetChecksum: HEX64_C,
     counts: fullCounts({ plannedCreates: 1 }),
@@ -376,6 +379,29 @@ describe('verifyStrictDryRunReport', () => {
     expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
   })
 
+  // ── Independent audit fixes, 5th round, item 3 — the exact bug the review
+  // found: a report with 1 DISCOVERED missing_company that was correctly
+  // excluded (0 UNRESOLVED) must be ACCEPTED, not rejected as
+  // "inconsistent". The 4th round's version of this check wrongly summed
+  // the discovered total (`missingCompanies`) into the unresolved-sum
+  // check, so this exact real-world SEC-005 scenario was rejected. ──
+  it('accepts 1 missing_company (discovered) + 0 unresolvedMissingCompanies (correctly excluded) — unresolved: 0', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }) })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
+  })
+
+  it('still rejects when unresolvedMissingCompanies itself is nonzero while unresolved claims 0', () => {
+    const path = tempFile('dry-run.json', { ...validDryRun, counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 1, unresolved: 0 }) })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/inconsistent/)
+  })
+
+  it('rejects a missing unresolvedMissingCompanies/unresolvedMissingUsers field', () => {
+    const counts = fullCounts({ plannedCreates: 1 }) as Record<string, unknown>
+    delete counts.unresolvedMissingCompanies
+    const path = tempFile('dry-run.json', { ...validDryRun, counts })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
   it('rejects a missing counts object entirely', () => {
     const { counts: _drop, ...withoutCounts } = validDryRun
     const path = tempFile('dry-run.json', withoutCounts)
@@ -438,17 +464,19 @@ describe('validateStrictDryRunReportContent', () => {
     projectId: PROJECT_ID,
     sourceGitSha: 'abc123def',
     sourceChecksum: HEX64_A,
+    sourceStateChecksum: HEX64_D,
     decisionsChecksum: HEX64_B,
     targetChecksum: HEX64_C,
     counts: fullCounts({ plannedCreates: 1 }),
     plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
   }
 
-  it('returns all four checksum/sha fields plus plannedCreates, given raw content directly (no file I/O)', () => {
+  it('returns all five checksum/sha fields plus plannedCreates, given raw content directly (no file I/O)', () => {
     const result = validateStrictDryRunReportContent(JSON.stringify(validDryRun), PROJECT_ID, 'production')
     expect(result).toEqual({
       sourceGitSha: 'abc123def',
       sourceChecksum: HEX64_A,
+      sourceStateChecksum: HEX64_D,
       decisionsChecksum: HEX64_B,
       targetChecksum: HEX64_C,
       plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
@@ -460,7 +488,7 @@ describe('validateStrictDryRunReportContent', () => {
   })
 })
 
-describe('verifyRollbackPlanReference', () => {
+describe('verifyRollbackPlanFileIntegrity + matchRollbackPlanAgainstCurrent (independent audit fixes, 5th round, item 2)', () => {
   const validDryRun = {
     schemaVersion: REPORT_SCHEMA_VERSION,
     mode: 'dry-run',
@@ -468,73 +496,108 @@ describe('verifyRollbackPlanReference', () => {
     projectId: PROJECT_ID,
     sourceGitSha: 'abc123def',
     sourceChecksum: HEX64_A,
+    sourceStateChecksum: HEX64_D,
     decisionsChecksum: HEX64_B,
     targetChecksum: HEX64_C,
     counts: fullCounts(),
     plannedCreates: [],
   }
-  const currentRun = { sourceGitSha: 'abc123def', sourceChecksum: HEX64_A, decisionsChecksum: HEX64_B, targetChecksum: HEX64_C, plannedCreates: [] as { companyId: string; uid: string; role: string; status: string }[] }
+  const currentRun = {
+    sourceGitSha: 'abc123def', sourceChecksum: HEX64_A, sourceStateChecksum: HEX64_D, decisionsChecksum: HEX64_B, targetChecksum: HEX64_C,
+    plannedCreates: [] as { companyId: string; uid: string; role: string; status: string }[],
+  }
 
-  it('accepts a dry-run report whose sourceGitSha/sourceChecksum/decisionsChecksum/targetChecksum/plannedCreates ALL match the current run exactly', () => {
+  /** Combines both phases the way the CLI does — Phase A (file integrity,
+   * no Firestore) then Phase B (comparison, pure) — for tests that only
+   * care about the end-to-end outcome. Tests specifically about Phase A
+   * vs Phase B's OWN behavior call the two functions directly. */
+  function verifyAndMatch(path: string, expectedPlanSha256: string, current: typeof currentRun, expectedProjectId: string) {
+    const verified = verifyRollbackPlanFileIntegrity(path, expectedPlanSha256, expectedProjectId)
+    return matchRollbackPlanAgainstCurrent(verified, current)
+  }
+
+  it('accepts a dry-run report whose sourceGitSha/sourceChecksum/sourceStateChecksum/decisionsChecksum/targetChecksum/plannedCreates ALL match the current run exactly', () => {
     const path = tempFile('dry-run.json', validDryRun)
-    const result = verifyRollbackPlanReference(path, sha256OfJson(validDryRun), currentRun, PROJECT_ID)
+    const result = verifyAndMatch(path, sha256OfJson(validDryRun), currentRun, PROJECT_ID)
     expect(result.targetChecksum).toBe(HEX64_C)
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/)
   })
 
   it('rejects a nonexistent path', () => {
-    expect(() => verifyRollbackPlanReference('/nonexistent/dry-run.json', HEX64_A, currentRun, PROJECT_ID)).toThrow(ProductionSafetyError)
+    expect(() => verifyRollbackPlanFileIntegrity('/nonexistent/dry-run.json', HEX64_A, PROJECT_ID)).toThrow(ProductionSafetyError)
   })
 
   // ── Independent audit fixes, 4th round, item 3.6: --expected-plan-sha256 now protects apply too ──
-  it('rejects a plan whose raw bytes do not match --expected-plan-sha256 — BEFORE any JSON parsing', () => {
+  it('Phase A rejects a plan whose raw bytes do not match --expected-plan-sha256 — BEFORE any JSON parsing', () => {
     const path = tempFile('dry-run.json', validDryRun)
-    expect(() => verifyRollbackPlanReference(path, HEX64_A, currentRun, PROJECT_ID)).toThrow(/expected-plan-sha256/)
+    expect(() => verifyRollbackPlanFileIntegrity(path, HEX64_A, PROJECT_ID)).toThrow(/expected-plan-sha256/)
+  })
+
+  it('Phase A alone requires no `current` value at all — structurally cannot compare against a run that has not been computed yet', () => {
+    // verifyRollbackPlanFileIntegrity's signature has no `current` parameter
+    // (and no Firestore/db parameter) — this test documents that fact by
+    // simply calling it with only path/hash/project and getting a result
+    // usable independent of any particular "current run".
+    const path = tempFile('dry-run.json', validDryRun)
+    const verified = verifyRollbackPlanFileIntegrity(path, sha256OfJson(validDryRun), PROJECT_ID)
+    expect(verified.content.targetChecksum).toBe(HEX64_C)
   })
 
   it('rejects a report whose mode is not dry-run (e.g. an apply report — closes the circular ROLLBACK_REFERENCE)', () => {
     const tampered = { ...validDryRun, mode: 'apply' }
     const path = tempFile('apply.json', tampered)
-    expect(() => verifyRollbackPlanReference(path, sha256OfJson(tampered), currentRun, PROJECT_ID)).toThrow(ProductionSafetyError)
+    expect(() => verifyRollbackPlanFileIntegrity(path, sha256OfJson(tampered), PROJECT_ID)).toThrow(ProductionSafetyError)
   })
 
   it('rejects a targetChecksum mismatch — a stale or unrelated dry-run', () => {
     const path = tempFile('dry-run.json', validDryRun)
-    expect(() => verifyRollbackPlanReference(path, sha256OfJson(validDryRun), { ...currentRun, targetChecksum: HEX64_B }, PROJECT_ID)).toThrow(ProductionSafetyError)
+    expect(() => verifyAndMatch(path, sha256OfJson(validDryRun), { ...currentRun, targetChecksum: HEX64_B }, PROJECT_ID)).toThrow(ProductionSafetyError)
   })
 
-  it('rejects a dry-run with unresolved items even if the checksum matches', () => {
+  it('Phase A rejects a dry-run with unresolved items even if the checksum matches', () => {
     const tampered = { ...validDryRun, counts: fullCounts({ unresolved: 2 }) }
     const path = tempFile('dry-run.json', tampered)
-    expect(() => verifyRollbackPlanReference(path, sha256OfJson(tampered), currentRun, PROJECT_ID)).toThrow(/unresolved/)
+    expect(() => verifyRollbackPlanFileIntegrity(path, sha256OfJson(tampered), PROJECT_ID)).toThrow(/unresolved/)
   })
 
   // ── Final-round fix #2 (second round): link rollback-reference to the CURRENT plan exactly ──
   it('rejects a sourceGitSha mismatch — the dry-run was built from different code', () => {
     const path = tempFile('dry-run.json', validDryRun)
-    expect(() => verifyRollbackPlanReference(path, sha256OfJson(validDryRun), { ...currentRun, sourceGitSha: 'different-sha' }, PROJECT_ID)).toThrow(/sourceGitSha/)
+    expect(() => verifyAndMatch(path, sha256OfJson(validDryRun), { ...currentRun, sourceGitSha: 'different-sha' }, PROJECT_ID)).toThrow(/sourceGitSha/)
   })
 
   it('rejects a sourceChecksum mismatch — legacy source data changed since the dry-run', () => {
     const path = tempFile('dry-run.json', validDryRun)
-    expect(() => verifyRollbackPlanReference(path, sha256OfJson(validDryRun), { ...currentRun, sourceChecksum: HEX64_C }, PROJECT_ID)).toThrow(/sourceChecksum/)
+    expect(() => verifyAndMatch(path, sha256OfJson(validDryRun), { ...currentRun, sourceChecksum: HEX64_C }, PROJECT_ID)).toThrow(/sourceChecksum/)
+  })
+
+  // ── Independent audit fixes, 5th round, item 1 ──────────────────────────
+  it('rejects a sourceStateChecksum mismatch even when sourceChecksum matches — broader migration-relevant state changed', () => {
+    const path = tempFile('dry-run.json', validDryRun)
+    expect(() => verifyAndMatch(path, sha256OfJson(validDryRun), { ...currentRun, sourceStateChecksum: HEX64_C }, PROJECT_ID)).toThrow(/sourceStateChecksum/)
+  })
+
+  it('rejects a --rollback-reference missing sourceStateChecksum entirely (old/incomplete report)', () => {
+    const { sourceStateChecksum: _drop, ...withoutState } = validDryRun
+    const path = tempFile('dry-run.json', withoutState)
+    expect(() => verifyRollbackPlanFileIntegrity(path, sha256OfJson(withoutState), PROJECT_ID)).toThrow(ProductionSafetyError)
   })
 
   it('rejects a decisionsChecksum mismatch — apply must use the SAME --decisions-file as the dry-run', () => {
     const path = tempFile('dry-run.json', validDryRun)
-    expect(() => verifyRollbackPlanReference(path, sha256OfJson(validDryRun), { ...currentRun, decisionsChecksum: HEX64_C }, PROJECT_ID)).toThrow(/decisionsChecksum/)
+    expect(() => verifyAndMatch(path, sha256OfJson(validDryRun), { ...currentRun, decisionsChecksum: HEX64_C }, PROJECT_ID)).toThrow(/decisionsChecksum/)
   })
 
-  it('rejects when the CURRENT run\'s own sourceGitSha is "unknown" — refuses before even reading --rollback-reference\'s content', () => {
+  it('rejects when the CURRENT run\'s own sourceGitSha is "unknown" — refuses before trusting the (already Phase-A-verified) reference content', () => {
     const path = tempFile('dry-run.json', validDryRun)
-    expect(() => verifyRollbackPlanReference(path, sha256OfJson(validDryRun), { ...currentRun, sourceGitSha: 'unknown' }, PROJECT_ID)).toThrow(/unknown/)
+    expect(() => verifyAndMatch(path, sha256OfJson(validDryRun), { ...currentRun, sourceGitSha: 'unknown' }, PROJECT_ID)).toThrow(/unknown/)
   })
 
   // ── Independent audit fixes, 4th round, item 3.6: direct plannedCreates comparison ──
   it('rejects when plannedCreates does not exactly match the current run\'s own plan, despite matching checksums', () => {
     const path = tempFile('dry-run.json', validDryRun)
     const differentPlan = [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }]
-    expect(() => verifyRollbackPlanReference(path, sha256OfJson(validDryRun), { ...currentRun, plannedCreates: differentPlan }, PROJECT_ID)).toThrow(/plannedCreates/)
+    expect(() => verifyAndMatch(path, sha256OfJson(validDryRun), { ...currentRun, plannedCreates: differentPlan }, PROJECT_ID)).toThrow(/plannedCreates/)
   })
 
   it('accepts plannedCreates that match in different array order', () => {
@@ -551,7 +614,7 @@ describe('verifyRollbackPlanReference', () => {
       { companyId: 'co2', uid: 'u2', role: 'viewer', status: 'active' },
       { companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' },
     ]
-    const result = verifyRollbackPlanReference(path, sha256OfJson(withPlan), { ...currentRun, plannedCreates: reordered }, PROJECT_ID)
+    const result = verifyAndMatch(path, sha256OfJson(withPlan), { ...currentRun, plannedCreates: reordered }, PROJECT_ID)
     expect(result.targetChecksum).toBe(HEX64_C)
   })
 })

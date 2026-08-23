@@ -156,8 +156,14 @@ export function extractLegacyRelations(
   // needed.
   const orphans: OrphanRecord[] = []
   function pushMissingUserOrphan(companyId: string, uid: string): void {
-    const evidence = { sourceKinds: ['companies.ownerId'] as RelationSourceKind[] }
-    orphans.push({ companyId, uid, reason: 'missing_user', sourceKinds: evidence.sourceKinds, evidenceFingerprint: computeFindingFingerprint(evidence) })
+    // companies.ownerId carries no role claim of its own — observedRoles/
+    // proposedRole are always empty/null for missing_user orphans.
+    const evidence = { sourceKinds: ['companies.ownerId'] as RelationSourceKind[], observedRoles: [] as Role[], hasInvalidRole: false }
+    orphans.push({
+      companyId, uid, reason: 'missing_user', sourceKinds: evidence.sourceKinds,
+      observedRoles: [], hasInvalidRole: false, proposedRole: null,
+      evidenceFingerprint: computeFindingFingerprint(evidence),
+    })
   }
 
   for (const user of users) {
@@ -232,12 +238,18 @@ export function extractLegacyRelations(
   for (const [key, evidence] of orphanCompanyEvidence) {
     const [companyId, uid] = splitRelationKey(key)
     const sourceKinds = sortedUniqueKinds(evidence.kinds)
-    const findingEvidence = {
-      sourceKinds,
-      observedRoles: sortedUniqueRoles(evidence.validRoles),
-      hasInvalidRole: evidence.hasInvalidRole,
-    }
-    orphans.push({ companyId, uid, reason: 'missing_company', sourceKinds, evidenceFingerprint: computeFindingFingerprint(findingEvidence) })
+    const observedRoles = sortedUniqueRoles(evidence.validRoles)
+    const hasInvalidRole = evidence.hasInvalidRole
+    const findingEvidence = { sourceKinds, observedRoles, hasInvalidRole }
+    // Independent audit fixes, 5th round, item 4: a proposed role is only
+    // ever set for an UNAMBIGUOUS, valid claim (exactly one observed role,
+    // no invalid claim alongside it) — never guessed at when zero,
+    // multiple, or any invalid role was observed.
+    const proposedRole: Role | null = observedRoles.length === 1 && !hasInvalidRole ? observedRoles[0]! : null
+    orphans.push({
+      companyId, uid, reason: 'missing_company', sourceKinds, observedRoles, hasInvalidRole, proposedRole,
+      evidenceFingerprint: computeFindingFingerprint(findingEvidence),
+    })
   }
 
   // Independent audit fix #6: a pair with BOTH a valid-role claim and an

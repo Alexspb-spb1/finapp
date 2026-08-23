@@ -19,6 +19,7 @@ const PROJECT_ID = 'finapp-prod-10a83'
 const HEX64_A = 'a'.repeat(64)
 const HEX64_B = 'b'.repeat(64)
 const HEX64_C = 'c'.repeat(64)
+const HEX64_D = 'd'.repeat(64)
 
 function tempFile(name: string, content: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'sec005-emergency-recon-'))
@@ -93,7 +94,8 @@ function fullCounts(overrides: Record<string, number> = {}): Record<string, numb
   return {
     usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
     confirmedRelations: 0, plannedCreates: 1, created: 0, skipped: 0, conflicts: 0,
-    missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
+    missingCompanies: 0, missingUsers: 0, unresolvedMissingCompanies: 0, unresolvedMissingUsers: 0,
+    ownerWithoutAdminMembership: 0,
     unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0,
     ownerIdAnomalies: 0, staleDecisions: 0, unusedDecisions: 0, unresolved: 0,
     ...overrides,
@@ -107,6 +109,7 @@ const validDryRun = {
   projectId: PROJECT_ID,
   sourceGitSha: 'abc123def',
   sourceChecksum: HEX64_A,
+  sourceStateChecksum: HEX64_D,
   decisionsChecksum: HEX64_B,
   targetChecksum: HEX64_C,
   counts: fullCounts(),

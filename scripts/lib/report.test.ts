@@ -20,7 +20,8 @@ function minimalReport(overrides: Partial<MembershipBackfillReport> = {}): Membe
     counts: {
       usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
       confirmedRelations: 0, plannedCreates: 0, created: 0, skipped: 0, conflicts: 0,
-      missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
+      missingCompanies: 0, missingUsers: 0, unresolvedMissingCompanies: 0, unresolvedMissingUsers: 0,
+      ownerWithoutAdminMembership: 0,
       unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0,
       ownerIdAnomalies: 0, staleDecisions: 0, unusedDecisions: 0, unresolved: 0,
     },
@@ -28,6 +29,7 @@ function minimalReport(overrides: Partial<MembershipBackfillReport> = {}): Membe
     readBackError: null,
     conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
     ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+    resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
     plannedCreates: [], createdPaths: [], writeFailures: [],
     verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
     rollbackManifest: [],

@@ -29,8 +29,22 @@ import { assertPathOutsideRepo } from './pathSafety.ts'
  * this — `validateStrictDryRunReportContent()`/`validateSourceReportForRollback()`
  * (productionSafety.ts / rollbackValidation.ts) now reject `schemaVersion
  * !== 2` outright, with a clear "re-run against the current tool" error,
- * rather than attempting to interpret a v1 report's different shape. */
-export const REPORT_SCHEMA_VERSION = 2
+ * rather than attempting to interpret a v1 report's different shape.
+ *
+ * Bumped 2 -> 3 for independent audit fixes, 5th round: `OrphanRecord` now
+ * also carries `observedRoles`/`hasInvalidRole`/`proposedRole` (v2 baked
+ * these into `evidenceFingerprint` but never exposed them on the record
+ * itself, so a human reading the report could not see WHICH role(s) were
+ * actually observed for an orphan); `counts` now distinguishes DISCOVERED
+ * totals (`missingCompanies`/`missingUsers` — every orphan ever found,
+ * including ones a decision excluded) from UNRESOLVED-only counts
+ * (`unresolvedMissingCompanies`/`unresolvedMissingUsers`); and the report
+ * now records RESOLVED findings (`resolvedConflicts`/`resolvedOrphans`/
+ * `resolvedOwnerAnomalies`/`resolvedUnknownUsers`/`resolvedMalformedClaims`,
+ * each paired with the decision that resolved it) — v2 only ever recorded
+ * the UNRESOLVED subset, so a finding a decision successfully excluded or
+ * confirmed left zero trace in the report, breaking the audit trail. */
+export const REPORT_SCHEMA_VERSION = 3
 
 export type ReportMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from-report' | 'rollback-from-plan'
 
@@ -44,8 +58,19 @@ export interface ReportCounts {
   created: number
   skipped: number
   conflicts: number
+  /** DISCOVERED total — every `missing_company`/`missing_user` orphan found
+   * this run, INCLUDING ones a decision already excluded. Independent
+   * audit fixes, 5th round, item 3: kept separate from
+   * `unresolvedMissingCompanies`/`unresolvedMissingUsers` below (which are
+   * the actually-still-blocking subset) — conflating the two previously
+   * made a perfectly valid "1 missing_company, correctly excluded,
+   * unresolved: 0" report look internally inconsistent. */
   missingCompanies: number
   missingUsers: number
+  /** UNRESOLVED-only counterpart to `missingCompanies` above — post-decision,
+   * contributes to `unresolved`. Independent audit fixes, 5th round, item 3. */
+  unresolvedMissingCompanies: number
+  unresolvedMissingUsers: number
   ownerWithoutAdminMembership: number
   unknownUsers: number
   malformedClaims: number
@@ -197,6 +222,22 @@ export interface MembershipBackfillReport {
   /** Independent audit fixes, 4th round, item 3.1 — decisions that matched
    * no current finding at all. */
   unusedDecisions: Decision[]
+  /** Findings that WERE successfully resolved this run, each paired with
+   * the decision that resolved it — independent audit fixes, 5th round,
+   * item 4. Previously, `conflicts`/`orphans`/`ownerAnomalies`/
+   * `unknownUsers`/`malformedClaims` above only ever held the UNRESOLVED
+   * subset (`plan.unresolvedConflicts` etc.) — a finding a decision
+   * successfully excluded or confirmed left ZERO trace anywhere in the
+   * report, breaking the audit trail (what was found, and what happened to
+   * it, could not both be reconstructed from the report alone). These
+   * fields close that gap; they are never printed to the safe stdout
+   * summary (contain companyId/uid, same sensitivity as the unresolved
+   * lists). */
+  resolvedConflicts: { finding: ConflictRecord; decision: Decision }[]
+  resolvedOrphans: { finding: OrphanRecord; decision: Decision }[]
+  resolvedOwnerAnomalies: { finding: OwnerAnomalyRecord; decision: Decision }[]
+  resolvedUnknownUsers: { finding: UnknownUserRecord; decision: Decision }[]
+  resolvedMalformedClaims: { finding: MalformedClaimRecord; decision: Decision }[]
   plannedCreates: PlannedCreate[]
   createdPaths: CreatedPathRecord[]
   writeFailures: WriteFailureRecord[]

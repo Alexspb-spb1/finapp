@@ -213,8 +213,8 @@ describe('computeFullSourceStateChecksum — independent audit fixes, 4th round,
 
   it('changing an orphan evidenceFingerprint changes the checksum', () => {
     const base = { existingMemberships: new Map(), allCompanyIds: new Set<string>(), allUserIds: new Set(['u1']) }
-    const a = computeFullSourceStateChecksum({ extraction: emptyExtraction({ orphans: [{ companyId: 'co_a', uid: 'u1', reason: 'missing_company', sourceKinds: ['users.home'], evidenceFingerprint: 'a'.repeat(64) }] }), ...base })
-    const b = computeFullSourceStateChecksum({ extraction: emptyExtraction({ orphans: [{ companyId: 'co_a', uid: 'u1', reason: 'missing_company', sourceKinds: ['users.home'], evidenceFingerprint: 'b'.repeat(64) }] }), ...base })
+    const a = computeFullSourceStateChecksum({ extraction: emptyExtraction({ orphans: [{ companyId: 'co_a', uid: 'u1', reason: 'missing_company', sourceKinds: ['users.home'], observedRoles: [], hasInvalidRole: false, proposedRole: null, evidenceFingerprint: 'a'.repeat(64) }] }), ...base })
+    const b = computeFullSourceStateChecksum({ extraction: emptyExtraction({ orphans: [{ companyId: 'co_a', uid: 'u1', reason: 'missing_company', sourceKinds: ['users.home'], observedRoles: [], hasInvalidRole: false, proposedRole: null, evidenceFingerprint: 'b'.repeat(64) }] }), ...base })
     expect(a).not.toBe(b)
   })
 

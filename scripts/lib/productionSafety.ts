@@ -267,6 +267,14 @@ export interface StrictDryRunReport {
 export interface StrictDryRunReportFields {
   sourceGitSha: string
   sourceChecksum: string
+  /** Independent audit fixes, 5th round, item 1: the full source-state
+   * fingerprint (`computeFullSourceStateChecksum()`, checksum.ts) — broader
+   * than `sourceChecksum` (which only ever covers `extraction.confirmed`).
+   * Now REQUIRED and compared for a `--rollback-reference`, closing the gap
+   * where a production `apply` accepted a report whose confirmed-relations
+   * checksum matched but whose conflicts/orphans/anomalies/existing-membership
+   * state had silently changed. */
+  sourceStateChecksum: string
   decisionsChecksum: string
   targetChecksum: string
 }
@@ -318,7 +326,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   if (expectedEnvironment === 'production' && report.sourceGitSha === 'unknown') {
     throw new ProductionSafetyError('has sourceGitSha "unknown" — the commit that produced this dry-run cannot be traced, which is not acceptable for a production reference (final-round fix #2).')
   }
-  for (const field of ['sourceChecksum', 'decisionsChecksum', 'targetChecksum'] as const) {
+  for (const field of ['sourceChecksum', 'sourceStateChecksum', 'decisionsChecksum', 'targetChecksum'] as const) {
     const value = report[field]
     if (typeof value !== 'string' || !SHA256_HEX_PATTERN.test(value)) {
       throw new ProductionSafetyError(`.${field} is missing or not a valid SHA-256 hex digest.`)
@@ -337,6 +345,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   for (const field of [
     'usersRead', 'companiesRead', 'existingMembershipsRead', 'candidateRelations', 'confirmedRelations',
     'plannedCreates', 'created', 'skipped', 'conflicts', 'missingCompanies', 'missingUsers',
+    'unresolvedMissingCompanies', 'unresolvedMissingUsers',
     'ownerWithoutAdminMembership', 'unknownUsers', 'malformedClaims', 'danglingMemberships',
     'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions', 'unresolved',
   ] as const) {
@@ -347,12 +356,16 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   if (counts.unresolved !== 0) {
     throw new ProductionSafetyError(`counts.unresolved is ${counts.unresolved}, expected 0 — this dry-run plan still has unresolved items and cannot be treated as fully approved.`)
   }
-  // Independent audit fixes, 4th round, item 3.6: `counts.unresolved` must
-  // itself agree with the specific unresolved-category counts it is
-  // supposed to be the sum of — a report claiming `unresolved: 0` while
-  // some individual category count is nonzero is internally inconsistent
-  // and refused outright, never trusted at face value.
-  const unresolvedComponents = ['conflicts', 'missingCompanies', 'missingUsers', 'ownerWithoutAdminMembership', 'unknownUsers', 'malformedClaims', 'danglingMemberships', 'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions'] as const
+  // Independent audit fixes, 5th round, item 3: `missingCompanies`/
+  // `missingUsers` are DISCOVERED totals (every orphan found, including
+  // ones a decision already excluded) — they legitimately stay nonzero
+  // even when `unresolved === 0`. The consistency check below must sum
+  // only the genuinely UNRESOLVED-only counts:
+  // `unresolvedMissingCompanies`/`unresolvedMissingUsers` (post-decision),
+  // never the discovered totals — the 4th-round version of this check
+  // wrongly summed the discovered totals and rejected a perfectly valid
+  // "1 missing_company, correctly excluded, unresolved: 0" report.
+  const unresolvedComponents = ['conflicts', 'unresolvedMissingCompanies', 'unresolvedMissingUsers', 'ownerWithoutAdminMembership', 'unknownUsers', 'malformedClaims', 'danglingMemberships', 'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions'] as const
   const unresolvedSum = unresolvedComponents.reduce((sum, field) => sum + (counts[field] as number), 0)
   if (unresolvedSum !== 0) {
     throw new ProductionSafetyError(`counts.unresolved is 0 but the sum of its component counts (${unresolvedComponents.join(', ')}) is ${unresolvedSum} — internally inconsistent, refusing.`)
@@ -396,6 +409,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   return {
     sourceGitSha: report.sourceGitSha,
     sourceChecksum: report.sourceChecksum as string,
+    sourceStateChecksum: report.sourceStateChecksum as string,
     decisionsChecksum: report.decisionsChecksum as string,
     targetChecksum: report.targetChecksum as string,
     plannedCreates,
@@ -426,26 +440,6 @@ export interface RollbackPlanReference {
   targetChecksum: string
 }
 
-/**
- * Verifies `--rollback-reference` points to an existing, readable
- * DRY-RUN report (validated by `verifyStrictDryRunReport()` above) whose
- * `sourceGitSha`, `sourceChecksum`, `decisionsChecksum`, AND
- * `targetChecksum` ALL EXACTLY MATCH the CURRENT run's own values —
- * proving the operator reviewed the exact same planned change set, built
- * from the exact same code, the exact same legacy source data, AND the
- * exact same decisions file this apply is about to use — not merely a
- * dry-run that happens to compute the same final `targetChecksum` by
- * coincidence (final-round fix #2: the previous version of this check
- * compared `targetChecksum` alone).
- *
- * Independent review fix #7 ("circular ROLLBACK_REFERENCE"): the apply
- * report — which is what `rollback-from-report` actually consumes —
- * cannot possibly exist yet at the point `apply` is being authorized, so
- * it can never be the PRE-apply reference. This function verifies a
- * reference that genuinely exists before any write (a prior dry-run's
- * report); the executable rollback artifact (the apply report itself,
- * hashed) is recorded separately, AFTER apply, by the caller.
- */
 /** Deterministic, order-independent structural equality of two
  * `plannedCreates` sets — independent audit fixes, 4th round, item 3.6:
  * "`plannedCreates` должны совпадать с текущим планом точно и
@@ -465,15 +459,39 @@ function plannedCreatesExactlyMatch(a: readonly PlannedCreateLike[], b: readonly
   return canonA.every((v, i) => v === canonB[i])
 }
 
-export function verifyRollbackPlanReference(
+export interface VerifiedRollbackPlanFile {
+  path: string
+  sha256: string
+  content: Omit<StrictDryRunReport, 'path' | 'sha256'> & StrictDryRunReportFields
+}
+
+/**
+ * PHASE A — independent audit fixes, 5th round, item 2. Reads
+ * `--rollback-reference`, verifies its raw bytes against
+ * `--expected-plan-sha256`, and structurally validates its content
+ * (`validateStrictDryRunReportContent()`) — and NOTHING ELSE. Deliberately
+ * takes NO `Firestore`/`db` parameter and performs NO comparison against
+ * "the current run" — it is structurally impossible for this function to
+ * touch Firestore, which is the strongest available proof that a
+ * tampered/wrong plan produces zero credential acquisition and zero
+ * Firestore I/O, not merely a claim in a comment.
+ *
+ * The 4th round's `verifyRollbackPlanReference()` did this same hash+
+ * structural-validation work, but ONLY as the first few lines of a single
+ * function that the caller invoked AFTER `initFirestore()` and AFTER
+ * reading `users`/`companies`/`companies/{companyId}/members` — so in practice the
+ * hash check ran well after real Firestore I/O had already happened for
+ * `apply`. The caller (`scripts/backfill-memberships.ts`) now calls THIS
+ * function BEFORE `initFirestore()` for a production `apply`; the
+ * comparison against the current run's own computed values happens
+ * separately, in `matchRollbackPlanAgainstCurrent()` below, AFTER the plan
+ * is computed.
+ */
+export function verifyRollbackPlanFileIntegrity(
   path: string,
   expectedPlanSha256: string,
-  current: StrictDryRunReportFields & { plannedCreates: readonly PlannedCreateLike[] },
   expectedProjectId: string,
-): RollbackPlanReference {
-  if (current.sourceGitSha === 'unknown') {
-    throw new ProductionSafetyError('--rollback-reference cannot be verified: this run\'s own sourceGitSha is "unknown" — the commit producing this apply cannot be traced, which is not acceptable for production (final-round fix #2).')
-  }
+): VerifiedRollbackPlanFile {
   let raw: string
   try {
     raw = readFileSync(path, 'utf8')
@@ -481,13 +499,12 @@ export function verifyRollbackPlanReference(
     throw new ProductionSafetyError(`--rollback-reference could not be read: ${err instanceof Error ? err.message : 'unknown error'}`)
   }
 
-  // Independent audit fixes, 4th round, item 3.6: the SHA-256 the operator
+  // Independent audit fixes, 4th/5th round: the SHA-256 the operator
   // independently saved for this plan (`--expected-plan-sha256`) is checked
   // against the RAW BYTES of `--rollback-reference` BEFORE any JSON
-  // parsing, credential acquisition, or Firestore I/O — the same ordering
-  // discipline `rollback-from-plan` already used, now also required for a
-  // production `apply`. A tampered or swapped plan produces zero reads and
-  // zero writes.
+  // parsing — and, as of the 5th round, this whole function runs BEFORE
+  // credential acquisition or Firestore I/O for a production `apply`. A
+  // tampered or swapped plan produces zero reads and zero writes.
   const actualPlanSha256 = sha256Hex(raw)
   if (actualPlanSha256 !== expectedPlanSha256) {
     throw new ProductionSafetyError(`--rollback-reference content does not match --expected-plan-sha256 (expected ${expectedPlanSha256}, got ${actualPlanSha256}) — the plan may have been tampered with, corrupted, or is the wrong file.`)
@@ -501,11 +518,52 @@ export function verifyRollbackPlanReference(
     throw err
   }
 
+  return { path, sha256: actualPlanSha256, content }
+}
+
+/**
+ * PHASE B — pure, no I/O of any kind (not even file reads — `verified` was
+ * already produced by Phase A above). Compares an ALREADY-verified plan
+ * file's content against the CURRENT run's own computed values:
+ * `sourceGitSha`, `sourceChecksum`, `sourceStateChecksum` (independent
+ * audit fixes, 5th round, item 1 — the full source-state fingerprint, not
+ * only the confirmed-relations-only `sourceChecksum`), `decisionsChecksum`,
+ * `targetChecksum`, ALL must match exactly, AND `plannedCreates` must match
+ * via direct structural comparison (4th round, item 3.6) — proving the
+ * operator reviewed the exact same planned change set, built from the
+ * exact same code, the exact same legacy source AND existing-Firestore
+ * state, and the exact same decisions file this apply is about to use.
+ *
+ * Independent review fix #7 ("circular ROLLBACK_REFERENCE"): the apply
+ * report — which is what `rollback-from-report` actually consumes —
+ * cannot possibly exist yet at the point `apply` is being authorized, so
+ * it can never be the PRE-apply reference. This function verifies a
+ * reference that genuinely exists before any write (a prior dry-run's
+ * report); the executable rollback artifact (the apply report itself,
+ * hashed) is recorded separately, AFTER apply, by the caller.
+ */
+export function matchRollbackPlanAgainstCurrent(
+  verified: VerifiedRollbackPlanFile,
+  current: StrictDryRunReportFields & { plannedCreates: readonly PlannedCreateLike[] },
+): RollbackPlanReference {
+  if (current.sourceGitSha === 'unknown') {
+    throw new ProductionSafetyError('--rollback-reference cannot be verified: this run\'s own sourceGitSha is "unknown" — the commit producing this apply cannot be traced, which is not acceptable for production (final-round fix #2).')
+  }
+  const content = verified.content
+
   if (content.sourceGitSha !== current.sourceGitSha) {
     throw new ProductionSafetyError(`--rollback-reference sourceGitSha (${content.sourceGitSha}) does not match this run's own sourceGitSha (${current.sourceGitSha}) — the dry-run was built from different code.`)
   }
   if (content.sourceChecksum !== current.sourceChecksum) {
     throw new ProductionSafetyError('--rollback-reference sourceChecksum does not match this run\'s own sourceChecksum — the legacy source data has changed since that dry-run was taken.')
+  }
+  // Independent audit fixes, 5th round, item 1: the BROADER source-state
+  // checksum must also match — closes the gap where `sourceChecksum`
+  // (confirmed relations only) matched but conflicts/orphans/anomalies/
+  // existing-membership state had silently changed since the reference
+  // dry-run.
+  if (content.sourceStateChecksum !== current.sourceStateChecksum) {
+    throw new ProductionSafetyError('--rollback-reference sourceStateChecksum does not match this run\'s own sourceStateChecksum — migration-relevant Firestore state (conflicts/orphans/anomalies/existing memberships) has changed since that dry-run was taken.')
   }
   if (content.decisionsChecksum !== current.decisionsChecksum) {
     throw new ProductionSafetyError('--rollback-reference decisionsChecksum does not match this run\'s own decisionsChecksum — apply must be run with the SAME --decisions-file that produced this dry-run.')
@@ -518,7 +576,7 @@ export function verifyRollbackPlanReference(
   if (!plannedCreatesExactlyMatch(content.plannedCreates, current.plannedCreates)) {
     throw new ProductionSafetyError('--rollback-reference plannedCreates does not exactly match this run\'s own planned creates — refusing despite matching checksums.')
   }
-  return { path, sha256: actualPlanSha256, targetChecksum: content.targetChecksum }
+  return { path: verified.path, sha256: verified.sha256, targetChecksum: content.targetChecksum }
 }
 
 // ── Post-apply rollback artifact ────────────────────────────────────────

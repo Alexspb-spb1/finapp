@@ -112,10 +112,10 @@ describe('parseCliArgs — required flags', () => {
 })
 
 describe('parseCliArgs — passthrough flags', () => {
-  it('captures decisions-file, confirm-project, backup/rollback references', () => {
+  it('captures decisions-file, confirm-project, backup/rollback references (apply mode, where these flags belong)', () => {
     const opts = parseCliArgs([
       '--environment', 'production', '--project', 'finapp-prod-10a83', '--report-path', '/tmp/r.json',
-      '--confirm-project', 'finapp-prod-10a83', '--decisions-file', '/tmp/d.json',
+      '--confirm-project', 'finapp-prod-10a83', '--decisions-file', '/tmp/d.json', '--apply',
       '--backup-reference', 'backup-123', '--rollback-reference', 'rollback-doc-url', '--ack-maintenance-readonly',
     ])
     expect(opts.environment).toBe('production')
@@ -124,5 +124,49 @@ describe('parseCliArgs — passthrough flags', () => {
     expect(opts.backupReference).toBe('backup-123')
     expect(opts.rollbackReference).toBe('rollback-doc-url')
     expect(opts.ackMaintenance).toBe(true)
+  })
+})
+
+// ── Independent audit fixes, 5th round, item 5: mode-specific allowlist ──
+describe('parseCliArgs — mode-specific flag allowlist (not merely mode-specific requirements)', () => {
+  const HEX64 = 'a'.repeat(64)
+
+  it('rejects --mode dry-run combined with --from-report/--expected-report-sha256 (rollback-only flags)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'dry-run', '--from-report', '/tmp/a.json', '--expected-report-sha256', HEX64])).toThrow(CliArgError)
+  })
+
+  it('rejects --mode dry-run combined with --backup-reference (apply-only flag)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'dry-run', '--backup-reference', '/tmp/backup.json'])).toThrow(CliArgError)
+  })
+
+  it('rejects --mode verify combined with --ack-maintenance-readonly (write-mode-only flag)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'verify', '--ack-maintenance-readonly'])).toThrow(CliArgError)
+  })
+
+  it('rejects --apply (apply mode) combined with --from-plan (rollback-from-plan-only flag)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--apply', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction', '--expected-plan-sha256', HEX64])).toThrow(CliArgError)
+  })
+
+  it('rejects --mode rollback-from-report combined with --ack-emergency-reconstruction (rollback-from-plan-only flag)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-report', '--from-report', '/tmp/a.json', '--expected-report-sha256', HEX64, '--ack-emergency-reconstruction'])).toThrow(CliArgError)
+  })
+
+  it('rejects --mode rollback-from-plan combined with --backup-reference (apply-only flag)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction', '--expected-plan-sha256', HEX64, '--backup-reference', '/tmp/backup.json'])).toThrow(CliArgError)
+  })
+
+  it('accepts --mode apply with exactly its own allowed flags', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'apply', '--backup-reference', '/tmp/b.json', '--rollback-reference', '/tmp/r2.json', '--ack-maintenance-readonly', '--expected-plan-sha256', HEX64])
+    expect(opts.mode).toBe('apply')
+  })
+
+  it('accepts --mode dry-run with only universal flags', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'dry-run', '--decisions-file', '/tmp/d.json'])
+    expect(opts.mode).toBe('dry-run')
+  })
+
+  it('accepts --mode verify with only universal flags', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'verify'])
+    expect(opts.mode).toBe('verify')
   })
 })
