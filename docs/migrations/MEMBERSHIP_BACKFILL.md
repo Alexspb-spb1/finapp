@@ -16,9 +16,21 @@ apply → verify → rollback rehearsal was executed using synthetic fixture
 data under an explicit `STAGING_FIXTURE_ACTION_APPROVED: SEC-005` grant,
 and `finapp-staging` was confirmed fully restored to its pre-rehearsal
 empty state afterward — see "Staging authorization" and "Full staging
-rehearsal" below. **Production execution remains unconditionally
-refused** — no `PRODUCTION_ACTION_APPROVED` grant has been given, and none
-of the CLI's production-only flags can change that.
+rehearsal" below. **Production execution is NOT unconditionally refused
+anymore.** The repository owner has granted `PRODUCTION_ACTION_APPROVED:
+SEC-005`, and the cycle-execution gate (`assertCycleExecutionAllowed()`)
+was widened accordingly to authorize the full controlled production
+cycle — see "Production execution" below for the current gate state, and
+the "Independent audit fixes — production execution gate round" /
+"— production execution gate audit-fix round" changelog sections near
+the end for exactly what changed and when. **No individual production
+step (maintenance enable, backup, apply, verify, disable, or rollback)
+has actually been run yet** — only two READ-ONLY production dry-runs have
+executed, each under its own separate, narrower grant (see
+`docs/remediation/reports/SEC-005.md`); the gate being open in code is a
+precondition for a real execution, not the execution itself, and a
+SEPARATE, explicit owner command is still required before any individual
+step runs.
 
 **This document was updated after an independent review returned
 `REVIEW_RESULT: CHANGES REQUIRED`** — see "Independent audit fixes" near the
@@ -90,6 +102,28 @@ separately); `--backup-reference`/`--rollback-reference`/
 still refuses `production` unconditionally** — nothing in this round
 weakens it. Production was not read or modified at any point in this
 round.
+
+**This document was updated an EIGHTH time after `PRODUCTION_PREFLIGHT_APPROVED:
+SEC-005` opened the gate for `--mode dry-run` only**, and after two
+subsequent, separately-authorized READ-ONLY production dry-runs actually
+ran against `finapp-prod-10a83` — see "Production preflight authorization"
+below and `docs/remediation/reports/SEC-005.md` for the anonymized
+results. `apply`/`verify`/`rollback-from-report`/`rollback-from-plan`
+remained refused for production throughout this round.
+
+**This document was updated a NINTH time after `PRODUCTION_ACTION_APPROVED:
+SEC-005` opened the gate for the FULL SEC-005 action set** (dry-run,
+apply, verify, rollback-from-report, rollback-from-plan,
+maintenance-enable, maintenance-disable) — see "Production execution"
+below, "Independent audit fixes — production execution gate round", and
+"— production execution gate audit-fix round" (an independent review's
+follow-up fixes to that round — import-safety of the maintenance
+transaction module, fail-closed `--disable` on an unverifiable `enabled`
+field, no-repeated-CLI-flags, and several corrected runbook claims,
+including this banner) near the end. **No individual production
+apply/verify/maintenance/rollback step has actually been executed** — see
+the "Status of this document" paragraph above for the current, accurate
+summary.
 
 ## Data model — legacy → canonical mapping
 
@@ -474,19 +508,33 @@ this gate for ANY mode (staging under the `EXTERNAL_ACTION_APPROVED:
 SEC-005` / `ENVIRONMENT: staging` grant — see "Staging authorization"
 below).
 
-**`--environment production` is allowed past this gate ONLY for `--mode
-dry-run`** (`PRODUCTION_PREFLIGHT_APPROVED: SEC-005` — "разрешаю deploy
-maintenance-защиты, создание и проверку backup и read-only dry-run в
-finapp-prod-10a83. Backfill/apply пока запрещён." — see "Production
-preflight authorization" below for the full grant and what was actually
-run under it). `apply`, `verify`, `rollback-from-report`, and
-`rollback-from-plan` remain refused UNCONDITIONALLY for production — this
-check never inspects `--backup-reference`/`--rollback-reference`/
-`--ack-maintenance-readonly` or any other flag for those modes; no
-combination of flags can make them pass, because no broader
-`PRODUCTION_ACTION_APPROVED` grant (with verified `BACKUP_REFERENCE`/
-`ROLLBACK_REFERENCE`, per CLAUDE.md §5) has been given for an actual
-backfill.
+**Current state (production execution gate round —
+`PRODUCTION_ACTION_APPROVED: SEC-005`): `--environment production` is
+allowed past this gate for all seven `CycleExecutionAction` values** —
+`dry-run`, `apply`, `verify`, `rollback-from-report`,
+`rollback-from-plan`, `maintenance-enable`, `maintenance-disable`
+(`scripts/lib/firebaseAdmin.ts`'s `PRODUCTION_ALLOWED_ACTIONS`). This
+supersedes the earlier `PRODUCTION_PREFLIGHT_APPROVED: SEC-005` grant,
+which authorized only `dry-run` (see "Production preflight authorization"
+below for that grant's history and what was actually run under it — two
+read-only dry-runs, both before this wider grant).
+
+This gate answers only "has ANY grant authorized this (environment,
+action) pair THIS cycle" — it is independent of, and does not substitute
+for, the mode-specific safety preconditions enforced elsewhere in this
+tool for `apply`/`rollback-from-report`/`rollback-from-plan` (verified
+backup/rollback references, live maintenance-mode check, two-phase
+rollback-plan integrity verification, create-only writes). Those
+preconditions still apply in full and are unaffected by this gate being
+open. Passing this gate is necessary but not sufficient to actually run
+`apply` (or any other production action) successfully.
+
+**A real production execution (maintenance enable → verified backup →
+apply → verify → maintenance disable, or an emergency rollback) still
+requires a SEPARATE, explicit command from the repository owner naming
+the specific action to run** — this gate being open in the code is a
+precondition, not the authorization itself. See "Production execution"
+below.
 
 ## Emulator walkthrough (safe — run this)
 
@@ -689,37 +737,48 @@ be writing. The corrected order below moves maintenance mode to BEFORE
 backup, and adds the separate Rules/Functions deploy as its own explicit
 first step (item 8):
 
-### Step 1 — deploy the maintenance-mode-aware Rules and Functions (separate, out of scope for this cycle)
+### Step 1 — maintenance-mode-aware Rules and Functions (prerequisite already verified — do not redeploy without separate authorization)
 
 `firestore.rules`'s `isMaintenanceModeActive()` gate and
 `functions/src/lib/authz.ts`'s `requireNotInMaintenanceMode()` check
 inside `createCompany` (both implemented and emulator-tested in this
 repository) only take effect once actually deployed to the production
-Firebase project — `firebase deploy --only firestore:rules,functions`.
-**This is its own separate, explicitly-authorized deploy action** —
-CLAUDE.md §5 requires separate authorization for `firebase deploy`
-independent of this migration cycle's authorization, and no such
-authorization has been requested or given in this round. Steps 2 onward
-below are meaningless until this deploy has actually happened — enabling
-`system/maintenance` against a production project running OLDER Rules/
-Functions (i.e. before this deploy) would NOT block any client or Admin
-SDK write at all, since the code that reads it wouldn't exist there yet.
+Firebase project. **This deploy already happened and was independently
+verified during the production preflight** (see "Production preflight
+authorization" below for the grant it ran under and how it was verified
+live against `finapp-prod-10a83`) — it is a completed prerequisite check
+for this cycle, not an open step.
 
-### Step 2 — create `system/maintenance` in a known, disabled state (idempotent bootstrap)
+**Do not re-run `firebase deploy` as part of this cycle.** A deploy is
+its own separate, explicitly-authorized action under CLAUDE.md §5,
+independent of this migration cycle's `PRODUCTION_ACTION_APPROVED:
+SEC-005` grant — that grant covers the maintenance/backup/apply/verify/
+rollback cycle described below, not a Rules/Functions redeploy. If the
+deployed Rules/Functions are ever suspected to be stale or reverted,
+STOP and request a separate deploy authorization rather than assuming
+Steps 2 onward are safe to proceed with.
+
+### Step 2 — confirm `system/maintenance` is in a known, disabled state (read-only precheck)
 
 ```bash
 node scripts/ops/set-maintenance-mode.ts \
   --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
-  --disable --operator <your-identifier>
+  --disable --task-id SEC-005 --operator <your-identifier>
 ```
 
-Establishes `system/maintenance` in a known `{enabled: false}` state if it
-doesn't already exist (`--disable`'s Firestore write is `set(...,
-{merge: true})`, so it succeeds whether or not the document already
-exists) — this is a real, tested script (item 8; see "Maintenance/
-read-only mode" below), not illustrative pseudocode. Safe to run even if
-the document already exists in this state; not required if it's already
-known to exist and be `enabled: false`.
+**This is a precheck, not a bootstrap.** `--disable` against a
+`system/maintenance` document that does not exist is a safe,
+**idempotent no-op** — it returns `changed: false` and does **not**
+create `{enabled: false}` or any other document (see
+"Maintenance/read-only mode" below, and
+`scripts/ops/maintenanceModeTransaction.ts`'s `transactionalDisable()`).
+Running this command tells you the document's CURRENT state (missing, or
+disabled for SEC-005) without writing anything in the missing case, and
+transactionally flips an existing SEC-005 record to disabled if it was
+somehow left enabled from a previous, incomplete cycle. It does not by
+itself establish any particular document state — proceed to Step 3
+regardless of whether this step reports `changed: true` or a
+"nothing to disable" no-op.
 
 ### Step 3 — enable maintenance mode (BEFORE backup — see "Maintenance/read-only mode" below)
 
@@ -881,7 +940,7 @@ Use the SAME `--decisions-file` as `apply` (see "Idempotency" above).
 ```bash
 node scripts/ops/set-maintenance-mode.ts \
   --environment production --project finapp-prod-10a83 --confirm-project finapp-prod-10a83 \
-  --disable --operator <your-identifier>
+  --disable --task-id SEC-005 --operator <your-identifier>
 ```
 
 Neither this tool nor `set-maintenance-mode.ts` disables maintenance mode
@@ -907,6 +966,25 @@ node scripts/backfill-memberships.ts \
 
 Maintenance mode must be re-enabled (same as Step 3) before running this,
 for the same reason it is required before `apply`.
+
+### Step 9 — close the production execution gate (separate PR, after the cycle completes)
+
+**Required after a successful production cycle (or after a completed
+rollback) finishes.** Once Steps 1–8 (or the rollback path) have
+actually run against production, `PRODUCTION_ALLOWED_ACTIONS` in
+`scripts/lib/firebaseAdmin.ts` must be narrowed back down — most likely
+to empty, or to only whatever the NEXT authorized production action is
+— in a separate PR, so the gate does not stay open for
+`apply`/`maintenance-enable`/etc. against production indefinitely after
+this cycle's authorized work is done.
+
+**This is an operational process, not a runtime-checked constraint in
+the current code.** Nothing in `assertCycleExecutionAllowed()` itself
+expires, time-limits, or auto-closes `PRODUCTION_ALLOWED_ACTIONS` after
+a cycle completes — it is a static `ReadonlySet` that stays exactly as
+wide as the last commit left it until a human edits it again. Treat "the
+gate closes after the cycle" as a required follow-up task for whoever
+runs Steps 1–8, not as something the code will enforce on its own.
 
 ## Backup reference verification
 
@@ -1392,11 +1470,15 @@ node scripts/ops/set-maintenance-mode.ts \
   argument parsing, before any credential acquisition or Firestore I/O.
 - Every write to `system/maintenance` runs inside a Firestore
   **transaction** (`transactionalEnable()`/`transactionalDisable()`,
-  exported from `set-maintenance-mode.ts` and unit-tested directly against
-  the emulator — `scripts/ops/maintenanceModeTransaction.emulator.test.ts`) —
-  a concurrent modification between the read and the write aborts and
-  Firestore automatically retries against the new state, so two racing
-  calls can never both "win" or produce a torn/mixed write.
+  exported from the import-safe `scripts/ops/maintenanceModeTransaction.ts`
+  — kept separate from `set-maintenance-mode.ts`'s CLI entrypoint
+  specifically so it can be imported directly by tests without triggering
+  argv parsing/`main()` as a side effect of the import — and unit-tested
+  directly against the emulator,
+  `scripts/ops/maintenanceModeTransaction.emulator.test.ts`) — a concurrent
+  modification between the read and the write aborts and Firestore
+  automatically retries against the new state, so two racing calls can
+  never both "win" or produce a torn/mixed write.
 - `--enable` is allowed only when `system/maintenance` does not exist yet,
   or exists with `enabled === false` (verifiably, strictly disabled — a
   malformed/non-boolean `enabled` field on an existing document is treated
@@ -1413,15 +1495,22 @@ node scripts/ops/set-maintenance-mode.ts \
   `taskId` field exactly matches the `--task-id` supplied — **refusing to
   disable a different task's maintenance window is enforced by the script
   itself, not merely by convention** (exit 1, document left untouched).
-  When the identity matches, it does a MERGING write
-  (`set(..., {merge: true})`) — deliberately PRESERVES the historical
-  `enabledAt`/`enabledBy`/`reason`/`taskId` fields for audit, only
-  flipping `enabled: false` and adding `disabledAt`/`disabledBy`.
-  Disabling a record that does not exist, or one that is already disabled
-  for the SAME `--task-id`, is a safe, **idempotent no-op** (exit 0, no
-  write at all) — this is also what makes `--disable` safe to use as the
-  "create in a known disabled state" bootstrap in Step 2 of the production
-  runbook above.
+  When the identity matches AND `enabled === true`, it does a MERGING
+  write (`set(..., {merge: true})`) — deliberately PRESERVES the
+  historical `enabledAt`/`enabledBy`/`reason`/`taskId` fields for audit,
+  only flipping `enabled: false` and adding `disabledAt`/`disabledBy`.
+  Disabling a record that does not exist at all, or one that is already
+  disabled for the SAME `--task-id`, is a safe, **idempotent no-op**
+  (exit 0, no write at all). **Any OTHER value of the existing record's
+  `enabled` field — missing, `null`, a string, a number, an object — is
+  fail-closed: refused outright (`MaintenanceModeStateError`, exit 1,
+  document left untouched), never treated as "assume disabled" or "assume
+  enabled".**
+  **`--disable` against a MISSING document is a no-op only — it does
+  NOT create `{enabled: false}` or any document at all.** Step 2 of the
+  production runbook above uses `--disable` only as a read-only
+  precheck of the document's current state, never as a way to bootstrap
+  it into existence.
 - **The production gate is now open for `maintenance-enable`/
   `maintenance-disable`** (production execution gate round —
   `PRODUCTION_ACTION_APPROVED: SEC-005`; see "Production mode-specific
@@ -2960,3 +3049,169 @@ credential acquisition and Firestore I/O against the real
 risk. All pre-existing apply/rollback safety tests remain green;
 `npm run test:migration` run twice consecutively for stability
 (538/538 both times).
+
+## Independent audit fixes — production execution gate audit-fix round
+
+An independent review of PR #18 (the production execution gate round
+above) returned `REVIEW_RESULT: CHANGES_REQUIRED`, identifying 4
+categories of blocking issues. This round is code/test/doc fixes only —
+**no production or staging action was taken**; the PR remained Draft.
+
+### 1 — `set-maintenance-mode.ts` unconditionally called `main()` at import time
+
+The reviewer reproduced: `await import('./scripts/ops/set-maintenance-mode.ts')`
+printed `Argument error: --environment is required...` and set
+`process.exitCode = 2`, purely as a side effect of the import — because
+the file's bottom-level `main().then(...)` runs unconditionally whenever
+the module is evaluated, regardless of who imported it or why. The
+emulator tests for `transactionalEnable()`/`transactionalDisable()` had
+been importing those functions FROM this file, meaning the test suite
+itself depended on this accidental "it happens not to crash the whole
+process" behavior.
+
+**Fix**: moved `transactionalEnable()`, `transactionalDisable()`,
+`MaintenanceModeStateError`, and `MaintenanceTransitionResult` into a new,
+side-effect-free module, `scripts/ops/maintenanceModeTransaction.ts` —
+no argv parsing, no `main()` call, nothing runs merely by importing it.
+`set-maintenance-mode.ts` is now a pure CLI entrypoint: it imports the
+transaction functions from the new module and otherwise only parses argv
+and calls `main()`. `scripts/ops/maintenanceModeTransaction.emulator.test.ts`
+now imports from the new module instead.
+
+**Regression test**: `scripts/ops/maintenanceModeImportSafety.test.ts`
+(new file) spawns a genuinely separate `node` process (in-process
+assertions cannot reproduce this class of bug, since `process.argv`/
+`process.exitCode` inside the SAME vitest worker belong to the test
+runner, not to a simulated CLI invocation) that imports
+`maintenanceModeTransaction.ts` alone, with both CLI-nonsensical argv
+(`--environment production --enable`) and empty argv, and asserts exit
+code 0, `stdout` containing a plain "import succeeded" marker, and EMPTY
+`stderr` — proving no CLI logic and no `process.exitCode` mutation occur
+merely from the import. The same test, pointed at
+`set-maintenance-mode.ts` instead, was manually confirmed to reproduce
+the reviewer's exact finding (exit 2, "Argument error" on stderr) before
+this fix, and to no longer apply to `set-maintenance-mode.ts` after it
+(that file is not expected to be import-safe — it is a CLI entrypoint by
+design; only the new module needs to be).
+
+### 2 — `transactionalDisable()` was not fail-closed on a malformed `enabled` field
+
+Previously, after the `taskId` match check, `transactionalDisable()`
+branched only on `data.enabled === false` (idempotent no-op) vs.
+"anything else" (proceed to disable) — so a document with `enabled`
+missing entirely, `null`, a string, a number, or an object would be
+silently treated as "currently enabled" and disabled without complaint,
+exactly the class of bug `transactionalEnable()` already guarded against
+for the mirror case (a non-boolean-false `enabled` there is refused, not
+silently trusted).
+
+**Fix**: `transactionalDisable()` (`scripts/ops/maintenanceModeTransaction.ts`)
+now requires, after the `taskId` match, EXACTLY `enabled === true`
+(proceed to disable) or `enabled === false` (idempotent no-op) — any
+other value throws `MaintenanceModeStateError` with the document left
+completely untouched.
+
+**Regression tests**: added to
+`scripts/ops/maintenanceModeTransaction.emulator.test.ts` — missing
+`enabled` field, a string `enabled`, `null` `enabled`, a number
+`enabled`, and an object `enabled`, each asserting a thrown
+`MaintenanceModeStateError` AND that the document is byte-for-byte
+unchanged (`toEqual` against the pre-call read). The pre-existing
+cross-task-disable, idempotent-disable, and concurrent-modification tests
+are unchanged.
+
+### 3 — `maintenanceModeCli.ts` allowed silent "last value wins" for every flag
+
+Unlike `scripts/lib/cli.ts` (the main tool's parser, which rejects any
+repeated flag outright — see its `markSeenOnce()`), the maintenance-mode
+parser accepted a repeated `--project`, `--reason`, `--operator`, or any
+other flag, with the LAST occurrence silently winning — e.g. `--operator
+alice --operator mallory` parsed successfully as `operator: 'mallory'`
+with no indication the command was ambiguous.
+
+**Fix**: `parseMaintenanceModeCliArgs()` now has the same `markSeenOnce()`
+pattern as `scripts/lib/cli.ts` — EVERY flag (`--environment`,
+`--project`, `--confirm-project`, `--enable`, `--disable`, `--reason`,
+`--task-id`, `--operator`) throws `MaintenanceModeCliArgError` on a
+second occurrence, even when the repeated value is identical to the
+first.
+
+**Regression tests**: `scripts/ops/maintenanceModeCli.test.ts` gained a
+parametrized case per value-bearing flag (`--environment`, `--project`,
+`--confirm-project`, `--reason`, `--task-id`, `--operator`) plus
+dedicated cases for `--enable`/`--disable`, all asserting the specific
+"was specified more than once" message; and two CLI-level tests
+(repeated `--operator`, repeated `--task-id` against `--environment
+production`) confirming the parser — which never performs any I/O at
+all — refuses before `set-maintenance-mode.ts` would go on to call
+`assertEnvironmentGuard()`/`initFirestore()`.
+
+### 4 — runbook drift from the actual CLI/gate behavior
+
+Several passages in "Production execution" and
+"`scripts/ops/set-maintenance-mode.ts` — the real operator script" still
+described superseded or simply incorrect behavior:
+
+- The "allowed past this gate ONLY for `--mode dry-run`" passage was
+  still describing the PRE-`PRODUCTION_ACTION_APPROVED` state, even
+  though this document's own "Production execution" section (added in
+  the prior round) already correctly described the widened gate — the
+  two sections contradicted each other. Rewritten to state the current
+  seven-action authorized set plainly, and to clarify the gate answers
+  only "is this (environment, action) pair authorized this cycle", never
+  a substitute for `apply`'s independent safety preconditions.
+- Step 1 claimed the maintenance-mode-aware Rules/Functions deploy was
+  "separate, out of scope for this cycle" as if still pending — it was
+  already deployed and independently verified during the production
+  preflight round. Rewritten as a completed prerequisite check, with an
+  explicit warning against re-deploying without separate CLAUDE.md §5
+  authorization.
+- Step 2 called `--disable` against a possibly-missing document a
+  "bootstrap" that establishes `{enabled: false}` — false:
+  `transactionalDisable()` against a missing document is a no-op that
+  writes nothing at all (see `scripts/ops/maintenanceModeTransaction.ts`).
+  Rewritten as a read-only precheck of the document's current state, with
+  an explicit correction that it does not create anything.
+- The matching false claim under "the real operator script" ("this is
+  also what makes `--disable` safe to use as the ... bootstrap in Step 2")
+  was removed and replaced with an explicit statement of the fail-closed
+  `enabled`-field behavior from fix #2 above.
+- Steps 2 and 8's `--disable` command examples were missing `--task-id
+  SEC-005` (now required for every `--disable`, including production,
+  since the earlier "`--enable`-only" round) — added to both, and to the
+  emergency-rollback command block.
+- Added a new Step 9 requiring the gate to be narrowed back down again in
+  a separate PR after a real production cycle (or rollback) completes,
+  with an explicit note that this is an operational follow-up process,
+  not something the current code enforces or expires automatically.
+- The top-of-document "Status of this document" banner still asserted
+  "Production execution remains unconditionally refused" — stale since
+  `PRODUCTION_ACTION_APPROVED: SEC-005` was granted in the prior round.
+  Rewritten to state the actual current status (gate open for the full
+  action set; no individual step actually executed yet), and two missing
+  "this document was updated" entries (preflight-approval round,
+  execution-gate round) were added to the running list at the top for
+  consistency with every earlier round.
+
+**Regression test**: `scripts/ops/maintenanceModeRunbookDocContract.test.ts`
+(new file) — extracts every CONCRETE (no remaining `<placeholder>` token
+other than the documented `<your-identifier>` operator convention)
+`node scripts/ops/set-maintenance-mode.ts` invocation from this document
+and feeds it through the REAL `parseMaintenanceModeCliArgs()`, asserting
+none of them throw, and that every `--environment production` example
+parses with `taskId === 'SEC-005'`. This is a genuine regression test,
+not a hand-maintained duplicate of the CLI's rules — a future doc edit
+that drifts from the actual parser (e.g. dropping a now-required
+`--task-id`) fails this test against the CURRENT parser, the same way
+this round's Step 2/Step 8 gap would have been caught automatically had
+this test existed beforehand.
+
+### Verification
+
+`npm run typecheck`, `npm run lint`,
+`npx vitest run scripts/lib scripts/ops scripts/backfill-memberships.orchestration.test.ts`,
+`npm run test:migration` (twice consecutively), `npm run test:unit`,
+`npm run test:staging-preflight`, `npm run test:rules`, `npm run build`,
+plus `functions/`'s full lint/typecheck/build/unit/emulator suite — see
+`docs/remediation/reports/SEC-005.md`, "production execution gate
+audit-fix round", for the exact commands and results.
