@@ -2545,3 +2545,72 @@ from the previous round was itself updated to supply a real
 validator did not yet check the array's content. All pre-existing tests
 remain green; `npm run test:migration` run twice consecutively for
 stability.
+
+## Independent audit fixes — 5th round, 3rd follow-up review
+
+A third follow-up independent-review round found the previous round's deep
+resolvedX validation was still incomplete in three ways, all confirmed by
+independent negative tests against real crafted reports. **Production and
+staging were not read or modified.** `SEC-006` not started.
+
+### The three gaps
+
+1. **The report's UNRESOLVED finding arrays were never required or
+   validated at all.** A report entirely missing `conflicts`/`orphans`/
+   `unknownUsers`/`malformedClaims`/`danglingMemberships`/`ownerIdAnomalies`/
+   `staleDecisions`/`unusedDecisions` still passed.
+2. **`resolvedOrphans`' `finding` was only checked for the fields common
+   to every finding type** (uid/companyId/reason/evidenceFingerprint) —
+   `OrphanRecord`'s own required fields (`sourceKinds`/`observedRoles`/
+   `hasInvalidRole`/`proposedRole`) were never checked, so an
+   `OrphanRecord` missing all four still passed.
+3. **`decision` objects were validated by a hand-rolled, parallel
+   reimplementation** of `decisions.ts`'s real contract — it never
+   rejected unknown fields (`{..., unexpected: 'x'}` passed) and never
+   forbade `role` when `resolution !== 'confirm_role'`.
+
+### The fix
+
+`scripts/lib/productionSafety.ts` now has a dedicated shape validator per
+record type (`validateConflictRecordShape`/`validateOrphanRecordShape`/
+`validateOwnerAnomalyRecordShape`/`validateUnknownUserRecordShape`/
+`validateMalformedClaimRecordShape`/`validateDanglingMembershipRecordShape`/
+`validateOwnerIdAnomalyRecordShape`) — each checks every field the real
+`types.ts` interface defines (required vs. optional, exact reason
+literals, array-of-known-role/source-kind contents, and — for
+`OrphanRecord` — that `proposedRole` is derivably consistent with
+`observedRoles`/`hasInvalidRole`, matching the record type's own doc
+comment) and rejects any field not in that type's allowed set. The SAME
+validator is applied to a finding whether it appears in an unresolved
+array (`report.orphans[i]`) or as the `finding` half of a resolved pair
+(`report.resolvedOrphans[i].finding`) — the shape is identical either way.
+
+`decision` validation was replaced entirely with a call to
+`decisions.ts`'s own `validateDecisions()` — the SAME function that
+validates an operator's `--decisions-file` — so the two contracts can
+never drift apart again; this alone closes gap 3 (unknown-field rejection
+and the `role`-forbidden-unless-`confirm_role` rule come for free).
+
+Every unresolved array's length is now reconciled against its
+corresponding `counts` field (`conflicts.length === counts.conflicts`,
+`orphans.length === counts.unresolvedMissingCompanies +
+counts.unresolvedMissingUsers`, etc.) — since `counts.unresolved === 0` is
+already required for any of these validators to accept a report at all,
+every one of these arrays is required to be empty in practice, but the
+presence-and-shape check now actually enforces that rather than merely
+implying it via an unrelated count.
+
+### Regression tests added
+
+`scripts/lib/productionSafety.test.ts` — a report missing all required
+unresolved arrays; each unresolved array missing individually (parametrized
+over all 9); an unresolved array whose length disagrees with its `counts`
+field; a `resolvedOrphans` entry whose `OrphanRecord` lacks
+`sourceKinds`/`observedRoles`/`hasInvalidRole`/`proposedRole`; a decision
+carrying `role` alongside `resolution: 'exclude'`; a decision carrying an
+unknown field; and a full, realistic, internally-consistent schema-v3
+report (one `missing_company` orphan correctly resolved by `exclude`,
+every other array empty) — accepted. All three `validDryRun` fixtures
+across the file gained the 9 required unresolved-array fields (empty, to
+match their all-zero default counts). All pre-existing tests remain green;
+`npm run test:migration` run twice consecutively for stability.
