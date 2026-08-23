@@ -2381,3 +2381,96 @@ dedicated "Phase A alone needs no `current` value" case);
 `sourceStateChecksum` — this round's item 1 fix made it a required field,
 which the existing fixture predates). All pre-existing tests remain green;
 `npm run test:migration` run twice consecutively for stability.
+
+## Independent audit fixes — 5th round, review of the round's own fix
+
+A follow-up independent-review round, run against this branch's HEAD after
+the 5th round above, confirmed items 1/2/3 of that round genuinely fixed
+but found 3 further blocking defects IN THAT ROUND'S OWN FIX, plus one
+test-adequacy gap. All are addressed here, same branch, same PR.
+**Production and staging were not read or modified.** `SEC-006` not
+started.
+
+### 1 — Missing `role` was still treated as valid orphan evidence
+
+`legacyMapping.ts`'s `recordOrphanEvidence()` set `hasInvalidRole = true`
+only when `roleValue !== undefined` — a relation with NO `role` field at
+all (as opposed to a present-but-wrong one) contributed no evidence at all,
+leaving `hasInvalidRole: false`. This was inconsistent with the
+CONFIRMED/CONFLICT path elsewhere in the same file, which already treats a
+missing role exactly like an invalid one (`isKnownRole(undefined)` is
+`false`, so `invalidClaimKeys` picks it up either way — see the existing
+"treats a missing role field the same way" test). Fixed by removing the
+`roleValue !== undefined` guard — a missing role and an invalid role now
+both set `hasInvalidRole: true` for orphan evidence too. (Unrelated:
+`pushMissingUserOrphan()`'s `hasInvalidRole: false` for `companies.ownerId`
+orphans is intentionally unchanged — that source carries no role claim of
+any kind, so there is nothing to be invalid.)
+
+### 2 — CLI allowlist wrongly treated `--decisions-file` as universal
+
+`--decisions-file` is read unconditionally near the top of `main()`, but
+its result (`decisionsResult`) is only ever consumed by `buildPlan()` for
+`dry-run`/`verify`/`apply` — `rollback-from-report`/`rollback-from-plan`
+return from a dedicated rollback function before it is touched again. The
+5th round's own `UNIVERSAL_FLAGS` incorrectly included it, so
+`--mode rollback-from-report --decisions-file x` parsed successfully even
+though `x` is silently ignored. Fixed by moving `--decisions-file` out of
+`UNIVERSAL_FLAGS` and into only `dry-run`/`verify`/`apply`'s
+`MODE_ALLOWED_FLAGS` entries.
+
+### 3 — Schema v3's resolved-findings audit trail was not actually required
+
+`validateStrictDryRunReportContent()` checks `schemaVersion === 3` but
+never verified that v3's own defining feature — the resolved-findings
+audit trail (`resolvedConflicts`/`resolvedOrphans`/`resolvedOwnerAnomalies`/
+`resolvedUnknownUsers`/`resolvedMalformedClaims`) — was actually present. A
+report claiming `schemaVersion: 3` but missing this audit trail entirely
+was accepted. Fixed: each of the 5 fields must be present as an array of
+`{finding, decision}`-shaped objects (structural presence, not a full
+re-validation against `decisions.ts`'s complete schema — that would
+duplicate decision-file validation for data this tool itself produces).
+
+### 4 — Orchestration proof was textual, not executable
+
+The previous round's `scripts/backfill-memberships.orchestration.test.ts`
+proved "plan-hash check precedes `initFirestore()`" by reading
+`backfill-memberships.ts`'s source text and checking substring order
+(`indexOf()`) — a real claim about the code, but not an EXECUTABLE proof
+that the real running program never acquires credentials on a wrong hash.
+Fixed by extracting the production-apply preflight (flag-presence checks +
+the plan-file-integrity call) out of `main()` into a new exported,
+dependency-injected function, `runProductionApplyPreflight()`
+(`scripts/lib/productionSafety.ts`) — `main()` calls this function
+directly (not a parallel reimplementation of its body), so a test that
+injects a COUNTING FAKE for its `acquireFirestore` dependency (which
+`main()` wires to the real `initFirestore`) and gives it a wrong plan hash
+is observing the real call site's behavior:
+- Wrong hash: `verifyPlanFile` throws, `acquireFirestore` is called **zero**
+  times.
+- Correct hash: `verifyPlanFile` succeeds, `acquireFirestore` is called
+  **exactly once**, strictly after verification.
+
+`scripts/backfill-memberships.orchestration.test.ts` was narrowed to a
+much smaller, honestly-scoped "wiring" guard (main() actually delegates to
+the tested function rather than reimplementing or bypassing it) — the
+executable behavioral proof lives entirely in
+`scripts/lib/productionSafety.test.ts`'s `runProductionApplyPreflight`
+describe block.
+
+### Regression tests added
+
+`scripts/lib/legacyMapping.test.ts` (missing-role orphan now flagged
+`hasInvalidRole: true`; missing role vs. invalid role parity; the
+unaffected valid-single-role case still gets a `proposedRole`);
+`scripts/lib/cli.test.ts` (`--decisions-file` rejected under both rollback
+modes, still accepted under `verify`/`apply`); `scripts/lib/productionSafety.test.ts`
+(schema v3's 5 resolved-findings fields required in all three `validDryRun`
+fixtures; new `runProductionApplyPreflight` describe block — wrong-hash
+zero-acquisition, correct-hash exactly-once-after-verification, argument
+pass-through, and each of the 4 required-flag presence checks refusing
+before either dependency is touched); `scripts/backfill-memberships.orchestration.test.ts`
+(rewritten — wiring-only checks); `scripts/lib/emergencyReconstruction.test.ts`
+(fixture gains the 5 resolved-findings fields, required by item 3 above).
+All pre-existing tests remain green; `npm run test:migration` run twice
+consecutively for stability.
