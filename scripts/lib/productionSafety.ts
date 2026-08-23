@@ -370,6 +370,38 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   if (unresolvedSum !== 0) {
     throw new ProductionSafetyError(`counts.unresolved is 0 but the sum of its component counts (${unresolvedComponents.join(', ')}) is ${unresolvedSum} — internally inconsistent, refusing.`)
   }
+  // Independent audit fixes, 5th round (review of the 5th round's own
+  // fix), item 3: schemaVersion is checked above to be EXACTLY
+  // REPORT_SCHEMA_VERSION (3), but until now nothing here actually
+  // verified that the v3-specific resolved-findings audit trail
+  // (report.ts's `resolvedConflicts`/`resolvedOrphans`/
+  // `resolvedOwnerAnomalies`/`resolvedUnknownUsers`/`resolvedMalformedClaims`)
+  // was present — a report claiming schemaVersion 3 but missing this audit
+  // trail entirely (e.g. hand-edited, or produced by a regressed writer)
+  // was accepted as if it were a genuine, complete v3 report. Each field
+  // must be an array of `{finding, decision}` pairs — not deeply
+  // re-validated against decisions.ts's full schema (that would duplicate
+  // decision-file validation for data this tool itself produced), but
+  // structurally present and shaped, so a report that dropped the array
+  // entirely (or replaced it with something that isn't one) is refused.
+  for (const field of ['resolvedConflicts', 'resolvedOrphans', 'resolvedOwnerAnomalies', 'resolvedUnknownUsers', 'resolvedMalformedClaims'] as const) {
+    const value = report[field]
+    if (!Array.isArray(value)) {
+      throw new ProductionSafetyError(`is missing ${field} (required by schema v${REPORT_SCHEMA_VERSION}'s resolved-findings audit trail).`)
+    }
+    value.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new ProductionSafetyError(`${field}[${index}] is not an object.`)
+      }
+      const rec = entry as Record<string, unknown>
+      if (!rec.finding || typeof rec.finding !== 'object') {
+        throw new ProductionSafetyError(`${field}[${index}].finding is missing.`)
+      }
+      if (!rec.decision || typeof rec.decision !== 'object') {
+        throw new ProductionSafetyError(`${field}[${index}].decision is missing.`)
+      }
+    })
+  }
   const plannedCreatesRaw = report.plannedCreates
   if (!Array.isArray(plannedCreatesRaw)) {
     throw new ProductionSafetyError('is missing plannedCreates.')
@@ -519,6 +551,55 @@ export function verifyRollbackPlanFileIntegrity(
   }
 
   return { path, sha256: actualPlanSha256, content }
+}
+
+export interface ProductionApplyPreflightOpts {
+  ackMaintenance: boolean
+  backupReference: string | undefined
+  rollbackReference: string | undefined
+  expectedPlanSha256: string | undefined
+}
+
+export interface ProductionApplyPreflightDeps<TDb> {
+  /** Phase A above — real caller passes `verifyRollbackPlanFileIntegrity`
+   * itself; a test passes a spy/fake to observe call count and arguments. */
+  verifyPlanFile: (path: string, expectedPlanSha256: string, expectedProjectId: string) => VerifiedRollbackPlanFile
+  /** Stands in for credential acquisition + Firestore client construction
+   * (`initFirestore()` in `scripts/backfill-memberships.ts`). Invoked ONLY
+   * after `verifyPlanFile` succeeds — never before, never on a throw. */
+  acquireFirestore: () => TDb
+}
+
+/**
+ * Independent audit fixes, 5th round (review of the 5th round's own fix) —
+ * the "additional" finding: a wrong `--expected-plan-sha256` producing zero
+ * credential acquisition / Firestore I/O was previously provable only by
+ * reading `backfill-memberships.ts`'s source text (a textual `indexOf()`
+ * ordering check) plus `verifyRollbackPlanFileIntegrity()`'s own lack of a
+ * `db` parameter. Neither is an EXECUTABLE proof that the real orchestration
+ * — flag presence checks, then plan-file verification, and ONLY THEN
+ * credential acquisition — actually holds.
+ *
+ * This function IS the exact preflight `scripts/backfill-memberships.ts`'s
+ * `main()` runs for a production `apply` (main() calls this, not a parallel
+ * reimplementation of its body) — so a test that injects a counting fake
+ * for `deps.acquireFirestore` and gives it a wrong plan hash, and observes
+ * the fake was called zero times, is testing REAL behavior, not asserting
+ * that JS `throw` skips subsequent statements (see
+ * `scripts/lib/productionSafety.test.ts`, "runProductionApplyPreflight").
+ */
+export function runProductionApplyPreflight<TDb>(
+  opts: ProductionApplyPreflightOpts,
+  expectedProjectId: string,
+  deps: ProductionApplyPreflightDeps<TDb>,
+): { verified: VerifiedRollbackPlanFile; db: TDb } {
+  if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production apply.')
+  if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
+  if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
+  if (!opts.expectedPlanSha256) throw new ProductionSafetyError('--expected-plan-sha256 is required for a production apply (verified against --rollback-reference before any parsing, credential acquisition, or Firestore I/O).')
+  const verified = deps.verifyPlanFile(opts.rollbackReference, opts.expectedPlanSha256, expectedProjectId)
+  const db = deps.acquireFirestore()
+  return { verified, db }
 }
 
 /**

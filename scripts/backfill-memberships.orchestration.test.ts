@@ -2,81 +2,69 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { resolve, dirname } from 'node:path'
-import { verifyRollbackPlanFileIntegrity } from './lib/productionSafety.ts'
 
-// Independent audit fixes, 5th round, item 6 (second half): a regression
-// test proving "wrong --expected-plan-sha256 on a production apply causes
-// ZERO credential/Firestore I/O" — not merely documented in a comment.
+// Independent audit fixes, 5th round — the follow-up review's "additional"
+// finding: a wrong --expected-plan-sha256 producing zero credential/
+// Firestore I/O for a production apply must be proven EXECUTABLY, not by
+// reading source text (a textual indexOf() check, which was this file's
+// entire content before this round, was correctly rejected as
+// insufficient).
 //
-// main() in backfill-memberships.ts is a top-level, non-exported function
-// that reads process.argv and drives a real (or emulator) Firestore client
-// directly — it has no dependency-injection seam, and adding one purely to
-// make this single ordering fact unit-testable would be a much larger
-// change than this finding calls for. The orchestration guarantee this test
-// protects is instead structural and provable two ways, both asserted here:
+// The real executable proof now lives in
+// scripts/lib/productionSafety.test.ts's "runProductionApplyPreflight"
+// describe block: `runProductionApplyPreflight()` is the exact function
+// `scripts/backfill-memberships.ts`'s main() calls for a production apply,
+// and that test injects a COUNTING FAKE for `acquireFirestore` (main()'s
+// real `initFirestore`) and observes it is called zero times for a wrong
+// plan hash, exactly once (after verification) for a correct one — real
+// behavior of the real function, not JS control-flow semantics in the
+// abstract.
 //
-//   1. `verifyRollbackPlanFileIntegrity()` — the function that checks
-//      `--expected-plan-sha256` against `--rollback-reference`'s raw bytes —
-//      takes NO Firestore client/db parameter at all (see
-//      productionSafety.test.ts for its behavioral tests). It is therefore
-//      structurally incapable of performing Firestore I/O, regardless of
-//      call order.
-//   2. In the actual entrypoint, the call to `verifyRollbackPlanFileIntegrity()`
-//      textually precedes the call to `initFirestore()` (credential
-//      acquisition) which itself precedes `readAllUsers()`/`readAllCompanies()`/
-//      `readAllExistingMemberships()` (the first Firestore reads). A plan-hash
-//      mismatch throws inside `verifyRollbackPlanFileIntegrity()` and is
-//      caught by the surrounding try/catch, returning before line 227
-//      (`initFirestore`) is ever reached — so no credential is acquired and
-//      no Firestore call is made.
-//
-// This source-order assertion is intentionally a regression guard: if a
-// future change moves the plan-hash check to after `initFirestore()` (as
-// the 4th-round implementation that this finding was raised against
-// actually did), this test fails immediately, independent of whether an
-// emulator/mock happens to be wired up to observe the (non-)calls directly.
-
+// What remains here is narrower and honestly scoped: main() itself is a
+// top-level, non-exported function that reads process.argv and has no
+// dependency-injection seam of its own (adding one purely to unit-test
+// main() would be a much larger change than this finding calls for) — so
+// this file only guards the WIRING fact that main() actually delegates to
+// the tested function for a production apply, rather than reimplementing
+// the preflight inline (which is what the 5th round's own first pass did,
+// and which is exactly the shape of bug this guard exists to catch: a
+// future edit that inlines the checks again, or calls
+// verifyRollbackPlanFileIntegrity() directly without going through
+// runProductionApplyPreflight(), would silently stop being covered by the
+// executable proof above without this test noticing).
 const ENTRYPOINT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'backfill-memberships.ts')
 
-describe('production apply preflight ordering — zero Firestore I/O on a bad plan hash', () => {
-  it('verifyRollbackPlanFileIntegrity() has no Firestore/db parameter — structurally cannot perform Firestore I/O', () => {
-    // A db-accepting signature would be `(path, expectedSha, projectId, db)`
-    // or similar — arity stays at exactly 3 (path, expectedPlanSha256,
-    // expectedProjectId) precisely because no db parameter exists.
-    expect(verifyRollbackPlanFileIntegrity.length).toBe(3)
+describe('production apply preflight wiring — main() delegates to the tested runProductionApplyPreflight()', () => {
+  it('main() calls runProductionApplyPreflight() for a production apply, not a reimplementation of its checks', () => {
+    const source = readFileSync(ENTRYPOINT_PATH, 'utf8')
+    expect(source).toContain('runProductionApplyPreflight(')
   })
 
-  it('the production-apply plan-hash preflight call textually precedes initFirestore() in the entrypoint', () => {
+  it('verifyRollbackPlanFileIntegrity() is only ever invoked THROUGH runProductionApplyPreflight() — never called directly in main()', () => {
     const source = readFileSync(ENTRYPOINT_PATH, 'utf8')
-    const preflightIndex = source.indexOf('verifiedRollbackPlanFile = verifyRollbackPlanFileIntegrity(')
-    const initFirestoreIndex = source.indexOf('const db = initFirestore(')
-    expect(preflightIndex).toBeGreaterThan(-1)
-    expect(initFirestoreIndex).toBeGreaterThan(-1)
-    expect(preflightIndex).toBeLessThan(initFirestoreIndex)
+    // The only textual occurrence of the function name outside the import
+    // line must be passing it AS a dependency (`verifyPlanFile:
+    // verifyRollbackPlanFileIntegrity`) — never `= verifyRollbackPlanFileIntegrity(`
+    // (a direct call, which would bypass the tested preflight function and
+    // reintroduce exactly the shape of gap this round's review found).
+    expect(source).not.toMatch(/=\s*verifyRollbackPlanFileIntegrity\(/)
+    expect(source).toContain('verifyPlanFile: verifyRollbackPlanFileIntegrity')
   })
 
-  it('initFirestore() textually precedes the first Firestore reads (readAllUsers/readAllCompanies/readAllExistingMemberships)', () => {
+  it('main() imports runProductionApplyPreflight from productionSafety.ts, the same module productionSafety.test.ts tests', () => {
     const source = readFileSync(ENTRYPOINT_PATH, 'utf8')
-    const initFirestoreIndex = source.indexOf('const db = initFirestore(')
-    const firstReadIndex = source.indexOf('readAllUsers(db)')
-    expect(initFirestoreIndex).toBeGreaterThan(-1)
-    expect(firstReadIndex).toBeGreaterThan(-1)
-    expect(initFirestoreIndex).toBeLessThan(firstReadIndex)
+    const importBlockMatch = source.match(/import \{[^}]*\} from '\.\/lib\/productionSafety\.ts'/)
+    expect(importBlockMatch).not.toBeNull()
+    expect(importBlockMatch![0]).toContain('runProductionApplyPreflight')
   })
 
-  it('the plan-hash preflight is wrapped in its own try/catch that returns before reaching initFirestore() on failure', () => {
+  it('non-preflight paths (non-production, or non-apply) still call initFirestore() directly — no double credential acquisition', () => {
     const source = readFileSync(ENTRYPOINT_PATH, 'utf8')
-    const preflightBlockStart = source.indexOf("if (environment === 'production' && opts.mode === 'apply') {")
-    const preflightBlockEnd = source.indexOf('const runId = randomUUID()')
-    expect(preflightBlockStart).toBeGreaterThan(-1)
-    expect(preflightBlockEnd).toBeGreaterThan(preflightBlockStart)
-    const block = source.slice(preflightBlockStart, preflightBlockEnd)
-    expect(block).toContain('try {')
-    expect(block).toContain('verifyRollbackPlanFileIntegrity(')
-    expect(block).toContain('catch (err)')
-    expect(block).toMatch(/return 3/)
-    // The catch block must return before initFirestore() — i.e.
-    // initFirestore() must not appear inside this preflight block at all.
-    expect(block).not.toContain('initFirestore(')
+    expect(source).toContain('db = initFirestore(expectedProjectId)')
+    // Exactly one direct initFirestore() call site outside the preflight
+    // path (the `else` branch) — the preflight path acquires it through
+    // deps.acquireFirestore instead, never a second direct call.
+    const directInitFirestoreCalls = source.match(/db = initFirestore\(expectedProjectId\)/g) ?? []
+    expect(directInitFirestoreCalls).toHaveLength(1)
   })
 })

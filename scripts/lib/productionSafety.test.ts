@@ -12,7 +12,8 @@ import { Timestamp } from 'firebase-admin/firestore'
 import type { Firestore } from 'firebase-admin/firestore'
 import {
   assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanFileIntegrity, matchRollbackPlanAgainstCurrent, verifyStrictDryRunReport,
-  validateStrictDryRunReportContent, sha256OfFile, ProductionSafetyError, MAX_BACKUP_AGE_MS,
+  validateStrictDryRunReportContent, runProductionApplyPreflight, sha256OfFile, ProductionSafetyError, MAX_BACKUP_AGE_MS,
+  type VerifiedRollbackPlanFile,
 } from './productionSafety.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
 import { sha256Hex } from './checksum.ts'
@@ -297,6 +298,7 @@ describe('verifyStrictDryRunReport', () => {
     targetChecksum: HEX64_C,
     counts: fullCounts({ plannedCreates: 1 }),
     plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
+    resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
   }
 
   it('accepts a genuine, fully-resolved dry-run report', () => {
@@ -469,6 +471,7 @@ describe('validateStrictDryRunReportContent', () => {
     targetChecksum: HEX64_C,
     counts: fullCounts({ plannedCreates: 1 }),
     plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
+    resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
   }
 
   it('returns all five checksum/sha fields plus plannedCreates, given raw content directly (no file I/O)', () => {
@@ -501,6 +504,7 @@ describe('verifyRollbackPlanFileIntegrity + matchRollbackPlanAgainstCurrent (ind
     targetChecksum: HEX64_C,
     counts: fullCounts(),
     plannedCreates: [],
+    resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
   }
   const currentRun = {
     sourceGitSha: 'abc123def', sourceChecksum: HEX64_A, sourceStateChecksum: HEX64_D, decisionsChecksum: HEX64_B, targetChecksum: HEX64_C,
@@ -616,6 +620,80 @@ describe('verifyRollbackPlanFileIntegrity + matchRollbackPlanAgainstCurrent (ind
     ]
     const result = verifyAndMatch(path, sha256OfJson(withPlan), { ...currentRun, plannedCreates: reordered }, PROJECT_ID)
     expect(result.targetChecksum).toBe(HEX64_C)
+  })
+})
+
+// ── Independent audit fixes, 5th round (review of the 5th round's own fix),
+// "additional" finding: an EXECUTABLE proof — not a textual/source-order
+// check — that a wrong plan hash produces zero credential acquisition.
+// `runProductionApplyPreflight()` is the exact function
+// `scripts/backfill-memberships.ts`'s `main()` calls for a production
+// apply; testing it with a counting fake `acquireFirestore` is testing
+// real orchestration behavior, not JS control-flow semantics in the
+// abstract. ─────────────────────────────────────────────────────────────
+describe('runProductionApplyPreflight', () => {
+  const EXPECTED_PROJECT_ID = 'finapp-prod-10a83'
+  const fakeVerified: VerifiedRollbackPlanFile = {
+    path: '/tmp/plan.json',
+    sha256: 'a'.repeat(64),
+    content: {
+      sourceGitSha: 'abc', sourceChecksum: 'a'.repeat(64), sourceStateChecksum: 'a'.repeat(64),
+      decisionsChecksum: 'a'.repeat(64), targetChecksum: 'a'.repeat(64), plannedCreates: [],
+    },
+  }
+
+  function fullOpts(overrides: Partial<Parameters<typeof runProductionApplyPreflight>[0]> = {}) {
+    return {
+      ackMaintenance: true,
+      backupReference: '/tmp/backup.json',
+      rollbackReference: '/tmp/plan.json',
+      expectedPlanSha256: 'a'.repeat(64),
+      ...overrides,
+    }
+  }
+
+  function countingFirestoreFake(): { acquireFirestore: () => { marker: 'fake-db' }; callCount: () => number } {
+    let calls = 0
+    return { acquireFirestore: () => { calls++; return { marker: 'fake-db' as const } }, callCount: () => calls }
+  }
+
+  it('a WRONG plan hash: verifyPlanFile throws, acquireFirestore is called ZERO times', () => {
+    const verifyPlanFile = () => { throw new ProductionSafetyError('--rollback-reference content does not match --expected-plan-sha256') }
+    const { acquireFirestore, callCount } = countingFirestoreFake()
+    expect(() => runProductionApplyPreflight(fullOpts(), EXPECTED_PROJECT_ID, { verifyPlanFile, acquireFirestore })).toThrow(ProductionSafetyError)
+    expect(callCount()).toBe(0)
+  })
+
+  it('a CORRECT plan hash: verifyPlanFile succeeds, acquireFirestore is called EXACTLY once, after verification', () => {
+    const callOrder: string[] = []
+    const verifyPlanFile = () => { callOrder.push('verify'); return fakeVerified }
+    const { callCount } = countingFirestoreFake()
+    const acquireFirestore = () => { callOrder.push('acquire'); return { marker: 'fake-db' as const } }
+    const result = runProductionApplyPreflight(fullOpts(), EXPECTED_PROJECT_ID, { verifyPlanFile, acquireFirestore })
+    expect(callOrder).toEqual(['verify', 'acquire'])
+    expect(result.db).toEqual({ marker: 'fake-db' })
+    expect(result.verified).toBe(fakeVerified)
+    void callCount
+  })
+
+  it('verifyPlanFile is invoked with exactly the caller-supplied rollbackReference/expectedPlanSha256/expectedProjectId', () => {
+    const seenArgs: unknown[] = []
+    const verifyPlanFile = (path: string, sha: string, projectId: string) => { seenArgs.push([path, sha, projectId]); return fakeVerified }
+    const { acquireFirestore } = countingFirestoreFake()
+    runProductionApplyPreflight(fullOpts({ rollbackReference: '/tmp/custom-plan.json', expectedPlanSha256: 'b'.repeat(64) }), EXPECTED_PROJECT_ID, { verifyPlanFile, acquireFirestore })
+    expect(seenArgs).toEqual([['/tmp/custom-plan.json', 'b'.repeat(64), EXPECTED_PROJECT_ID]])
+  })
+
+  it.each([
+    ['ackMaintenance', { ackMaintenance: false }, /ack-maintenance-readonly/],
+    ['backupReference', { backupReference: undefined }, /backup-reference/],
+    ['rollbackReference', { rollbackReference: undefined }, /rollback-reference/],
+    ['expectedPlanSha256', { expectedPlanSha256: undefined }, /expected-plan-sha256/],
+  ] as const)('missing %s is refused BEFORE verifyPlanFile/acquireFirestore are ever called', (_label, override, msgPattern) => {
+    const verifyPlanFile = () => { throw new Error('verifyPlanFile must not be called when a required flag is missing') }
+    const { acquireFirestore, callCount } = countingFirestoreFake()
+    expect(() => runProductionApplyPreflight(fullOpts(override), EXPECTED_PROJECT_ID, { verifyPlanFile, acquireFirestore })).toThrow(msgPattern)
+    expect(callCount()).toBe(0)
   })
 })
 

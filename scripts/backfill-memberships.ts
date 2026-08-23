@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import type { Firestore } from 'firebase-admin/firestore'
 
 import { parseCliArgs, CliArgError } from './lib/cli.ts'
 import { assertEnvironmentGuard, assertCycleExecutionAllowed, initFirestore, EnvironmentGuardError, CycleExecutionError, type Environment } from './lib/firebaseAdmin.ts'
@@ -33,7 +34,8 @@ import {
   type EmergencyReconstructionAudit,
 } from './lib/report.ts'
 import {
-  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanFileIntegrity, matchRollbackPlanAgainstCurrent, sha256OfFile, ProductionSafetyError,
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanFileIntegrity, matchRollbackPlanAgainstCurrent, runProductionApplyPreflight, sha256OfFile, ProductionSafetyError,
+  type VerifiedRollbackPlanFile,
 } from './lib/productionSafety.ts'
 import { runEmergencyReconstruction } from './lib/emergencyReconstruction.ts'
 import { assertCleanTrackedSourceRevision, realSourceRevisionDeps, SourceRevisionError } from './lib/sourceRevision.ts'
@@ -195,36 +197,44 @@ async function main(): Promise<number> {
     }
   }
 
-  // Independent audit fixes, 5th round, item 2: for a production `apply`,
-  // `--rollback-reference`'s raw-byte hash and structural schema are now
-  // verified HERE — before `initFirestore()`, before any credential
-  // acquisition, before any Firestore read. The 4th round's version of
-  // this check ran deep inside the apply branch below, AFTER
-  // `readAllUsers()`/`readAllCompanies()`/`readAllExistingMemberships()`
+  // Independent audit fixes, 5th round, item 2 (and the follow-up review's
+  // "additional" finding): for a production `apply`, `--rollback-reference`'s
+  // raw-byte hash and structural schema are verified BEFORE `initFirestore()`,
+  // before any credential acquisition, before any Firestore read. The 4th
+  // round's version of this check ran deep inside the apply branch below,
+  // AFTER `readAllUsers()`/`readAllCompanies()`/`readAllExistingMemberships()`
   // had already executed for every mode (including apply) — so a
-  // tampered/wrong plan hash did NOT actually produce "zero Firestore
-  // I/O" as documented, only zero *writes*. `verifyRollbackPlanFileIntegrity()`
-  // takes no Firestore client at all, making that impossible to get wrong.
-  // The comparison against this run's own computed values (which DOES
-  // require the plan to be built first) happens later, via
-  // `matchRollbackPlanAgainstCurrent()`, reusing this already-verified file.
-  let verifiedRollbackPlanFile: ReturnType<typeof verifyRollbackPlanFileIntegrity> | undefined
+  // tampered/wrong plan hash did NOT actually produce "zero Firestore I/O"
+  // as documented, only zero *writes*. Delegated to
+  // `runProductionApplyPreflight()` (`scripts/lib/productionSafety.ts`) —
+  // the SAME function `scripts/lib/productionSafety.test.ts` unit-tests
+  // with a counting fake `acquireFirestore`, so that test observes THIS
+  // real call site's behavior, not a parallel reimplementation of it.
+  // `acquireFirestore` there IS `initFirestore` here — for a production
+  // apply, credential acquisition happens INSIDE the preflight, only after
+  // `verifyPlanFile` succeeds; every other mode/environment falls through
+  // to the unconditional `initFirestore()` call below unchanged.
+  let verifiedRollbackPlanFile: VerifiedRollbackPlanFile | undefined
+  let db: Firestore
   if (environment === 'production' && opts.mode === 'apply') {
     try {
-      if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production apply.')
-      if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
-      if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
-      if (!opts.expectedPlanSha256) throw new ProductionSafetyError('--expected-plan-sha256 is required for a production apply (verified against --rollback-reference before any parsing, credential acquisition, or Firestore I/O).')
-      verifiedRollbackPlanFile = verifyRollbackPlanFileIntegrity(opts.rollbackReference, opts.expectedPlanSha256, expectedProjectId)
+      const preflight = runProductionApplyPreflight(
+        { ackMaintenance: opts.ackMaintenance, backupReference: opts.backupReference, rollbackReference: opts.rollbackReference, expectedPlanSha256: opts.expectedPlanSha256 },
+        expectedProjectId,
+        { verifyPlanFile: verifyRollbackPlanFileIntegrity, acquireFirestore: () => initFirestore(expectedProjectId) },
+      )
+      verifiedRollbackPlanFile = preflight.verified
+      db = preflight.db
     } catch (err) {
       if (err instanceof ProductionSafetyError) { console.error(`Production safety: ${err.message}`); return 3 }
       throw err
     }
+  } else {
+    db = initFirestore(expectedProjectId)
   }
 
   const runId = randomUUID()
   const startedAt = new Date().toISOString()
-  const db = initFirestore(expectedProjectId)
 
   if (opts.mode === 'rollback-from-report') {
     return runRollback(db, opts.fromReport!, environment, expectedProjectId, runId, startedAt, opts.reportPath!, opts)

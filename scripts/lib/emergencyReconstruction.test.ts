@@ -114,6 +114,7 @@ const validDryRun = {
   targetChecksum: HEX64_C,
   counts: fullCounts(),
   plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
+  resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
 }
 
 describe('runEmergencyReconstruction — operation order (final-round fix #1, third pass)', () => {

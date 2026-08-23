@@ -128,6 +128,28 @@ describe('extractLegacyRelations — missing company', () => {
     const b = extractLegacyRelations([user('u1', { companies: [{ companyId: 'co_ghost', role: 'admin' }] })], [])
     expect(a.orphans[0]?.evidenceFingerprint).not.toBe(b.orphans[0]?.evidenceFingerprint)
   })
+
+  // ── Independent audit fixes, 5th round (review of the 5th round's own fix), item 1 ──
+  it('a missing_company orphan with NO role field at all is flagged hasInvalidRole — same as an invalid role, not silently valid', () => {
+    const result = extractLegacyRelations([user('u1', { companyId: 'co_ghost' })], [])
+    expect(result.orphans).toHaveLength(1)
+    expect(result.orphans[0]).toMatchObject({
+      companyId: 'co_ghost', uid: 'u1', reason: 'missing_company',
+      observedRoles: [], hasInvalidRole: true, proposedRole: null,
+    })
+  })
+
+  it('a missing_company orphan with an invalid (non-empty, unknown) role string is flagged hasInvalidRole, same as a missing role', () => {
+    const withInvalidRole = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'superadmin' })], [])
+    const withMissingRole = extractLegacyRelations([user('u1', { companyId: 'co_ghost' })], [])
+    expect(withInvalidRole.orphans[0]?.hasInvalidRole).toBe(true)
+    expect(withMissingRole.orphans[0]?.hasInvalidRole).toBe(true)
+  })
+
+  it('a missing_company orphan with one valid role and no other claims is NOT flagged invalid and gets a proposedRole', () => {
+    const result = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'admin' })], [])
+    expect(result.orphans[0]).toMatchObject({ observedRoles: ['admin'], hasInvalidRole: false, proposedRole: 'admin' })
+  })
 })
 
 describe('extractLegacyRelations — missing user (via ownerId)', () => {

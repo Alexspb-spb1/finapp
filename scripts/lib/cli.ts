@@ -153,11 +153,20 @@ export function parseCliArgs(args: readonly string[]): CliOptions {
   // --expected-report-sha256 y` parsed successfully even though dry-run
   // never reads either flag — silently accepting a nonsensical, misleading
   // command instead of refusing it outright.
-  const UNIVERSAL_FLAGS = new Set(['--mode', '--apply', '--environment', '--project', '--confirm-project', '--decisions-file', '--report-path'])
+  // Independent audit fixes, 5th round (review of the 5th round's own fix),
+  // item 2: `--decisions-file` is read unconditionally near the top of
+  // main() (readDecisionsFile()), but its result is only ever USED for
+  // dry-run/verify/apply's buildPlan() — for rollback-from-report/
+  // rollback-from-plan, main() returns from a dedicated rollback function
+  // before decisionsResult is touched again. Treating it as universal let
+  // `--mode rollback-from-report --decisions-file x` parse successfully
+  // even though `x` is silently ignored — moved out of UNIVERSAL_FLAGS and
+  // into only the three modes that actually consume it.
+  const UNIVERSAL_FLAGS = new Set(['--mode', '--apply', '--environment', '--project', '--confirm-project', '--report-path'])
   const MODE_ALLOWED_FLAGS: Record<ReportMode, ReadonlySet<string>> = {
-    'dry-run': new Set(),
-    verify: new Set(),
-    apply: new Set(['--backup-reference', '--rollback-reference', '--ack-maintenance-readonly', '--expected-plan-sha256']),
+    'dry-run': new Set(['--decisions-file']),
+    verify: new Set(['--decisions-file']),
+    apply: new Set(['--decisions-file', '--backup-reference', '--rollback-reference', '--ack-maintenance-readonly', '--expected-plan-sha256']),
     'rollback-from-report': new Set(['--from-report', '--expected-report-sha256', '--ack-maintenance-readonly']),
     'rollback-from-plan': new Set(['--from-plan', '--expected-plan-sha256', '--ack-emergency-reconstruction', '--ack-maintenance-readonly']),
   }

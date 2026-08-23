@@ -160,7 +160,7 @@ describe('parseCliArgs — mode-specific flag allowlist (not merely mode-specifi
     expect(opts.mode).toBe('apply')
   })
 
-  it('accepts --mode dry-run with only universal flags', () => {
+  it('accepts --mode dry-run with its own allowed --decisions-file', () => {
     const opts = parseCliArgs([...baseArgs, '--mode', 'dry-run', '--decisions-file', '/tmp/d.json'])
     expect(opts.mode).toBe('dry-run')
   })
@@ -168,5 +168,28 @@ describe('parseCliArgs — mode-specific flag allowlist (not merely mode-specifi
   it('accepts --mode verify with only universal flags', () => {
     const opts = parseCliArgs([...baseArgs, '--mode', 'verify'])
     expect(opts.mode).toBe('verify')
+  })
+
+  // ── Independent audit fixes, 5th round (review of the 5th round's own fix), item 2 ──
+  // --decisions-file is read unconditionally by main() but is only ever
+  // USED for dry-run/verify/apply's buildPlan() — rollback-from-report and
+  // rollback-from-plan return from a dedicated rollback path before it is
+  // touched again, so it was wrongly treated as a universal flag.
+  it('rejects --mode rollback-from-report combined with --decisions-file (silently ignored, not a rollback-from-report flag)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-report', '--from-report', '/tmp/a.json', '--expected-report-sha256', HEX64, '--decisions-file', '/tmp/d.json'])).toThrow(CliArgError)
+  })
+
+  it('rejects --mode rollback-from-plan combined with --decisions-file (silently ignored, not a rollback-from-plan flag)', () => {
+    expect(() => parseCliArgs([...baseArgs, '--mode', 'rollback-from-plan', '--from-plan', '/tmp/dry-run.json', '--ack-emergency-reconstruction', '--expected-plan-sha256', HEX64, '--decisions-file', '/tmp/d.json'])).toThrow(CliArgError)
+  })
+
+  it('accepts --mode verify with --decisions-file (buildPlan() genuinely uses it for verify)', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'verify', '--decisions-file', '/tmp/d.json'])
+    expect(opts.decisionsFile).toBe('/tmp/d.json')
+  })
+
+  it('accepts --mode apply with --decisions-file alongside apply-only flags', () => {
+    const opts = parseCliArgs([...baseArgs, '--mode', 'apply', '--decisions-file', '/tmp/d.json', '--backup-reference', '/tmp/b.json', '--rollback-reference', '/tmp/r2.json', '--ack-maintenance-readonly', '--expected-plan-sha256', HEX64])
+    expect(opts.decisionsFile).toBe('/tmp/d.json')
   })
 })

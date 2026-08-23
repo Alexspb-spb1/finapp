@@ -147,8 +147,18 @@ export function extractLegacyRelations(
     let entry = orphanCompanyEvidence.get(key)
     if (!entry) { entry = { kinds: new Set(), validRoles: new Set(), hasInvalidRole: false }; orphanCompanyEvidence.set(key, entry) }
     entry.kinds.add(kind)
+    // Independent audit fixes, 5th round (review of the 5th round's own
+    // fix): a MISSING `role` field must be treated exactly like an
+    // INVALID one, not silently ignored — this is the established
+    // convention everywhere else in this file (see the confirmed/conflict
+    // path below: `isKnownRole(claim.roleValue)` is false for `undefined`
+    // too, so a claim with no role at all becomes `invalid_role`, same as
+    // a corrupted string). The previous `roleValue !== undefined` guard
+    // here meant a claim with literally no `role` field contributed no
+    // evidence at all to an orphan's `hasInvalidRole` — an inconsistency
+    // an independent reviewer's negative test caught directly.
     if (isKnownRole(roleValue)) entry.validRoles.add(roleValue)
-    else if (roleValue !== undefined) entry.hasInvalidRole = true
+    else entry.hasInvalidRole = true
   }
 
   // missing_user orphans (via companies.ownerId) are always sourced from
