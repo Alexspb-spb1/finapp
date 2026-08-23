@@ -418,7 +418,7 @@ below by reordering. The actual per-mode requirements, implemented in
 | Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | `--expected-report-sha256` | `--expected-plan-sha256` | `--ack-emergency-reconstruction` | Maintenance mode checked live? |
 |---|---|---|---|---|---|---|---|
 | `dry-run` | not required | not required | not required | n/a | n/a | n/a | no — dry-run writes nothing |
-| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified in two phases: Phase A (`verifyRollbackPlanFileIntegrity`) checks the raw SHA-256 against `--rollback-reference`'s bytes and validates its structure BEFORE any parsing, credential acquisition, or Firestore I/O; Phase B (`matchRollbackPlanAgainstCurrent`) then compares `sourceGitSha`/`sourceChecksum`/`sourceStateChecksum`/`decisionsChecksum`/`targetChecksum` AND `plannedCreates` (direct structural comparison, not just checksums) — ALL FIVE checksums plus `plannedCreates` must exactly match this run's own values** (see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | **required** — checked FIRST, before JSON parsing/credential acquisition/Firestore I/O | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
+| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified in two phases: Phase A (`verifyRollbackPlanFileIntegrity`) reads `--rollback-reference`'s raw bytes, checks their SHA-256 against `--expected-plan-sha256` BEFORE any JSON parsing, and only THEN — once the hash matches — parses the JSON and structurally validates it; both the hash check and the subsequent parsing/validation complete before any credential acquisition or Firestore I/O. Phase B (`matchRollbackPlanAgainstCurrent`), called only after Phase A succeeds, then compares `sourceGitSha`/`sourceChecksum`/`sourceStateChecksum`/`decisionsChecksum`/`targetChecksum` AND `plannedCreates` (direct structural comparison, not just checksums) — all five values (the source Git revision plus four checksums) plus `plannedCreates` must exactly match this run's own values** (see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | **required** — checked FIRST, before JSON parsing/credential acquisition/Firestore I/O | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
 | `verify` | not required | not required | not required | n/a | n/a | n/a | no — verify only reads |
 | `rollback-from-report` | not required | not required | required | **required** — verified against `--from-report`'s actual bytes BEFORE any parsing/I/O | n/a | n/a | **yes** (`assertMaintenanceModeActive`, fail-closed) |
 | `rollback-from-plan` | not required | not required | required | n/a | **required, checked FIRST** — verified against `--from-plan`'s actual bytes, and the plan structurally validated, BEFORE `assertMaintenanceModeActive()` or any candidate read/delete (final-round fix #1, third pass — see `runEmergencyReconstruction()`, `scripts/lib/emergencyReconstruction.ts`) | **required** — explicit acknowledgement this is the degraded, last-resort path | **yes, checked AFTER the hash/structure checks above** (`assertMaintenanceModeActive`, fail-closed) |
@@ -815,18 +815,20 @@ node scripts/backfill-memberships.ts \
   --ack-maintenance-readonly
 ```
 
-Phase A (`verifyRollbackPlanFileIntegrity()`) checks `--expected-plan-sha256`
-against `--rollback-reference`'s raw bytes and validates its structure,
-BEFORE any credential acquisition or Firestore I/O. Phase B
-(`matchRollbackPlanAgainstCurrent()`) then cross-checks `sourceGitSha`,
-`sourceChecksum`, `sourceStateChecksum`, `decisionsChecksum`, AND
-`targetChecksum` between this `--rollback-reference` and THIS apply run's
-own computed values, plus `plannedCreates` directly — all five checksums
-must match exactly, and Phase B is never reached if Phase A already
-rejected the reference. Using Step 5b's report with the SAME
-`--decisions-file` is what makes this possible; Step 5a's report (or a
-dry-run with a different/no decisions file) will be refused here, before
-any write.
+Phase A (`verifyRollbackPlanFileIntegrity()`) reads `--rollback-reference`'s
+raw bytes and checks their SHA-256 against `--expected-plan-sha256` BEFORE
+any JSON parsing; only once that hash matches does it parse the JSON and
+structurally validate it. Both the hash check and the subsequent
+parsing/validation complete before any credential acquisition or Firestore
+I/O. Phase B (`matchRollbackPlanAgainstCurrent()`), called only after
+Phase A succeeds, then cross-checks `sourceGitSha`, `sourceChecksum`,
+`sourceStateChecksum`, `decisionsChecksum`, AND `targetChecksum` between
+this `--rollback-reference` and THIS apply run's own computed values, plus
+`plannedCreates` directly — all five values (the source Git revision plus
+four checksums) plus `plannedCreates` must match exactly. Using Step 5b's
+report with the SAME `--decisions-file` is what makes this possible;
+Step 5a's report (or a dry-run with a different/no decisions file) will
+be refused here, before any write.
 
 On success, the tool prints (never embeds in the report itself):
 
@@ -1020,10 +1022,14 @@ phases:
 1. **Pre-apply** (`--rollback-reference` flag, verified in two phases by
    `scripts/lib/productionSafety.ts`):
    - **Phase A — `verifyRollbackPlanFileIntegrity()`**: reads
-     `--rollback-reference`, checks its raw bytes' SHA-256 against
-     `--expected-plan-sha256`, and structurally validates its content
-     (delegating to `validateStrictDryRunReportContent()`) — all of this
-     BEFORE any credential acquisition or Firestore I/O, and before
+     `--rollback-reference`'s raw bytes and checks their SHA-256 against
+     `--expected-plan-sha256` BEFORE any JSON parsing — structural
+     validation is not possible before parsing, so it can only happen
+     AFTER the hash check succeeds: only once the hash matches does this
+     function parse the JSON and structurally validate its content
+     (delegating to `validateStrictDryRunReportContent()`). Both the hash
+     check and the subsequent parsing/validation complete BEFORE any
+     credential acquisition or Firestore I/O, and before
      `matchRollbackPlanAgainstCurrent()` (Phase B) is even called. Takes no
      Firestore/db parameter at all, so it is structurally impossible for a
      tampered or wrong-hash reference to cause any Firestore I/O. Points to
@@ -1057,7 +1063,8 @@ phases:
      no I/O of any kind — takes the ALREADY-verified Phase A result and
      THIS run's own freshly-computed values. `sourceGitSha`,
      `sourceChecksum`, `sourceStateChecksum`, `decisionsChecksum`, AND
-     `targetChecksum` — ALL FIVE — must exactly equal THIS apply run's own
+     `targetChecksum` — all five values (the source Git revision plus four
+     checksums) — must exactly equal THIS apply run's own
      computed values, PLUS `plannedCreates` must match directly (structural
      comparison, not just checksums), not `targetChecksum` alone —
      proving the dry-run was built from the exact same code, the exact
