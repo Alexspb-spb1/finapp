@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { parseMaintenanceModeCliArgs, MaintenanceModeCliArgError } from './maintenanceModeCli.ts'
 
 const baseEnable = ['--environment', 'emulator', '--project', 'demo-finapp', '--enable', '--reason', 'SEC-005 backfill', '--task-id', 'SEC-005', '--operator', 'alice']
-const baseDisable = ['--environment', 'emulator', '--project', 'demo-finapp', '--disable', '--operator', 'alice']
+const baseDisable = ['--environment', 'emulator', '--project', 'demo-finapp', '--disable', '--task-id', 'SEC-005', '--operator', 'alice']
 
 describe('parseMaintenanceModeCliArgs — required flags', () => {
   it('throws when --environment is missing', () => {
@@ -37,9 +37,29 @@ describe('parseMaintenanceModeCliArgs — required flags', () => {
     expect(() => parseMaintenanceModeCliArgs(['--environment', 'emulator', '--project', 'demo-finapp', '--enable', '--reason', 'x', '--operator', 'alice'])).toThrow(MaintenanceModeCliArgError)
   })
 
-  it('--disable does NOT require --reason/--task-id', () => {
+  it('--disable does NOT require --reason', () => {
     const opts = parseMaintenanceModeCliArgs(baseDisable)
     expect(opts.action).toBe('disable')
+  })
+
+  // ── Production execution gate round: --task-id is now required for
+  // --disable too — the script must know WHICH task's maintenance record
+  // it is targeting, so it can refuse to disable a different task's
+  // window. ────────────────────────────────────────────────────────────
+  it('--disable requires --task-id', () => {
+    expect(() => parseMaintenanceModeCliArgs(['--environment', 'emulator', '--project', 'demo-finapp', '--disable', '--operator', 'alice'])).toThrow(MaintenanceModeCliArgError)
+  })
+
+  it('--environment production requires --task-id to be exactly "SEC-005"', () => {
+    expect(() => parseMaintenanceModeCliArgs([
+      '--environment', 'production', '--project', 'finapp-prod-10a83', '--confirm-project', 'finapp-prod-10a83',
+      '--enable', '--reason', 'x', '--task-id', 'SEC-999', '--operator', 'alice',
+    ])).toThrow(/SEC-005/)
+  })
+
+  it('--environment emulator/staging allow a --task-id other than "SEC-005" (the production-only restriction does not apply)', () => {
+    const opts = parseMaintenanceModeCliArgs(['--environment', 'emulator', '--project', 'demo-finapp', '--enable', '--reason', 'x', '--task-id', 'SEC-999', '--operator', 'alice'])
+    expect(opts.taskId).toBe('SEC-999')
   })
 
   it('throws on an unknown argument', () => {
@@ -64,7 +84,7 @@ describe('parseMaintenanceModeCliArgs — accepted shapes', () => {
     const opts = parseMaintenanceModeCliArgs(baseDisable)
     expect(opts).toEqual({
       environment: 'emulator', project: 'demo-finapp', confirmProject: undefined,
-      action: 'disable', reason: undefined, taskId: undefined, operator: 'alice',
+      action: 'disable', reason: undefined, taskId: 'SEC-005', operator: 'alice',
     })
   })
 

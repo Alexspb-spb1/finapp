@@ -71,11 +71,53 @@ export function assertEnvironmentGuard(input: EnvironmentGuardInput): string {
 
 export class CycleExecutionError extends Error {}
 
-/** The only modes `assertCycleExecutionAllowed()` ever lets through for
- * `environment === 'production'` — see below. Kept as a narrow local
- * union (not the full `ReportMode`) so this file does not need to import
- * `report.ts` just for a type. */
-export type CycleExecutionMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from-report' | 'rollback-from-plan'
+/** Every action ANY part of the SEC-005 tooling can ever attempt against
+ * Firestore for a given `Environment` — the migration CLI's five
+ * `ReportMode`s, plus the two maintenance-mode transitions
+ * (`scripts/ops/set-maintenance-mode.ts`, which has no `ReportMode`
+ * concept of its own). Independent audit fixes, production execution
+ * gate round, item 1: `assertCycleExecutionAllowed()`'s `action`
+ * parameter is now REQUIRED and fully typed — there is no `undefined`
+ * shortcut a caller can pass (accidentally or otherwise) to mean
+ * "refused"; every call site must name exactly which action it is
+ * attempting, and the type checker enforces that a valid
+ * `CycleExecutionAction` is always supplied. */
+export type CycleExecutionAction =
+  | 'dry-run'
+  | 'apply'
+  | 'verify'
+  | 'rollback-from-report'
+  | 'rollback-from-plan'
+  | 'maintenance-enable'
+  | 'maintenance-disable'
+
+/** The complete, closed set of actions this function ever recognizes at
+ * all — used to fail-closed on a value that somehow bypassed the type
+ * checker (a mistyped literal cast, JSON-derived input, etc.). Kept as
+ * its own list (rather than deriving it from `PRODUCTION_ALLOWED_ACTIONS`
+ * below) so the two are independently visible and a future addition to
+ * one is never silently assumed to apply to the other. */
+const KNOWN_ACTIONS: ReadonlySet<CycleExecutionAction> = new Set<CycleExecutionAction>([
+  'dry-run', 'apply', 'verify', 'rollback-from-report', 'rollback-from-plan', 'maintenance-enable', 'maintenance-disable',
+])
+
+/** Actions `environment === 'production'` is currently authorized for —
+ * the exact scope of the `PRODUCTION_ACTION_APPROVED: SEC-005` grant that
+ * opened this gate: enable maintenance, create+verify backup (backup
+ * itself is outside this tool — see BASE-003 — so not a CycleExecutionAction
+ * here), a create-only `apply` against a verified resolved plan, `verify`,
+ * disable maintenance after verify passes, and `rollback-from-report`/
+ * `rollback-from-plan` as the emergency undo path for exactly what this
+ * apply created. `dry-run` remains allowed (unchanged from the prior,
+ * narrower `PRODUCTION_PREFLIGHT_APPROVED: SEC-005` grant it superseded).
+ * This gate is only ONE of several independent protections `apply` must
+ * still pass — see `scripts/lib/productionSafety.ts` (maintenance
+ * verified live, backup freshness, two-phase rollback-plan verification,
+ * create-only writes) and `scripts/lib/sourceRevision.ts` (clean tracked
+ * worktree) — none of which this gate substitutes for or weakens. */
+const PRODUCTION_ALLOWED_ACTIONS: ReadonlySet<CycleExecutionAction> = new Set<CycleExecutionAction>([
+  'dry-run', 'apply', 'verify', 'rollback-from-report', 'rollback-from-plan', 'maintenance-enable', 'maintenance-disable',
+])
 
 /**
  * Cycle-scoped execution authorization — deliberately SEPARATE from
@@ -88,34 +130,30 @@ export type CycleExecutionMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from
  *
  * SEC-005 has been granted `EXTERNAL_ACTION_APPROVED: SEC-005` /
  * `ENVIRONMENT: staging` — `emulator` and `staging` are both allowed to
- * proceed past this gate for ANY mode.
+ * proceed past this gate for ANY known action.
  *
- * `production` was granted `PRODUCTION_PREFLIGHT_APPROVED: SEC-005` —
- * explicitly scoped to "deploy maintenance protection, create+verify
- * backup, read-only dry-run"; apply/backfill remains explicitly forbidden
- * ("Backfill/apply пока запрещён"). This function reflects EXACTLY that
- * scope: `environment === 'production'` is allowed to proceed ONLY when
- * `mode === 'dry-run'` (never writes — no `DocumentReference.create()`
- * anywhere in the dry-run path). `apply`, `verify` (requires a decisions
- * file tied to a completed apply — meaningless without one), `rollback-
- * from-report`, and `rollback-from-plan` all remain UNCONDITIONALLY
- * refused for production — this check does not accept or consult any
- * other flag (backup-reference, rollback-reference, ack-maintenance-
- * readonly, or otherwise) for those modes; no broader
- * `PRODUCTION_ACTION_APPROVED` grant (with verified `BACKUP_REFERENCE`/
- * `ROLLBACK_REFERENCE`, per CLAUDE.md §5) has been given this cycle for
- * an actual backfill, and none can make this function return without
- * throwing for any production mode other than `dry-run`.
- *
- * `mode` is OPTIONAL: callers with no `ReportMode` concept of their own —
- * e.g. `scripts/ops/set-maintenance-mode.ts`, whose only "modes" are
- * enable/disable, neither of which is authorized for production this
- * cycle — simply omit it, which always refuses `production` (`undefined
- * !== 'dry-run'`), the same as passing an explicitly-unauthorized mode.
+ * `production` was granted `PRODUCTION_ACTION_APPROVED: SEC-005` — a
+ * controlled production cycle (maintenance enable → verified backup →
+ * create-only apply against a verified resolved plan → verify →
+ * maintenance disable → rollback-from-report/rollback-from-plan as the
+ * emergency path), superseding the earlier, narrower
+ * `PRODUCTION_PREFLIGHT_APPROVED: SEC-005` (read-only dry-run only).
+ * `environment === 'production'` is allowed to proceed for exactly the
+ * actions in `PRODUCTION_ALLOWED_ACTIONS` above — any action not in that
+ * set (or not a recognized `CycleExecutionAction` at all) is refused,
+ * fail-closed, with no environment-variable, string, or optional-flag
+ * override of any kind. This gate does not itself verify maintenance
+ * state, backup freshness, plan integrity, or worktree cleanliness — see
+ * `scripts/lib/productionSafety.ts`/`scripts/lib/sourceRevision.ts` for
+ * those; this function only answers "has ANY grant authorized this
+ * (environment, action) pair at all".
  */
-export function assertCycleExecutionAllowed(environment: Environment, mode?: CycleExecutionMode): void {
-  if (environment === 'production' && mode !== 'dry-run') {
-    throw new CycleExecutionError(`production${mode ? ` ${mode}` : ''} requires a separate, explicit PRODUCTION_ACTION_APPROVED grant (with verified BACKUP_REFERENCE/ROLLBACK_REFERENCE) from the repository owner, which has not been given this cycle — only PRODUCTION_PREFLIGHT_APPROVED: SEC-005 (read-only dry-run) has been granted.`)
+export function assertCycleExecutionAllowed(environment: Environment, action: CycleExecutionAction): void {
+  if (!KNOWN_ACTIONS.has(action)) {
+    throw new CycleExecutionError(`unknown action ${JSON.stringify(action)} — refusing (fail-closed; no action is authorized by default).`)
+  }
+  if (environment === 'production' && !PRODUCTION_ALLOWED_ACTIONS.has(action)) {
+    throw new CycleExecutionError(`production ${action} requires a separate, explicit PRODUCTION_ACTION_APPROVED grant from the repository owner naming this action, which has not been given this cycle.`)
   }
 }
 

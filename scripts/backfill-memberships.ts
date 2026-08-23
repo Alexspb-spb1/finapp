@@ -157,13 +157,19 @@ async function main(): Promise<number> {
   // SEC-005: staging execution is explicitly authorized this cycle
   // (EXTERNAL_ACTION_APPROVED: SEC-005 / ENVIRONMENT: staging, granted by
   // the repository owner) — emulator and staging both proceed past this
-  // gate for any mode. Production is authorized ONLY for --mode dry-run
-  // (PRODUCTION_PREFLIGHT_APPROVED: SEC-005 — "deploy maintenance
-  // protection, create+verify backup, read-only dry-run"; "Backfill/apply
-  // пока запрещён") — assertCycleExecutionAllowed() refuses every other
-  // production mode regardless of the flags checked just above; no
-  // broader PRODUCTION_ACTION_APPROVED grant for an actual backfill has
-  // been given this cycle.
+  // gate for any mode. Production, as of the production execution gate
+  // round, is authorized for the full SEC-005 cycle (PRODUCTION_ACTION_APPROVED:
+  // SEC-005 — maintenance enable, create-only apply against a verified
+  // resolved plan, verify, maintenance disable, rollback-from-report/
+  // rollback-from-plan as the emergency path) — see
+  // `PRODUCTION_ALLOWED_ACTIONS` in firebaseAdmin.ts for the exact,
+  // closed set. This gate only answers "has ANY grant authorized this
+  // (environment, mode) pair at all" — it does not itself verify
+  // maintenance state, backup freshness, plan integrity, or worktree
+  // cleanliness; every other flags-checked-just-above requirement (and
+  // the ones enforced later, once targetChecksum is known / inside
+  // runRollback()) still applies independently and is unweakened by this
+  // grant.
   try {
     assertCycleExecutionAllowed(environment, opts.mode)
   } catch (err) {

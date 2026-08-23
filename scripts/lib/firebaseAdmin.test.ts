@@ -81,48 +81,49 @@ describe('assertEnvironmentGuard — source conflicts are rejected before any I/
   })
 })
 
+const ALL_ACTIONS = ['dry-run', 'apply', 'verify', 'rollback-from-report', 'rollback-from-plan', 'maintenance-enable', 'maintenance-disable'] as const
+
 // ── SEC-005 staging authorization (EXTERNAL_ACTION_APPROVED: SEC-005 /
-// ENVIRONMENT: staging) — emulator/staging allowed for any mode. ─────────
-describe('assertCycleExecutionAllowed — emulator/staging allowed for any mode', () => {
-  it('does not throw for emulator, with or without a mode', () => {
-    expect(() => assertCycleExecutionAllowed('emulator')).not.toThrow()
-    expect(() => assertCycleExecutionAllowed('emulator', 'apply')).not.toThrow()
+// ENVIRONMENT: staging) — emulator/staging allowed for any known action. ──
+describe('assertCycleExecutionAllowed — emulator/staging allowed for any known action', () => {
+  it.each(ALL_ACTIONS)('does not throw for emulator %s', action => {
+    expect(() => assertCycleExecutionAllowed('emulator', action)).not.toThrow()
   })
 
-  it('does not throw for staging, with or without a mode — explicitly authorized this cycle', () => {
-    expect(() => assertCycleExecutionAllowed('staging')).not.toThrow()
-    expect(() => assertCycleExecutionAllowed('staging', 'apply')).not.toThrow()
+  it.each(ALL_ACTIONS)('does not throw for staging %s — explicitly authorized this cycle', action => {
+    expect(() => assertCycleExecutionAllowed('staging', action)).not.toThrow()
   })
 })
 
-// ── SEC-005 production authorization (PRODUCTION_PREFLIGHT_APPROVED:
-// SEC-005 — "deploy maintenance protection, create+verify backup,
-// read-only dry-run"; "Backfill/apply пока запрещён") — production is
-// allowed ONLY for --mode dry-run, every other mode (and no mode at all)
-// remains unconditionally refused. ─────────────────────────────────────
-describe('assertCycleExecutionAllowed — production allowed ONLY for dry-run', () => {
-  it('does NOT throw for production dry-run — the exact scope PRODUCTION_PREFLIGHT_APPROVED: SEC-005 grants', () => {
-    expect(() => assertCycleExecutionAllowed('production', 'dry-run')).not.toThrow()
+// ── SEC-005 production authorization (PRODUCTION_ACTION_APPROVED:
+// SEC-005 — production execution gate round: a controlled production
+// cycle covering maintenance enable/disable, create-only apply against a
+// verified resolved plan, verify, and rollback-from-report/
+// rollback-from-plan as the emergency path). This supersedes the earlier,
+// narrower PRODUCTION_PREFLIGHT_APPROVED: SEC-005 (dry-run only). ───────
+describe('assertCycleExecutionAllowed — production allowed for the full SEC-005 action set', () => {
+  it.each(ALL_ACTIONS)('does NOT throw for production %s — the exact scope PRODUCTION_ACTION_APPROVED: SEC-005 grants', action => {
+    expect(() => assertCycleExecutionAllowed('production', action)).not.toThrow()
+  })
+})
+
+// ── Independent audit fixes, production execution gate round, item 1:
+// `action` is required and fully typed — no `undefined`-means-refused
+// shortcut exists any more; an unknown/garbage value that somehow
+// bypasses the type checker is refused fail-closed, for every
+// environment, not just production. ─────────────────────────────────────
+describe('assertCycleExecutionAllowed — unknown action is refused fail-closed, for every environment', () => {
+  it.each(['emulator', 'staging', 'production'] as const)('throws CycleExecutionError for %s with an unrecognized action string', environment => {
+    expect(() => assertCycleExecutionAllowed(environment, 'totally-unknown-action' as never)).toThrow(CycleExecutionError)
   })
 
-  it('throws CycleExecutionError for production with no mode at all (e.g. scripts/ops/set-maintenance-mode.ts, which was not authorized this cycle)', () => {
-    expect(() => assertCycleExecutionAllowed('production')).toThrow(CycleExecutionError)
-  })
-
-  it.each(['apply', 'verify', 'rollback-from-report', 'rollback-from-plan'] as const)(
-    'throws CycleExecutionError for production %s — apply/backfill remains explicitly forbidden',
-    mode => {
-      expect(() => assertCycleExecutionAllowed('production', mode)).toThrow(CycleExecutionError)
-    },
-  )
-
-  it('the production non-dry-run error message names PRODUCTION_ACTION_APPROVED, not the dry-run grant, as what is still missing', () => {
+  it('the unknown-action error message says so explicitly, not a generic "not authorized"', () => {
     try {
-      assertCycleExecutionAllowed('production', 'apply')
+      assertCycleExecutionAllowed('emulator', 'totally-unknown-action' as never)
       expect.unreachable('should have thrown')
     } catch (err) {
       expect(err).toBeInstanceOf(CycleExecutionError)
-      expect((err as Error).message).toMatch(/PRODUCTION_ACTION_APPROVED/)
+      expect((err as Error).message).toMatch(/unknown action/)
     }
   })
 })

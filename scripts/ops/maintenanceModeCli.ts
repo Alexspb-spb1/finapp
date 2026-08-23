@@ -80,9 +80,22 @@ export function parseMaintenanceModeCliArgs(args: readonly string[]): Maintenanc
   if (!opts.project) throw new MaintenanceModeCliArgError('--project is required — there is no default.')
   if (opts.action === undefined) throw new MaintenanceModeCliArgError('Exactly one of --enable or --disable is required.')
   if (!opts.operator) throw new MaintenanceModeCliArgError('--operator <identifier> is required for both --enable and --disable — every transition must be attributable.')
+  // Production execution gate round: `--task-id` is now required for
+  // `--disable` too (previously `--enable`-only) — disabling must name
+  // WHICH task's maintenance record it is targeting, so the script can
+  // refuse to disable a different task's window (see
+  // set-maintenance-mode.ts's transactionalDisable()).
+  if (!opts.taskId) throw new MaintenanceModeCliArgError(`--${opts.action} requires --task-id <e.g. SEC-005>.`)
   if (opts.action === 'enable') {
     if (!opts.reason) throw new MaintenanceModeCliArgError('--enable requires --reason <why maintenance mode is being enabled>.')
-    if (!opts.taskId) throw new MaintenanceModeCliArgError('--enable requires --task-id <e.g. SEC-005>.')
+  }
+  // Only SEC-005 currently holds a production maintenance-mode
+  // authorization (PRODUCTION_ACTION_APPROVED: SEC-005) — refuse any
+  // other --task-id for production outright, before any I/O, rather than
+  // letting a typo or an unrelated task's operator accidentally touch the
+  // one production maintenance record this tool is authorized to manage.
+  if (opts.environment === 'production' && opts.taskId !== 'SEC-005') {
+    throw new MaintenanceModeCliArgError(`--task-id must be exactly "SEC-005" for --environment production — the only task currently granted a production maintenance-mode authorization, got ${JSON.stringify(opts.taskId)}.`)
   }
 
   return opts
