@@ -114,6 +114,7 @@ const validDryRun = {
   targetChecksum: HEX64_C,
   counts: fullCounts(),
   plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
+  conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
   resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
 }
 

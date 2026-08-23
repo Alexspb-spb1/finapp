@@ -18,7 +18,8 @@ import { readFileSync } from 'node:fs'
 import type { Firestore } from 'firebase-admin/firestore'
 import { sha256Hex } from './checksum.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
-import { isKnownRole, COMPATIBLE_RESOLUTIONS, type FindingType, type DecisionResolution } from './types.ts'
+import { isKnownRole, type Decision, type RelationSourceKind } from './types.ts'
+import { validateDecisions } from './decisions.ts'
 
 export class ProductionSafetyError extends Error {}
 
@@ -40,120 +41,234 @@ function isSha256HexValue(value: unknown): value is string {
   return typeof value === 'string' && SHA256_HEX_PATTERN.test(value)
 }
 
-// ── Resolved-findings audit trail — deep validation ─────────────────────
+// ── Report findings — deep validation ────────────────────────────────────
 //
-// Independent audit fixes, 5th round (2nd follow-up review of the round's
-// own fix): the previous version of this validation only checked that
-// `finding`/`decision` were present, non-array objects — it never checked
-// their CONTENT, so `{finding: {}, decision: {}}` passed as a "resolved"
-// finding, and a report could claim `missingCompanies: 1,
-// unresolvedMissingCompanies: 0` while `resolvedOrphans: []` (the orphan
-// simply vanished — neither unresolved nor accounted for as resolved).
-// Fixed by (1) validating `finding`'s shape against the specific record
-// type each field carries, (2) validating `decision`'s shape against
-// `Decision`, (3) cross-checking that `decision` is genuinely THE decision
-// that resolved THIS `finding` — identity (uid/companyId),
-// `findingType === finding.reason`, `evidenceFingerprint` equality, and
-// resolution/finding-type compatibility (`COMPATIBLE_RESOLUTIONS`) — and
-// (4) reconciling `counts.missingCompanies`/`missingUsers` (discovered
-// totals) against `counts.unresolvedMissingCompanies`/`unresolvedMissingUsers`
-// PLUS the matching subset of `resolvedOrphans` (the only finding type
-// with an explicit discovered-total count field — see report.ts's
-// `ReportCounts` doc comments; conflicts/ownerAnomalies/unknownUsers/
-// malformedClaims only ever expose an unresolved-only count, so there is
-// no discovered total to reconcile for those).
+// Independent audit fixes, 5th round, 2nd follow-up review (this pass): the
+// previous version of this validation had three gaps, all confirmed by
+// independent negative tests:
+//   1. The report's UNRESOLVED finding arrays (`conflicts`/`orphans`/
+//      `ownerAnomalies`/`unknownUsers`/`malformedClaims`/`danglingMemberships`/
+//      `ownerIdAnomalies`/`staleDecisions`/`unusedDecisions`) were never
+//      required or validated at all — a report entirely missing them still
+//      passed.
+//   2. `resolvedOrphans`' `finding` was only checked for the fields common
+//      to every finding type (uid/companyId/reason/evidenceFingerprint) —
+//      `OrphanRecord`'s own required fields (`sourceKinds`/`observedRoles`/
+//      `hasInvalidRole`/`proposedRole`) were never checked, so an orphan
+//      missing all four still passed.
+//   3. `decision` objects were checked field-by-field by hand here,
+//      independently of `decisions.ts`'s `validateDecisions()` — drifting
+//      from the real contract (never rejected unknown fields; never
+//      forbade `role` when `resolution !== 'confirm_role'`).
+//
+// Fixed by: (a) a dedicated shape validator per record type, applied
+// uniformly to BOTH the unresolved arrays and each resolved-findings
+// array's `finding` (the shape is identical either way — only the
+// resolved case additionally pairs it with a `decision`); (b) reusing
+// `validateDecisions()` (decisions.ts) for `decision` validation instead
+// of a parallel reimplementation, so the two can never drift; (c)
+// reconciling every unresolved array's length against its corresponding
+// `counts` field, and `resolvedOrphans` against the discovered/unresolved
+// orphan counts (the only finding type with an explicit discovered-total
+// count field).
+const RELATION_SOURCE_KINDS: readonly RelationSourceKind[] = ['users.home', 'users.companies[]', 'companies.ownerId']
 const CONFLICT_REASONS = ['role_mismatch', 'invalid_role', 'mixed_role_validity', 'user_id_mismatch', 'owner_role_not_admin', 'existing_membership_conflict'] as const
 const ORPHAN_REASONS = ['missing_company', 'missing_user'] as const
 const OWNER_ANOMALY_REASONS = ['owner_without_admin_membership'] as const
 const UNKNOWN_USER_REASONS = ['no_usable_relations'] as const
 const MALFORMED_CLAIM_REASONS = ['malformed_companies_entry', 'companies_field_not_array', 'malformed_company_id'] as const
-const DECISION_RESOLUTIONS: readonly DecisionResolution[] = ['confirm_role', 'accept_existing', 'exclude']
+const DANGLING_MEMBERSHIP_REASONS = ['existing_membership_missing_company', 'existing_membership_missing_user'] as const
+const OWNER_ID_ANOMALY_REASONS = ['malformed_owner_id'] as const
+
+function assertOnlyKnownKeys(field: string, index: number, rec: Record<string, unknown>, allowed: readonly string[]): void {
+  const unknown = Object.keys(rec).filter(k => !allowed.includes(k))
+  if (unknown.length > 0) {
+    throw new ProductionSafetyError(`${field}[${index}] has unknown field(s): ${unknown.sort().join(', ')}.`)
+  }
+}
+function assertNonEmptyStringField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  if (!isNonEmptyStringValue(rec[key])) throw new ProductionSafetyError(`${field}[${index}].${key} is missing.`)
+}
+function assertReasonOneOf(field: string, index: number, rec: Record<string, unknown>, allowed: readonly string[]): void {
+  if (typeof rec.reason !== 'string' || !allowed.includes(rec.reason)) {
+    throw new ProductionSafetyError(`${field}[${index}].reason is missing or not one of: ${allowed.join(', ')}.`)
+  }
+}
+function assertSha256HexField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  if (!isSha256HexValue(rec[key])) throw new ProductionSafetyError(`${field}[${index}].${key} is missing or not a valid SHA-256 hex digest.`)
+}
+function assertBooleanField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  if (typeof rec[key] !== 'boolean') throw new ProductionSafetyError(`${field}[${index}].${key} must be a boolean.`)
+}
+function assertRoleArrayField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  const value = rec[key]
+  if (!Array.isArray(value) || !value.every(isKnownRole)) {
+    throw new ProductionSafetyError(`${field}[${index}].${key} must be an array of known roles.`)
+  }
+}
+function assertSourceKindArrayField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  const value = rec[key]
+  if (!Array.isArray(value) || !value.every(v => RELATION_SOURCE_KINDS.includes(v as RelationSourceKind))) {
+    throw new ProductionSafetyError(`${field}[${index}].${key} must be an array of known source kinds.`)
+  }
+}
+function assertRoleOrNullField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  const value = rec[key]
+  if (value !== null && !isKnownRole(value)) {
+    throw new ProductionSafetyError(`${field}[${index}].${key} must be a known role or null.`)
+  }
+}
+
+const CONFLICT_ALLOWED_KEYS = ['companyId', 'uid', 'reason', 'observedRoles', 'hasInvalidRole', 'sourceKinds', 'evidenceFingerprint']
+function validateConflictRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, CONFLICT_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, CONFLICT_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+  if (rec.observedRoles !== undefined) assertRoleArrayField(field, index, rec, 'observedRoles')
+  if (rec.hasInvalidRole !== undefined) assertBooleanField(field, index, rec, 'hasInvalidRole')
+  if (rec.sourceKinds !== undefined) assertSourceKindArrayField(field, index, rec, 'sourceKinds')
+}
+
+const ORPHAN_ALLOWED_KEYS = ['companyId', 'uid', 'reason', 'sourceKinds', 'observedRoles', 'hasInvalidRole', 'proposedRole', 'evidenceFingerprint']
+function validateOrphanRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, ORPHAN_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, ORPHAN_REASONS)
+  assertSourceKindArrayField(field, index, rec, 'sourceKinds')
+  assertRoleArrayField(field, index, rec, 'observedRoles')
+  assertBooleanField(field, index, rec, 'hasInvalidRole')
+  assertRoleOrNullField(field, index, rec, 'proposedRole')
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+  // Derived-consistency: `proposedRole` is set if-and-only-if `observedRoles`
+  // has exactly one entry AND `hasInvalidRole` is false — see
+  // `OrphanRecord`'s own doc comment (types.ts).
+  const observedRoles = rec.observedRoles as string[]
+  const hasInvalidRole = rec.hasInvalidRole as boolean
+  const expectedProposedRole = observedRoles.length === 1 && !hasInvalidRole ? observedRoles[0]! : null
+  if (rec.proposedRole !== expectedProposedRole) {
+    throw new ProductionSafetyError(`${field}[${index}].proposedRole (${JSON.stringify(rec.proposedRole)}) is inconsistent with observedRoles/hasInvalidRole (expected ${JSON.stringify(expectedProposedRole)}).`)
+  }
+}
+
+const OWNER_ANOMALY_ALLOWED_KEYS = ['companyId', 'uid', 'reason', 'evidenceFingerprint']
+function validateOwnerAnomalyRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, OWNER_ANOMALY_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, OWNER_ANOMALY_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+const UNKNOWN_USER_ALLOWED_KEYS = ['uid', 'reason', 'evidenceFingerprint']
+function validateUnknownUserRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, UNKNOWN_USER_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, UNKNOWN_USER_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+const MALFORMED_CLAIM_ALLOWED_KEYS = ['uid', 'reason', 'evidenceFingerprint']
+function validateMalformedClaimRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, MALFORMED_CLAIM_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, MALFORMED_CLAIM_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+const DANGLING_MEMBERSHIP_ALLOWED_KEYS = ['companyId', 'uid', 'reason', 'evidenceFingerprint']
+function validateDanglingMembershipRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, DANGLING_MEMBERSHIP_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, DANGLING_MEMBERSHIP_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+const OWNER_ID_ANOMALY_ALLOWED_KEYS = ['companyId', 'reason', 'evidenceFingerprint']
+function validateOwnerIdAnomalyRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, OWNER_ID_ANOMALY_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertReasonOneOf(field, index, rec, OWNER_ID_ANOMALY_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+type FindingShapeValidator = (field: string, index: number, rec: Record<string, unknown>) => void
 
 interface ResolvedFieldSpec {
   field: 'resolvedConflicts' | 'resolvedOrphans' | 'resolvedOwnerAnomalies' | 'resolvedUnknownUsers' | 'resolvedMalformedClaims'
-  requiresCompanyId: boolean
-  allowedReasons: readonly string[]
+  validateFinding: FindingShapeValidator
 }
 
 const RESOLVED_FIELD_SPECS: readonly ResolvedFieldSpec[] = [
-  { field: 'resolvedConflicts', requiresCompanyId: true, allowedReasons: CONFLICT_REASONS },
-  { field: 'resolvedOrphans', requiresCompanyId: true, allowedReasons: ORPHAN_REASONS },
-  { field: 'resolvedOwnerAnomalies', requiresCompanyId: true, allowedReasons: OWNER_ANOMALY_REASONS },
-  { field: 'resolvedUnknownUsers', requiresCompanyId: false, allowedReasons: UNKNOWN_USER_REASONS },
-  { field: 'resolvedMalformedClaims', requiresCompanyId: false, allowedReasons: MALFORMED_CLAIM_REASONS },
+  { field: 'resolvedConflicts', validateFinding: validateConflictRecordShape },
+  { field: 'resolvedOrphans', validateFinding: validateOrphanRecordShape },
+  { field: 'resolvedOwnerAnomalies', validateFinding: validateOwnerAnomalyRecordShape },
+  { field: 'resolvedUnknownUsers', validateFinding: validateUnknownUserRecordShape },
+  { field: 'resolvedMalformedClaims', validateFinding: validateMalformedClaimRecordShape },
 ]
 
-function validateResolvedFindingRecord(field: string, index: number, finding: Record<string, unknown>, spec: ResolvedFieldSpec): void {
-  if (!isNonEmptyStringValue(finding.uid)) {
-    throw new ProductionSafetyError(`${field}[${index}].finding.uid is missing.`)
+interface UnresolvedFieldSpec {
+  field: 'conflicts' | 'orphans' | 'ownerAnomalies' | 'unknownUsers' | 'malformedClaims' | 'danglingMemberships' | 'ownerIdAnomalies'
+  validateFinding: FindingShapeValidator
+  /** How to compute the expected length from `counts` — a function so
+   * `orphans` can sum two fields (`unresolvedMissingCompanies` +
+   * `unresolvedMissingUsers`). */
+  expectedLength: (counts: Record<string, unknown>) => number
+}
+
+const UNRESOLVED_FIELD_SPECS: readonly UnresolvedFieldSpec[] = [
+  { field: 'conflicts', validateFinding: validateConflictRecordShape, expectedLength: counts => counts.conflicts as number },
+  { field: 'orphans', validateFinding: validateOrphanRecordShape, expectedLength: counts => (counts.unresolvedMissingCompanies as number) + (counts.unresolvedMissingUsers as number) },
+  { field: 'ownerAnomalies', validateFinding: validateOwnerAnomalyRecordShape, expectedLength: counts => counts.ownerWithoutAdminMembership as number },
+  { field: 'unknownUsers', validateFinding: validateUnknownUserRecordShape, expectedLength: counts => counts.unknownUsers as number },
+  { field: 'malformedClaims', validateFinding: validateMalformedClaimRecordShape, expectedLength: counts => counts.malformedClaims as number },
+  { field: 'danglingMemberships', validateFinding: validateDanglingMembershipRecordShape, expectedLength: counts => counts.danglingMemberships as number },
+  { field: 'ownerIdAnomalies', validateFinding: validateOwnerIdAnomalyRecordShape, expectedLength: counts => counts.ownerIdAnomalies as number },
+]
+
+/** Validates one standalone `Decision` (a `staleDecisions`/`unusedDecisions`
+ * entry, or the `decision` half of a resolved-findings pair) by delegating
+ * to `decisions.ts`'s `validateDecisions()` — the SAME function that
+ * validates an operator's `--decisions-file` — so this contract can never
+ * drift from the real one (rejects unknown fields, forbids `role` unless
+ * `resolution === 'confirm_role'`, checks resolution/findingType
+ * compatibility, etc.). Returns the normalized `Decision`. */
+function validateDecisionRecord(field: string, index: number, rec: Record<string, unknown>): Decision {
+  const result = validateDecisions([rec])
+  if (!result.ok) {
+    throw new ProductionSafetyError(`${field}[${index}].decision: ${result.errors.map(e => e.message).join('; ')}`)
   }
-  if (spec.requiresCompanyId) {
-    if (!isNonEmptyStringValue(finding.companyId)) {
-      throw new ProductionSafetyError(`${field}[${index}].finding.companyId is missing.`)
-    }
-  } else if (finding.companyId !== undefined) {
-    throw new ProductionSafetyError(`${field}[${index}].finding.companyId must be absent — this finding type is user-level (no company target).`)
-  }
-  if (typeof finding.reason !== 'string' || !spec.allowedReasons.includes(finding.reason)) {
-    throw new ProductionSafetyError(`${field}[${index}].finding.reason is missing or not a valid reason for ${field} (expected one of: ${spec.allowedReasons.join(', ')}).`)
-  }
-  if (!isSha256HexValue(finding.evidenceFingerprint)) {
-    throw new ProductionSafetyError(`${field}[${index}].finding.evidenceFingerprint is missing or not a valid SHA-256 hex digest.`)
-  }
+  return result.decisions[0]!
 }
 
 function validateResolvingDecisionRecord(field: string, index: number, decision: Record<string, unknown>, finding: Record<string, unknown>): void {
-  if (!isNonEmptyStringValue(decision.uid)) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.uid is missing.`)
-  }
-  if (decision.companyId !== undefined && !isNonEmptyStringValue(decision.companyId)) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.companyId is present but not a non-empty string.`)
-  }
-  if (typeof decision.findingType !== 'string' || decision.findingType.length === 0) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.findingType is missing.`)
-  }
-  if (!isSha256HexValue(decision.evidenceFingerprint)) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.evidenceFingerprint is missing or not a valid SHA-256 hex digest.`)
-  }
-  if (typeof decision.resolution !== 'string' || !DECISION_RESOLUTIONS.includes(decision.resolution as DecisionResolution)) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.resolution is missing or not a known resolution.`)
-  }
-  if (!isNonEmptyStringValue(decision.reason)) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.reason is missing.`)
-  }
-  if (!isNonEmptyStringValue(decision.reviewedBy)) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.reviewedBy is missing.`)
-  }
-  if (!isValidIsoTimestamp(decision.reviewedAt)) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.reviewedAt is missing or not a valid timestamp.`)
-  }
-  if (decision.resolution === 'confirm_role' && !isKnownRole(decision.role)) {
-    throw new ProductionSafetyError(`${field}[${index}].decision.role is required and must be a known role when resolution is confirm_role.`)
-  }
+  const validated = validateDecisionRecord(field, index, decision)
 
   // Cross-checks: `decision` must genuinely be THE decision that resolved
-  // THIS `finding` — matching every field the real finding-bound-decision
-  // contract (decisions.ts / planner.ts) itself requires, not merely two
-  // independently-valid-looking objects placed next to each other.
-  if (decision.findingType !== finding.reason) {
-    throw new ProductionSafetyError(`${field}[${index}]: decision.findingType (${JSON.stringify(decision.findingType)}) does not match finding.reason (${JSON.stringify(finding.reason)}).`)
+  // THIS `finding` — matching identity, `findingType === finding.reason`,
+  // and `evidenceFingerprint`. `validateDecisionRecord()` above already
+  // confirmed `validated.resolution` is compatible with `validated.findingType`
+  // itself (via `COMPATIBLE_RESOLUTIONS`, inside `validateDecisions()`) —
+  // once `findingType === finding.reason` holds too, that compatibility
+  // transfers to `finding.reason`, so no separate check is needed here.
+  if (validated.findingType !== finding.reason) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.findingType (${JSON.stringify(validated.findingType)}) does not match finding.reason (${JSON.stringify(finding.reason)}).`)
   }
-  if (decision.evidenceFingerprint !== finding.evidenceFingerprint) {
+  if (validated.evidenceFingerprint !== finding.evidenceFingerprint) {
     throw new ProductionSafetyError(`${field}[${index}]: decision.evidenceFingerprint does not match finding.evidenceFingerprint.`)
   }
-  if (decision.uid !== finding.uid) {
+  if (validated.uid !== finding.uid) {
     throw new ProductionSafetyError(`${field}[${index}]: decision.uid does not match finding.uid.`)
   }
   if (finding.companyId !== undefined) {
-    if (decision.companyId !== finding.companyId) {
+    if (validated.companyId !== finding.companyId) {
       throw new ProductionSafetyError(`${field}[${index}]: decision.companyId does not match finding.companyId.`)
     }
-  } else if (decision.companyId !== undefined) {
+  } else if (validated.companyId !== undefined) {
     throw new ProductionSafetyError(`${field}[${index}]: decision.companyId must be absent — the finding it resolves is user-level.`)
-  }
-  const compatibleResolutions = COMPATIBLE_RESOLUTIONS[finding.reason as FindingType] ?? []
-  if (!compatibleResolutions.includes(decision.resolution as DecisionResolution)) {
-    throw new ProductionSafetyError(`${field}[${index}]: decision.resolution (${JSON.stringify(decision.resolution)}) is not compatible with finding.reason (${JSON.stringify(finding.reason)}).`)
   }
 }
 
@@ -495,23 +610,58 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   if (unresolvedSum !== 0) {
     throw new ProductionSafetyError(`counts.unresolved is 0 but the sum of its component counts (${unresolvedComponents.join(', ')}) is ${unresolvedSum} — internally inconsistent, refusing.`)
   }
-  // Independent audit fixes, 5th round (review of the 5th round's own
-  // fix), item 3, DEEPENED by a 2nd follow-up review: schemaVersion is
-  // checked above to be EXACTLY REPORT_SCHEMA_VERSION (3), but the
-  // previous version of this check only verified `finding`/`decision`
-  // were present, non-array objects — never their actual content. A
-  // report could claim `missingCompanies: 1, unresolvedMissingCompanies: 0`
-  // while `resolvedOrphans: []` (the orphan simply vanished, unaccounted
-  // for either way), or supply `resolvedOrphans: [{finding: {}, decision:
-  // {}}]` (structurally present, semantically empty). See
-  // `validateResolvedFindingRecord()`/`validateResolvingDecisionRecord()`
-  // above for the full per-field/cross-field contract now enforced: each
-  // `finding` validated against its record type's real shape, each
-  // `decision` validated against `Decision`'s real shape, and —
-  // decisively — `decision` cross-checked to be genuinely THE decision
-  // that resolved THIS `finding` (matching identity, `findingType ===
-  // finding.reason`, `evidenceFingerprint`, and resolution/finding-type
-  // compatibility via `COMPATIBLE_RESOLUTIONS`).
+  // Independent audit fixes, 5th round — DEEPENED across two follow-up
+  // reviews: schemaVersion is checked above to be EXACTLY
+  // REPORT_SCHEMA_VERSION (3), but earlier versions of this check (a) only
+  // verified resolved-findings `finding`/`decision` were present, non-array
+  // objects — never their actual content or per-type shape — and (b) never
+  // required or validated the report's UNRESOLVED finding arrays at all. A
+  // report could omit `conflicts`/`orphans`/`unknownUsers`/`malformedClaims`/
+  // etc. entirely, supply a `resolvedOrphans` entry whose `OrphanRecord` was
+  // missing `sourceKinds`/`observedRoles`/`hasInvalidRole`/`proposedRole`,
+  // or attach a `decision` with an extra unknown field or a forbidden
+  // `role` on a non-`confirm_role` resolution — all previously accepted.
+  //
+  // Fixed by validating BOTH the unresolved arrays and each resolved-
+  // findings array's `finding` half against a per-record-type shape
+  // validator (`validate*RecordShape()` above — the SAME validator either
+  // way, since the shape is identical; only resolved findings additionally
+  // pair it with a `decision`), reusing `decisions.ts`'s `validateDecisions()`
+  // for every `decision` (so this contract can never drift from the one
+  // `--decisions-file` itself is held to), and reconciling every array's
+  // length against its corresponding `counts` field.
+  for (const spec of UNRESOLVED_FIELD_SPECS) {
+    const value = report[spec.field]
+    if (!Array.isArray(value)) {
+      throw new ProductionSafetyError(`is missing ${spec.field} (required by schema v${REPORT_SCHEMA_VERSION}).`)
+    }
+    value.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}] is not an object.`)
+      }
+      spec.validateFinding(spec.field, index, entry as Record<string, unknown>)
+    })
+    const expected = spec.expectedLength(counts)
+    if (value.length !== expected) {
+      throw new ProductionSafetyError(`${spec.field}.length (${value.length}) does not match the corresponding counts field (expected ${expected}) — the report's finding arrays and counts are internally inconsistent.`)
+    }
+  }
+  for (const field of ['staleDecisions', 'unusedDecisions'] as const) {
+    const value = report[field]
+    if (!Array.isArray(value)) {
+      throw new ProductionSafetyError(`is missing ${field} (required by schema v${REPORT_SCHEMA_VERSION}).`)
+    }
+    value.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new ProductionSafetyError(`${field}[${index}] is not an object.`)
+      }
+      validateDecisionRecord(field, index, entry as Record<string, unknown>)
+    })
+    if (value.length !== (counts[field] as number)) {
+      throw new ProductionSafetyError(`${field}.length (${value.length}) does not match counts.${field} (${counts[field]}) — internally inconsistent.`)
+    }
+  }
+
   const resolvedFindingsByField: Record<ResolvedFieldSpec['field'], { finding: Record<string, unknown>; decision: Record<string, unknown> }[]> =
     { resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [] }
   for (const spec of RESOLVED_FIELD_SPECS) {
@@ -532,7 +682,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
       }
       const finding = rec.finding as Record<string, unknown>
       const decision = rec.decision as Record<string, unknown>
-      validateResolvedFindingRecord(spec.field, index, finding, spec)
+      spec.validateFinding(spec.field, index, finding)
       validateResolvingDecisionRecord(spec.field, index, decision, finding)
       resolvedFindingsByField[spec.field].push({ finding, decision })
     })
