@@ -2614,3 +2614,108 @@ every other array empty) — accepted. All three `validDryRun` fixtures
 across the file gained the 9 required unresolved-array fields (empty, to
 match their all-zero default counts). All pre-existing tests remain green;
 `npm run test:migration` run twice consecutively for stability.
+
+## Independent audit fixes — 5th round, 4th follow-up review
+
+A fourth follow-up independent-review round found two further blocking
+gaps: the resolved/stale/unused audit trail was never cross-checked
+against `decisionsChecksum` (allowing a decision to silently vanish from
+every audit-trail bucket while every other check stayed internally
+consistent), and the last-admin gate's blocked companies
+(`plan.companiesWithoutAdmin`) had no dedicated count or array anywhere in
+the report despite already contributing to `counts.unresolved`.
+**Production and staging were not read or modified.** `SEC-006` not
+started.
+
+### 1 — decisionsChecksum was not linked to the audit trail
+
+`decisionsChecksum` (the checksum over the FULL original `--decisions-file`,
+computed once by `readDecisionsFile()`) was validated only for format
+(SHA-256 hex) — nothing proved it was actually reconstructible from the
+report's own resolved/stale/unused audit trail. A report could claim a
+`decisionsChecksum` matching a real decisions file while silently DROPPING
+one of its decisions from every bucket — every other check stayed
+internally consistent (each bucket's own contents were valid; there was
+simply one fewer entry than there should have been), so the omission was
+invisible to a reviewer relying on the report alone.
+
+Fixed in `scripts/lib/productionSafety.ts`'s `validateStrictDryRunReportContent()`:
+- Every decision is collected from EXACTLY the five `resolvedX[].decision`
+  arrays plus `staleDecisions`/`unusedDecisions`, combined into ONE list.
+- That list is validated as a SINGLE batch via `decisions.ts`'s
+  `validateDecisions()` (not per-item) — a single call over the whole set
+  catches a decision duplicated ACROSS buckets (present in, say, both
+  `resolvedOrphans` and `staleDecisions`), which per-item validation could
+  never see. In practice this specific cross-bucket scenario is also
+  independently caught earlier by the pre-existing `counts.unresolved ===
+  0` / component-sum consistency check, since `staleDecisions`/
+  `unusedDecisions` being non-empty always makes `unresolved` non-zero —
+  the two checks reinforce each other.
+- The validated, normalized decisions are re-hashed with
+  `computeDecisionsChecksum()` and compared byte-for-byte against
+  `report.decisionsChecksum` — any mismatch (missing, duplicated, or
+  altered decision) is refused.
+- Each resolved finding IDENTITY (`companyId?`, `uid`, `reason`,
+  `evidenceFingerprint`) is separately required to appear exactly once
+  across all five `resolvedX` arrays combined — a `{finding, decision}`
+  pair duplicated within (or across) the resolved buckets is refused even
+  before the checksum comparison runs.
+
+Because `verifyRollbackPlanFileIntegrity()` (Phase A) delegates to
+`validateStrictDryRunReportContent()`, this check applies transitively to
+the whole `--rollback-reference` pipeline — `matchRollbackPlanAgainstCurrent()`
+(Phase B) can never even be reached for a report with a missing or
+duplicated audit trail; Phase A already refuses it first.
+
+### 2 — companiesWithoutAdmin was not exposed in the report
+
+`plan.companiesWithoutAdmin.length` (companies whose projected final state
+— existing active admins + planned admin creates — has zero admin) was
+already summed into `counts.unresolved` and already blocked
+`applyAllowed`, but had no dedicated `counts.companiesWithoutAdmin` field
+and no corresponding array anywhere in the report — a reviewer could see
+the last-admin gate had blocked something, but never WHICH company, from
+the report alone.
+
+Fixed:
+- `ReportCounts` gained `companiesWithoutAdmin: number` (included in the
+  strict validator's non-negative-integer check and in the
+  `unresolvedComponents` consistency sum, alongside the pre-existing
+  `ownerWithoutAdminMembership`).
+- `MembershipBackfillReport` gained a private `companiesWithoutAdmin:
+  string[]` field — populated from `plan.companiesWithoutAdmin` in every
+  mode that computes a plan (dry-run/apply/verify), `[]` for every
+  rollback mode (which never computes one). Never printed to the safe
+  stdout summary (`printSafeSummary()` only ever echoes `report.counts`,
+  never this array directly) — only the count reaches stdout.
+- `validateStrictDryRunReportContent()` requires the array present, every
+  entry a non-empty string, no duplicates, and its length matching
+  `counts.companiesWithoutAdmin` exactly.
+- **`REPORT_SCHEMA_VERSION` bumped `3 -> 4`** — a v3 (or earlier) report
+  can never satisfy the new required field; the schemaVersion-mismatch
+  error message now explicitly says a new `--mode dry-run` against the
+  current tool is required.
+
+### Regression tests added
+
+`scripts/lib/productionSafety.test.ts` — two new nested `describe` blocks
+inside `verifyStrictDryRunReport`: "decisionsChecksum <-> audit trail
+reconciliation" (a decision reflected in `decisionsChecksum` but absent
+from every array; the same malformed report also rejected at Phase A of
+`verifyRollbackPlanFileIntegrity` before Phase B is ever reached; a
+duplicated `{finding, decision}` pair within `resolvedOrphans`; a decision
+simultaneously claimed as resolved and stale; a `decisionsChecksum` that
+simply doesn't match the collected audit trail; zero decisions accepted;
+a full multi-bucket audit trail — one resolved orphan + one resolved
+conflict — accepted) and "companiesWithoutAdmin" (length-vs-count
+mismatch, duplicate companyId, empty-string entry, non-string entry,
+`unresolved === 0` with `companiesWithoutAdmin` non-zero, and the
+empty/zero happy path). All three `validDryRun` fixtures across the file
+now use a computed `EMPTY_DECISIONS_CHECKSUM` (`computeDecisionsChecksum([])`)
+instead of an arbitrary hex value, and gained `companiesWithoutAdmin: []`.
+`scripts/backfill-memberships.emulator.test.ts` — a real end-to-end case:
+a company with zero legacy relations and zero existing admin is surfaced
+as `companiesWithoutAdmin` in both dry-run (reports it, exit 0) and apply
+(blocked by it, exit 1) reports, against the real Firestore Emulator. All
+pre-existing tests remain green; `npm run test:migration` run twice
+consecutively for stability (508/508 both times).
