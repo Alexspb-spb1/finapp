@@ -411,8 +411,17 @@ itself had no equivalent integrity check on `--from-plan` — fixed
 (`--expected-plan-sha256`). A THIRD follow-up review then found that
 `rollback-from-plan`'s new integrity check was itself checked AFTER the
 maintenance-mode check (a real Firestore read) rather than before — fixed
-below by reordering. The actual per-mode requirements, implemented in
-`scripts/backfill-memberships.ts`, `scripts/lib/productionSafety.ts`, and
+below by reordering. **Production execution gate round**: none of the
+per-flag requirements in the table below changed — they are the
+independent protections `apply`/`rollback-from-report`/`rollback-from-plan`
+must ALWAYS pass, regardless of the cycle gate's own state. What changed
+is the cycle gate itself (`assertCycleExecutionAllowed()`,
+`scripts/lib/firebaseAdmin.ts`): production is now authorized for every
+mode in this table, under `PRODUCTION_ACTION_APPROVED: SEC-005` — see
+"Maintenance/read-only mode" above for the equivalent change to
+`maintenance-enable`/`maintenance-disable`. The actual per-mode
+requirements, implemented in `scripts/backfill-memberships.ts`,
+`scripts/lib/productionSafety.ts`, and
 `scripts/lib/emergencyReconstruction.ts`:
 
 | Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | `--expected-report-sha256` | `--expected-plan-sha256` | `--ack-emergency-reconstruction` | Maintenance mode checked live? |
@@ -439,7 +448,7 @@ not met" failure.
 | 1 | Apply refused (unresolved items, including unknown users/malformed claims) or had write failures; verify found drift OR the plan was not fully resolved (2nd round fix #1 — `matchesTarget` requires `plan.applyAllowed` too, not just checksum equality); rollback/rollback-from-plan had refused deletions |
 | 2 | CLI argument error, decisions-file error, or a structurally invalid `--from-report`/`--from-plan` (wrong schema, wrong mode, unresolved dry-run, etc.) |
 | 3 | Environment/project guard failure (wrong project, missing confirmation, etc.), a production-safety precondition failed (unverifiable backup/rollback reference, maintenance mode not active), OR `--from-report` does not match `--expected-report-sha256` (tampered/wrong/swapped report — checked before any parsing) |
-| 4 | Refused: `--environment production` (unconditional — no grant exists this cycle); `staging` is now authorized (see below) |
+| 4 | Refused: the cycle-execution gate (`assertCycleExecutionAllowed()`) does not authorize this (environment, action) pair. As of the production execution gate round (`PRODUCTION_ACTION_APPROVED: SEC-005`), production is authorized for all five `ReportMode`s — since `--mode`/`--apply` are themselves restricted to known values by argument parsing (exit 2 otherwise), exit 4 is no longer reachable for `--environment production` via any value the CLI accepts; it remains the gate's genuine refusal code, defense-in-depth against an internal/unrecognized action value. `staging`/`emulator` are authorized for every action, same as before. |
 
 ### Environment/project guards (enforced BEFORE any credential acquisition or Firestore read)
 
@@ -617,17 +626,21 @@ project, and `--mode dry-run` never checks maintenance mode live (see
 did not explicitly request, so it was treated as out of scope for this
 round.
 
-**Code change enabling this**: `assertCycleExecutionAllowed()`
-(`scripts/lib/firebaseAdmin.ts`) now allows `environment === 'production'`
+**Code change enabling this, AT THE TIME OF THIS GRANT**: `assertCycleExecutionAllowed()`
+(`scripts/lib/firebaseAdmin.ts`) allowed `environment === 'production'`
 to proceed past the cycle-execution gate ONLY when `mode === 'dry-run'` —
 every other production mode (`apply`, `verify`, `rollback-from-report`,
-`rollback-from-plan`) remains unconditionally refused, exactly as before.
-This code change is the ONLY thing this specific round actually did —
-deploy, backup creation/verification, and the real production dry-run
-itself each require their own separate go-ahead and are not yet
-performed. See "Environment/project guards" above and
+`rollback-from-plan`) remained unconditionally refused. This code change
+was the ONLY thing this specific round actually did — deploy, backup
+creation/verification, and the real production dry-run itself each
+required their own separate go-ahead and were not performed as part of
+THIS round. **Superseded by the production execution gate round** (see
+that changelog section near the end of this document): a later, broader
+`PRODUCTION_ACTION_APPROVED: SEC-005` grant opened the gate for the full
+SEC-005 action set — see "Production execution" above for the current
+state. See "Environment/project guards" above and
 `docs/remediation/reports/SEC-005.md` for the full technical writeup and
-current status.
+history.
 
 **The backup created under this grant is verification-only — it can
 NEVER be used as `--backup-reference` for a future `apply`.** Two
@@ -638,24 +651,36 @@ for `apply` is authorized; (2) `verifyBackupReference()` requires
 deliberately not enabled under this grant, so this backup has no valid
 `enabledAt` to satisfy that check against. A future `apply` will require
 its OWN fresh backup, taken AFTER maintenance mode has been separately
-authorized and enabled — see "Future production execution" below for
+authorized and enabled — see "Production execution" below for
 that full sequence. This preflight's backup exists solely to prove the
 export → import → checksum-verify → manifest mechanism works end-to-end
 against real production data.
 
-## Future production execution (template — for a future PRODUCTION_ACTION_APPROVED round)
+## Production execution (PRODUCTION_ACTION_APPROVED: SEC-005 — gate open, execution pending a separate command)
 
-Requires `PRODUCTION_ACTION_APPROVED: SEC-005` from the repository owner,
-PLUS a successful, reviewed staging rehearsal first. **The production gate
-(`assertCycleExecutionAllowed`, `scripts/lib/firebaseAdmin.ts`) still
-refuses every production mode EXCEPT `dry-run` unconditionally** — the
-`apply`/rollback commands below cannot actually run until that gate is
-separately lifted, mode by mode, by a future authorized round; only
-`dry-run` (Step 5a/5b below) is real and runnable under the current
-`PRODUCTION_PREFLIGHT_APPROVED: SEC-005` grant. This section documents the
-exact intended flow for the REMAINING (apply/rollback) steps,
-corrected after independent review (see the changelog note at the top of
-this document), so it is ready when that authorization is given.
+`PRODUCTION_ACTION_APPROVED: SEC-005` has been granted by the repository
+owner, covering a controlled production cycle: maintenance enable →
+verified backup → create-only apply against a verified resolved plan →
+verify → maintenance disable → rollback-from-report/rollback-from-plan as
+the emergency path. **The production execution gate round** (see the
+changelog section of that name at the end of this document) opened
+`assertCycleExecutionAllowed()` (`scripts/lib/firebaseAdmin.ts`) for
+exactly these actions in production — the `apply`/rollback/maintenance
+commands below are, as of that round, no longer refused by the cycle gate
+itself.
+
+**This is a code/test/documentation preparation round only — no step
+below has actually been executed against real production.** The owner's
+grant explicitly separates "prepare the gate" from "execute a specific
+step", requiring its own distinct command before ANY of maintenance
+enable, backup creation, apply, verify, maintenance disable, or rollback
+actually runs. Two READ-ONLY production dry-runs (Step 5a-equivalent) have
+been executed, each under its own explicit, narrower grant — see
+`docs/remediation/reports/SEC-005.md` for their anonymized results and
+exact scope. This section documents the exact intended flow for the
+REMAINING (apply/rollback) steps, corrected after independent review (see
+the changelog note at the top of this document), ready to run once each
+step's own execution command is given.
 
 **Step order corrected after independent review (final round).** An
 earlier draft of this section ran backup BEFORE enabling maintenance mode
@@ -1072,7 +1097,7 @@ phases:
      merely a dry-run that happens to compute a coincidentally-matching
      final `targetChecksum`. This is why apply's `--decisions-file` must
      be the SAME one used to produce the "resolved dry-run" report passed
-     as `--rollback-reference` — see "Future production execution", Step
+     as `--rollback-reference` — see "Production execution", Step
      5, above. Phase B can never even be reached if Phase A rejected the
      reference file.
    This is not a description of a future rollback — it is proof the
@@ -1353,31 +1378,63 @@ node scripts/ops/set-maintenance-mode.ts \
 
 node scripts/ops/set-maintenance-mode.ts \
   --environment <emulator|staging|production> --project <project-id> [--confirm-project <project-id>] \
-  --disable --operator <your-identifier>
+  --disable --task-id <e.g. SEC-005> --operator <your-identifier>
 ```
 
-- `--enable` does a FULL overwrite (`set()`, not merge) — a fresh enable
-  must never inherit stale `reason`/`taskId`/`enabledBy` fields from a
-  previous maintenance cycle on the same document. Writes `enabled: true`,
-  `enabledAt: FieldValue.serverTimestamp()`, `enabledBy`, `reason`,
-  `taskId`.
-- `--disable` does a MERGING write (`set(..., {merge: true})`) —
-  deliberately PRESERVES the historical `enabledAt`/`enabledBy`/`reason`/
-  `taskId` fields for audit, only flipping `enabled: false` and adding
-  `disabledAt`/`disabledBy`. This is also what makes `--disable` safe to
-  use as the "create in a known disabled state" bootstrap in Step 2 of the
-  production runbook above — it succeeds whether or not the document
-  already exists.
 - `--operator <identifier>` is REQUIRED for both actions — every
   enable/disable transition must be attributable to a specific person.
-- **The production gate stays unconditionally closed** — exactly like
-  `scripts/backfill-memberships.ts`, `--environment production` is refused
-  by `assertCycleExecutionAllowed()` before `initFirestore()` is ever
-  called (exit 4), regardless of any other flag. Proven by a real
-  emulator test asserting the refusal happens with zero Firestore writes
-  (`scripts/ops/set-maintenance-mode.emulator.test.ts`). Until a future,
-  separately-authorized round removes that block, this script can only
-  actually write against `--environment emulator|staging`.
+- `--task-id <e.g. SEC-005>` is REQUIRED for both `--enable` and
+  `--disable` (production execution gate round — previously `--enable`-only;
+  `--disable` needs it too, so the script can identify WHICH task's
+  maintenance record it is targeting). For `--environment production`,
+  `--task-id` must be exactly `SEC-005` — the only task currently granted
+  a production maintenance-mode authorization — checked entirely in
+  argument parsing, before any credential acquisition or Firestore I/O.
+- Every write to `system/maintenance` runs inside a Firestore
+  **transaction** (`transactionalEnable()`/`transactionalDisable()`,
+  exported from `set-maintenance-mode.ts` and unit-tested directly against
+  the emulator — `scripts/ops/maintenanceModeTransaction.emulator.test.ts`) —
+  a concurrent modification between the read and the write aborts and
+  Firestore automatically retries against the new state, so two racing
+  calls can never both "win" or produce a torn/mixed write.
+- `--enable` is allowed only when `system/maintenance` does not exist yet,
+  or exists with `enabled === false` (verifiably, strictly disabled — a
+  malformed/non-boolean `enabled` field on an existing document is treated
+  as unverifiable and refused, never silently trusted). When allowed, it
+  does a FULL overwrite (`set()`, not merge) — a fresh enable must never
+  inherit stale `reason`/`taskId`/`enabledBy` fields from a previous
+  maintenance cycle on the same document. Writes `enabled: true`,
+  `enabledAt: FieldValue.serverTimestamp()`, `enabledBy`, `reason`,
+  `taskId`. **`--enable` against an already-enabled record is refused
+  outright (exit 1), the document left completely untouched** — a second,
+  accidental `--enable` can never reset `enabledAt` or discard the
+  existing audit trail; disable it first to start a genuinely new window.
+- `--disable` is allowed only against a maintenance record whose own
+  `taskId` field exactly matches the `--task-id` supplied — **refusing to
+  disable a different task's maintenance window is enforced by the script
+  itself, not merely by convention** (exit 1, document left untouched).
+  When the identity matches, it does a MERGING write
+  (`set(..., {merge: true})`) — deliberately PRESERVES the historical
+  `enabledAt`/`enabledBy`/`reason`/`taskId` fields for audit, only
+  flipping `enabled: false` and adding `disabledAt`/`disabledBy`.
+  Disabling a record that does not exist, or one that is already disabled
+  for the SAME `--task-id`, is a safe, **idempotent no-op** (exit 0, no
+  write at all) — this is also what makes `--disable` safe to use as the
+  "create in a known disabled state" bootstrap in Step 2 of the production
+  runbook above.
+- **The production gate is now open for `maintenance-enable`/
+  `maintenance-disable`** (production execution gate round —
+  `PRODUCTION_ACTION_APPROVED: SEC-005`; see "Production mode-specific
+  requirements" above and `scripts/lib/firebaseAdmin.ts`'s
+  `PRODUCTION_ALLOWED_ACTIONS`), superseding the earlier unconditional
+  closure. `assertCycleExecutionAllowed()` is still checked before
+  `initFirestore()`/any credential acquisition, same as always — it now
+  simply answers "yes" for these two actions in production, the same way
+  it already did for `dry-run`. This gate opening is, as of this
+  round, PREPARATION ONLY: no production maintenance-mode transition has
+  actually been executed — see
+  `docs/remediation/reports/SEC-005.md`, "production execution gate round"
+  for the exact scope of what was (and was not) run.
 
 ## Counts and checksum contract
 
@@ -2771,3 +2828,135 @@ as `companiesWithoutAdmin` in both dry-run (reports it, exit 0) and apply
 (blocked by it, exit 1) reports, against the real Firestore Emulator. All
 pre-existing tests remain green; `npm run test:migration` run twice
 consecutively for stability (508/508 both times).
+
+## Independent audit fixes — production execution gate round
+
+Following two independently-audited, owner-approved production read-only
+dry-runs (a discovery run, and a resolved run against a single
+owner-approved `exclude` decision — see
+`docs/remediation/reports/SEC-005.md` for their anonymized results), the
+repository owner granted `PRODUCTION_ACTION_APPROVED: SEC-005` — a
+controlled production cycle covering maintenance enable, verified backup,
+create-only apply against the verified resolved plan, verify, maintenance
+disable, and rollback-from-report/rollback-from-plan as the emergency
+path. This round prepares the code, tests, and documentation for that
+cycle. **No production or staging action was taken in this round** — no
+maintenance-mode change, no backup, no apply, no verify, no rollback. The
+grant itself requires a SEPARATE, explicit execution command before any
+individual step actually runs.
+
+### 1 — `assertCycleExecutionAllowed()` redesigned around explicit, typed actions
+
+The previous signature (`assertCycleExecutionAllowed(environment, mode?)`)
+made the authorization decision hinge on an OPTIONAL parameter — a caller
+that forgot to pass `mode` got the SAME refusal as an explicitly
+disallowed one, which happened to be safe (fail-closed by omission) but
+relied on that coincidence rather than the type system. Redesigned:
+- A new, exported `CycleExecutionAction` union covers every action ANY
+  part of the SEC-005 tooling can attempt: the five `ReportMode`s, plus
+  `maintenance-enable`/`maintenance-disable` (`scripts/ops/set-maintenance-mode.ts`,
+  which has no `ReportMode` concept of its own).
+- `action` is now a REQUIRED parameter — there is no `undefined` shortcut
+  a caller can pass to mean "refused"; the type checker enforces that
+  every call site names exactly which action it is attempting.
+- A `KNOWN_ACTIONS` set fail-closes on any value that somehow bypasses the
+  type checker (e.g. an `as` cast from untrusted input) — for EVERY
+  environment, not just production.
+- A `PRODUCTION_ALLOWED_ACTIONS` set (currently identical to
+  `KNOWN_ACTIONS` — the full action set, reflecting the new grant's full
+  scope) replaces the old `mode !== 'dry-run'` check. `emulator`/`staging`
+  remain authorized for any known action, unchanged.
+- Both call sites (`scripts/backfill-memberships.ts`,
+  `scripts/ops/set-maintenance-mode.ts`) now pass an explicit action; no
+  environment variable, arbitrary string, or optional flag can widen or
+  bypass this gate — the same closed design as before, just with a wider
+  authorized set and no optional-parameter ambiguity.
+
+This gate answers ONLY "has ANY grant authorized this (environment,
+action) pair at all" — it does not itself verify maintenance state, backup
+freshness, plan integrity, or worktree cleanliness. None of those
+INDEPENDENT protections (`scripts/lib/productionSafety.ts`'s live
+maintenance check / backup freshness / two-phase rollback-plan
+verification / create-only writes; `scripts/lib/sourceRevision.ts`'s clean
+tracked worktree) were touched or weakened this round.
+
+### 2 — `scripts/ops/set-maintenance-mode.ts` hardened for production admission
+
+Previously a straightforward, non-transactional `set()`/`set(...,
+{merge:true})` pair, with the production gate doing all the safety work
+(unconditional refusal). With that gate now open for
+`maintenance-enable`/`maintenance-disable`, the script itself needed real
+protections:
+- Every write to `system/maintenance` now happens inside a Firestore
+  **transaction** (`transactionalEnable()`/`transactionalDisable()`, both
+  exported and unit-tested directly) — a concurrent modification between
+  the transaction's read and write aborts and Firestore automatically
+  retries against the new state, so two racing calls can never both "win"
+  or produce a torn/mixed write.
+- `--enable` is allowed only when the document does not exist, or exists
+  with `enabled === false` STRICTLY (not merely "not `true`" — a
+  malformed/non-boolean `enabled` field is treated as unverifiable and
+  refused). Against an already-enabled record, `--enable` now REFUSES
+  (`MaintenanceModeStateError`, exit 1) rather than silently overwriting —
+  the document is left completely untouched, `enabledAt` included.
+- `--disable` now requires `--task-id` too (previously `--enable`-only),
+  and refuses to disable a record whose own `taskId` field does not match
+  the one supplied — a caller can never disable a different task's
+  maintenance window, even by accident. Disabling a record that does not
+  exist, or one already disabled for the SAME task, is a safe, idempotent
+  no-op (`changed: false`, exit 0, no write at all).
+- For `--environment production`, `--task-id` must be exactly `SEC-005` —
+  the only task currently granted a production maintenance-mode
+  authorization — checked entirely inside argument parsing
+  (`maintenanceModeCli.ts`), with zero credential acquisition or Firestore
+  I/O, regardless of the cycle gate's own state.
+- The cycle-execution gate is still checked before `initFirestore()` — the
+  script now passes `'maintenance-enable'`/`'maintenance-disable'`
+  explicitly, matching item 1 above.
+
+### Regression tests added
+
+`scripts/lib/firebaseAdmin.test.ts` — `assertCycleExecutionAllowed`
+rewritten: every known action accepted for `emulator`/`staging` AND now
+`production` (parametrized over all seven); an unrecognized action string
+refused fail-closed for every environment, with a distinct "unknown
+action" error message. `scripts/ops/maintenanceModeCli.test.ts` —
+`--disable` now requires `--task-id`; `--environment production` requires
+`--task-id` exactly `"SEC-005"`; `emulator`/`staging` allow any
+`--task-id` (the production-only restriction does not apply).
+`scripts/ops/maintenanceModeTransaction.emulator.test.ts` (new file) —
+`transactionalEnable()`/`transactionalDisable()` tested directly against
+the real Firestore Emulator: enable from missing/verifiably-disabled;
+enable refused (document untouched) when already enabled; enable refused
+on an unverifiable (non-boolean) existing `enabled` field; disable is a
+no-op when no document exists; disable refused (document untouched) for a
+different `taskId`; disable succeeds and preserves the historical audit
+fields; disable is an idempotent no-op for an already-disabled SEC-005
+record; two concurrent `transactionalEnable()` calls — exactly one
+succeeds, the other is refused, never both, never a mixed write; a
+concurrent enable/disable pair against the same document resolves to an
+internally-consistent final state (never `enabled: true` with a
+`disabledAt` set, or vice versa). `scripts/ops/set-maintenance-mode.emulator.test.ts` —
+updated `--disable` calls to include `--task-id`; the old, now-FALSE
+"production refused unconditionally" test replaced with a safe,
+zero-I/O test proving a non-`SEC-005` `--task-id` is refused for
+production by argument parsing alone; added CLI-spawn-level (not just
+direct-function-level) coverage for cross-task disable refusal, idempotent
+disable, and already-enabled refusal, confirming the full argument-parsing
+→ gate → transaction wiring end to end.
+`scripts/backfill-memberships.emulator.test.ts` — the three now-FALSE
+"production refused (exit 4)" tests for `apply`/`verify`/`rollback-from-report`/
+`rollback-from-plan` were removed (production is no longer refused for
+these — asserting otherwise would be asserting something false); replaced
+with a single safe test proving an unrecognized `--mode` value is refused
+by argument parsing, before the cycle gate or any I/O, for ANY
+environment. The ALLOW side of the gate for production is proven
+exhaustively at the unit level only
+(`scripts/lib/firebaseAdmin.test.ts`) — deliberately never via the real
+CLI binary against `--environment production` in the automated suite,
+since doing so would (with the gate now open) proceed toward real
+credential acquisition and Firestore I/O against the real
+`finapp-prod-10a83` project, which an automated test suite must never
+risk. All pre-existing apply/rollback safety tests remain green;
+`npm run test:migration` run twice consecutively for stability
+(538/538 both times).
