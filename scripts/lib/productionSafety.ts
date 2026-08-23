@@ -611,8 +611,8 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
     throw new ProductionSafetyError(`counts.unresolved is 0 but the sum of its component counts (${unresolvedComponents.join(', ')}) is ${unresolvedSum} — internally inconsistent, refusing.`)
   }
   // Independent audit fixes, 5th round — DEEPENED across two follow-up
-  // reviews: schemaVersion is checked above to be EXACTLY
-  // REPORT_SCHEMA_VERSION (3), but earlier versions of this check (a) only
+  // reviews: schemaVersion is checked above to be EXACTLY the current
+  // REPORT_SCHEMA_VERSION, but earlier versions of this check (a) only
   // verified resolved-findings `finding`/`decision` were present, non-array
   // objects — never their actual content or per-type shape — and (b) never
   // required or validated the report's UNRESOLVED finding arrays at all. A

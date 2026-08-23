@@ -418,7 +418,7 @@ below by reordering. The actual per-mode requirements, implemented in
 | Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | `--expected-report-sha256` | `--expected-plan-sha256` | `--ack-emergency-reconstruction` | Maintenance mode checked live? |
 |---|---|---|---|---|---|---|---|
 | `dry-run` | not required | not required | not required | n/a | n/a | n/a | no — dry-run writes nothing |
-| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified: SHA-256 checked against `--rollback-reference`'s raw bytes BEFORE parsing (4th round), then `sourceGitSha`/`sourceChecksum`/`decisionsChecksum`/`targetChecksum` AND `plannedCreates` (direct structural comparison, not just checksums — 4th round) must ALL exactly match this run's own values** (`verifyRollbackPlanReference` — see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | **required (4th round)** — checked FIRST, before JSON parsing/credential acquisition/Firestore I/O | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
+| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified in two phases: Phase A (`verifyRollbackPlanFileIntegrity`) checks the raw SHA-256 against `--rollback-reference`'s bytes and validates its structure BEFORE any parsing, credential acquisition, or Firestore I/O; Phase B (`matchRollbackPlanAgainstCurrent`) then compares `sourceGitSha`/`sourceChecksum`/`sourceStateChecksum`/`decisionsChecksum`/`targetChecksum` AND `plannedCreates` (direct structural comparison, not just checksums) — ALL FIVE checksums plus `plannedCreates` must exactly match this run's own values** (see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | **required** — checked FIRST, before JSON parsing/credential acquisition/Firestore I/O | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
 | `verify` | not required | not required | not required | n/a | n/a | n/a | no — verify only reads |
 | `rollback-from-report` | not required | not required | required | **required** — verified against `--from-report`'s actual bytes BEFORE any parsing/I/O | n/a | n/a | **yes** (`assertMaintenanceModeActive`, fail-closed) |
 | `rollback-from-plan` | not required | not required | required | n/a | **required, checked FIRST** — verified against `--from-plan`'s actual bytes, and the plan structurally validated, BEFORE `assertMaintenanceModeActive()` or any candidate read/delete (final-round fix #1, third pass — see `runEmergencyReconstruction()`, `scripts/lib/emergencyReconstruction.ts`) | **required** — explicit acknowledgement this is the degraded, last-resort path | **yes, checked AFTER the hash/structure checks above** (`assertMaintenanceModeActive`, fail-closed) |
@@ -735,7 +735,8 @@ the file `--backup-reference` will point to.
 
 **Corrected after independent review (final round, second pass, item 4)** —
 a single, decisions-less dry-run cannot become `--rollback-reference`:
-`verifyRollbackPlanReference()` now requires the reference's
+`matchRollbackPlanAgainstCurrent()` (Phase B of the two-phase
+`--rollback-reference` verification) requires the reference's
 `decisionsChecksum` to EXACTLY match apply's own (see "Two-phase
 ROLLBACK_REFERENCE" below) — a dry-run run WITHOUT `--decisions-file` has
 the EMPTY-array `decisionsChecksum`, which can never match an apply that
@@ -810,16 +811,22 @@ node scripts/backfill-memberships.ts \
   --report-path /absolute/path/outside/repo/sec005-prod-apply.json \
   --backup-reference /absolute/path/outside/repo/sec005-prod-backup-manifest.json \
   --rollback-reference /absolute/path/outside/repo/sec005-prod-resolved-dry-run.json \
+  --expected-plan-sha256 <resolved-dry-run-sha256> \
   --ack-maintenance-readonly
 ```
 
-`verifyRollbackPlanReference()` cross-checks `sourceGitSha`,
-`sourceChecksum`, `decisionsChecksum`, AND `targetChecksum` between this
-`--rollback-reference` and THIS apply run's own computed values — all four
-must match exactly (final-round fix #2, second round). Using Step 5b's
-report with the SAME `--decisions-file` is what makes this possible;
-Step 5a's report (or a dry-run with a different/no decisions file) will
-be refused here, before any write.
+Phase A (`verifyRollbackPlanFileIntegrity()`) checks `--expected-plan-sha256`
+against `--rollback-reference`'s raw bytes and validates its structure,
+BEFORE any credential acquisition or Firestore I/O. Phase B
+(`matchRollbackPlanAgainstCurrent()`) then cross-checks `sourceGitSha`,
+`sourceChecksum`, `sourceStateChecksum`, `decisionsChecksum`, AND
+`targetChecksum` between this `--rollback-reference` and THIS apply run's
+own computed values, plus `plannedCreates` directly — all five checksums
+must match exactly, and Phase B is never reached if Phase A already
+rejected the reference. Using Step 5b's report with the SAME
+`--decisions-file` is what makes this possible; Step 5a's report (or a
+dry-run with a different/no decisions file) will be refused here, before
+any write.
 
 On success, the tool prints (never embeds in the report itself):
 
@@ -1010,43 +1017,57 @@ runs. That is circular.
 The resolution splits `ROLLBACK_REFERENCE` into two distinct, non-circular
 phases:
 
-1. **Pre-apply** (`--rollback-reference` flag, verified by
-   `verifyRollbackPlanReference()`, which delegates the structural checks
-   to the shared `verifyStrictDryRunReport()` — both in
-   `scripts/lib/productionSafety.ts`): points to an EXISTING **dry-run**
-   report, STRICTLY validated (strengthened in the final preflight-safety
-   round, independent review item 4 — a minimal forged/incomplete JSON is
-   rejected, not merely "close enough"):
-   - `schemaVersion` matches this tool's own `REPORT_SCHEMA_VERSION`;
-   - `mode === 'dry-run'` (rejecting an apply report outright — this is
-     what makes the self-referential case structurally impossible);
-   - `environment === 'production'` and `projectId === '--project'`'s
-     value — a staging or emulator dry-run can never authorize a
-     production apply;
-   - `sourceGitSha` is present, non-empty, and (final-round fix #2, second
-     round) never `"unknown"` — a dry-run whose own build could not be
-     traced to a commit can never authorize production, and neither can a
-     CURRENT apply run whose own `sourceGitSha` is `"unknown"` (checked
-     first, before the reference file is even read);
-   - `sourceChecksum`, `decisionsChecksum`, and `targetChecksum` are each
-     present as a well-formed 64-character hex SHA-256 digest — not just
-     "some string";
-   - `counts.unresolved === 0` — a dry-run plan that still has unresolved
-     conflicts/orphans/anomalies cannot be treated as fully reviewed and
-     approved;
-   - `plannedCreates` contains no duplicate `(companyId, uid)` pair
-     (final-round fix #2, second round);
-   - AND, finally — **strengthened in the final preflight-safety round,
-     second pass (item 2)**: `sourceGitSha`, `sourceChecksum`,
-     `decisionsChecksum`, AND `targetChecksum` must ALL FOUR exactly equal
-     THIS apply run's own computed values, not `targetChecksum` alone —
+1. **Pre-apply** (`--rollback-reference` flag, verified in two phases by
+   `scripts/lib/productionSafety.ts`):
+   - **Phase A — `verifyRollbackPlanFileIntegrity()`**: reads
+     `--rollback-reference`, checks its raw bytes' SHA-256 against
+     `--expected-plan-sha256`, and structurally validates its content
+     (delegating to `validateStrictDryRunReportContent()`) — all of this
+     BEFORE any credential acquisition or Firestore I/O, and before
+     `matchRollbackPlanAgainstCurrent()` (Phase B) is even called. Takes no
+     Firestore/db parameter at all, so it is structurally impossible for a
+     tampered or wrong-hash reference to cause any Firestore I/O. Points to
+     an EXISTING **dry-run** report, STRICTLY validated — a minimal
+     forged/incomplete JSON is rejected, not merely "close enough":
+     - `schemaVersion` matches this tool's own current
+       `REPORT_SCHEMA_VERSION`;
+     - `mode === 'dry-run'` (rejecting an apply report outright — this is
+       what makes the self-referential case structurally impossible);
+     - `environment === 'production'` and `projectId === '--project'`'s
+       value — a staging or emulator dry-run can never authorize a
+       production apply;
+     - `sourceGitSha` is present, non-empty, and never `"unknown"` — a
+       dry-run whose own build could not be traced to a commit can never
+       authorize production, and neither can a CURRENT apply run whose own
+       `sourceGitSha` is `"unknown"` (checked first, before the reference
+       file is even read);
+     - `sourceChecksum`, `sourceStateChecksum`, `decisionsChecksum`, and
+       `targetChecksum` are each present as a well-formed 64-character hex
+       SHA-256 digest — not just "some string";
+     - `counts.unresolved === 0` — a dry-run plan that still has unresolved
+       conflicts/orphans/anomalies/companies-without-admin cannot be
+       treated as fully reviewed and approved;
+     - the full resolved-findings audit trail (`resolvedConflicts`/
+       `resolvedOrphans`/`resolvedOwnerAnomalies`/`resolvedUnknownUsers`/
+       `resolvedMalformedClaims`, plus `staleDecisions`/`unusedDecisions`)
+       is present, deeply valid, and reconstructs `decisionsChecksum`
+       exactly — see "Counts and checksum contract" below;
+     - `plannedCreates` contains no duplicate `(companyId, uid)` pair.
+   - **Phase B — `matchRollbackPlanAgainstCurrent()`**: pure comparison,
+     no I/O of any kind — takes the ALREADY-verified Phase A result and
+     THIS run's own freshly-computed values. `sourceGitSha`,
+     `sourceChecksum`, `sourceStateChecksum`, `decisionsChecksum`, AND
+     `targetChecksum` — ALL FIVE — must exactly equal THIS apply run's own
+     computed values, PLUS `plannedCreates` must match directly (structural
+     comparison, not just checksums), not `targetChecksum` alone —
      proving the dry-run was built from the exact same code, the exact
      same legacy source data, AND the exact same `--decisions-file`, not
      merely a dry-run that happens to compute a coincidentally-matching
      final `targetChecksum`. This is why apply's `--decisions-file` must
      be the SAME one used to produce the "resolved dry-run" report passed
      as `--rollback-reference` — see "Future production execution", Step
-     5, above.
+     5, above. Phase B can never even be reached if Phase A rejected the
+     reference file.
    This is not a description of a future rollback — it is proof the
    operator actually looked at a genuine, fully-resolved plan, built from
    the exact same code/data/decisions, before running `apply`.
@@ -1353,16 +1374,25 @@ node scripts/ops/set-maintenance-mode.ts \
 
 ## Counts and checksum contract
 
-Every report (`scripts/lib/report.ts`, **`schemaVersion: 2`** as of the 4th
-independent-audit round — see "Independent audit fixes — 4th round" at the
-end of this document; a v1 report is rejected outright with a clear error
-by every validator that reads one) includes: `mode`, `environment`,
-`projectId`, `sourceGitSha` (for production, now a FAIL-CLOSED-verified
-commit SHA proving a clean tracked worktree — see "source revision
-verification" in the 4th-round section), `runId` (a `crypto.randomUUID()`
-— **never** `Date.now()` for identity/ordering), `startedAt`/`finishedAt`,
-the full `counts` object (`usersRead` … `ownerIdAnomalies` …
-`staleDecisions` … `unusedDecisions` … `unresolved`), and five checksums:
+Every report (`scripts/lib/report.ts`, currently **`schemaVersion: 4`** —
+see the "Independent audit fixes" changelog sections at the end of this
+document for the full version history; every current validator
+(`validateStrictDryRunReportContent()`/`validateSourceReportForRollback()`)
+rejects a v1, v2, OR v3 report outright, with a clear error explaining
+that a NEW `--mode dry-run` against the CURRENT tool is required — an
+older report can never be reinterpreted as current) includes: `mode`,
+`environment`, `projectId`, `sourceGitSha` (for production, now a
+FAIL-CLOSED-verified commit SHA proving a clean tracked worktree — see
+"source revision verification" in the 4th-round section), `runId` (a
+`crypto.randomUUID()` — **never** `Date.now()` for identity/ordering),
+`startedAt`/`finishedAt`, the full `counts` object (`usersRead` …
+`ownerWithoutAdminMembership`, `companiesWithoutAdmin` …
+`staleDecisions` … `unusedDecisions` … `unresolved`), the private
+`companiesWithoutAdmin: string[]` array (the actual companyIds the
+last-admin gate blocked on — populated from `plan.companiesWithoutAdmin`
+for dry-run/apply/verify, always `[]` for rollback modes; never printed to
+the safe stdout summary — only its COUNT, via `counts.companiesWithoutAdmin`,
+reaches stdout), and five checksums:
 
 - **`sourceChecksum`** — SHA-256 over the canonicalized, `companyId`-then-`uid`-sorted
   set of *confirmed* candidate relations (`companyId`, `uid`, `role`).
@@ -1381,16 +1411,31 @@ the full `counts` object (`usersRead` … `ownerIdAnomalies` …
   includes arbitrary unrelated Firestore fields, and never printed with raw
   identifiers — only the hex digest itself is safe for stdout.
 - **`decisionsChecksum`** — SHA-256 over the canonicalized decisions array,
-  where each decision is normalized to ALL 7 of its meaningful fields —
-  `uid`, `companyId` (`null` for a user-level decision), `resolution`,
-  `role` (`null` unless `confirm_role`), `reason`, `reviewedBy`,
-  `reviewedAt` — before hashing (2nd round fix #5:
-  `scripts/lib/checksum.ts`'s `computeDecisionsChecksum()` takes the full
-  typed `Decision[]`, not a partial shape). Changing ANY one of those 7
-  fields changes the checksum; sorting is by the canonical JSON of each
-  normalized decision itself, so it stays fully deterministic and
-  order-independent (empty-array checksum when no `--decisions-file` is
-  given).
+  where each decision is normalized to ALL 9 of its meaningful fields —
+  `uid`, `companyId` (`null` for a user-level decision), `findingType`,
+  `evidenceFingerprint`, `resolution`, `role` (`null` unless
+  `confirm_role`), `reason`, `reviewedBy`, `reviewedAt` — before hashing
+  (`scripts/lib/checksum.ts`'s `computeDecisionsChecksum()` takes the full
+  typed `Decision[]`, not a partial shape). Changing ANY one of those 9
+  fields changes the checksum — including `findingType` or
+  `evidenceFingerprint` alone, which is exactly what makes a decision
+  finding-bound (see "Decisions file" above); sorting is by the canonical
+  JSON of each normalized decision itself, so it stays fully deterministic
+  and order-independent (empty-array checksum when no `--decisions-file`
+  is given, or when the audit trail below is genuinely empty).
+
+  For a `--rollback-reference`/`--from-plan` used in production,
+  `decisionsChecksum` is not merely present as a hex digest — it must be
+  **reconstructible from the report's own audit trail**:
+  `validateStrictDryRunReportContent()` collects every decision from the
+  five `resolvedX[].decision` arrays (`resolvedConflicts`/`resolvedOrphans`/
+  `resolvedOwnerAnomalies`/`resolvedUnknownUsers`/`resolvedMalformedClaims`)
+  plus `staleDecisions` and `unusedDecisions`, validates that combined set
+  as ONE batch (catching a decision duplicated across buckets, which
+  per-item validation cannot see), and requires
+  `computeDecisionsChecksum()` of that collected set to exactly equal
+  `report.decisionsChecksum` — a decision silently missing from every
+  bucket, or a duplicated `{finding, decision}` pair, is refused outright.
 - **`targetChecksum`** — SHA-256 over the canonicalized, sorted set of
   relations the run INTENDS to exist afterward (planned creates + already-matching
   skips), role+status only (`schemaValid` always implicitly `true` for a target
