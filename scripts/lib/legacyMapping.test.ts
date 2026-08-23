@@ -46,7 +46,31 @@ describe('extractLegacyRelations — role conflicts', () => {
       [company('co_a')],
     )
     expect(result.confirmed).toEqual([])
-    expect(result.conflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'role_mismatch', observedRoles: ['admin', 'viewer'] }])
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]).toMatchObject({ companyId: 'co_a', uid: 'u1', reason: 'role_mismatch', observedRoles: ['admin', 'viewer'] })
+  })
+
+  // ── Independent audit fixes, 4th round, item 3.3: evidence now carries source kinds ──
+  it('a role_mismatch conflict records both contributing source kinds', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { companyId: 'co_a', role: 'admin', companies: [{ companyId: 'co_a', role: 'viewer' }] })],
+      [company('co_a')],
+    )
+    expect(result.conflicts[0]?.sourceKinds).toEqual(['users.companies[]', 'users.home'])
+    expect(result.conflicts[0]?.hasInvalidRole).toBeUndefined()
+    expect(result.conflicts[0]?.evidenceFingerprint).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('two different observed-role sets produce two different evidenceFingerprints', () => {
+    const a = extractLegacyRelations(
+      [user('u1', { companyId: 'co_a', role: 'admin', companies: [{ companyId: 'co_a', role: 'viewer' }] })],
+      [company('co_a')],
+    )
+    const b = extractLegacyRelations(
+      [user('u1', { companyId: 'co_a', role: 'admin', companies: [{ companyId: 'co_a', role: 'accountant' }] })],
+      [company('co_a')],
+    )
+    expect(a.conflicts[0]?.evidenceFingerprint).not.toBe(b.conflicts[0]?.evidenceFingerprint)
   })
 })
 
@@ -57,7 +81,8 @@ describe('extractLegacyRelations — unknown/corrupt role', () => {
       [company('co_a')],
     )
     expect(result.confirmed).toEqual([])
-    expect(result.conflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'invalid_role' }])
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]).toMatchObject({ companyId: 'co_a', uid: 'u1', reason: 'invalid_role', hasInvalidRole: true, sourceKinds: ['users.home'] })
   })
 
   it('treats an empty-string role the same way', () => {
@@ -77,14 +102,61 @@ describe('extractLegacyRelations — missing company', () => {
   it('a relation referencing a nonexistent company becomes an orphan, never a membership', () => {
     const result = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'admin' })], [])
     expect(result.confirmed).toEqual([])
-    expect(result.orphans).toEqual([{ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' }])
+    expect(result.orphans).toHaveLength(1)
+    expect(result.orphans[0]).toMatchObject({ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company', sourceKinds: ['users.home'] })
+    expect(result.orphans[0]?.evidenceFingerprint).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  // ── Independent audit fixes, 4th round, item 3.3: orphan evidence carries source kind + attempted role ──
+  it('an orphan sourced from BOTH users.home and users.companies[] records both kinds', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { companyId: 'co_ghost', role: 'admin', companies: [{ companyId: 'co_ghost', role: 'admin' }] })],
+      [],
+    )
+    expect(result.orphans).toHaveLength(1)
+    expect(result.orphans[0]?.sourceKinds).toEqual(['users.companies[]', 'users.home'])
+  })
+
+  it('changing the attempted role on an otherwise-identical orphan claim changes its evidenceFingerprint', () => {
+    const a = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'admin' })], [])
+    const b = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'viewer' })], [])
+    expect(a.orphans[0]?.evidenceFingerprint).not.toBe(b.orphans[0]?.evidenceFingerprint)
+  })
+
+  it('changing the source kind (users.home -> users.companies[]) on an otherwise-identical orphan claim changes its evidenceFingerprint', () => {
+    const a = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'admin' })], [])
+    const b = extractLegacyRelations([user('u1', { companies: [{ companyId: 'co_ghost', role: 'admin' }] })], [])
+    expect(a.orphans[0]?.evidenceFingerprint).not.toBe(b.orphans[0]?.evidenceFingerprint)
+  })
+
+  // ── Independent audit fixes, 5th round (review of the 5th round's own fix), item 1 ──
+  it('a missing_company orphan with NO role field at all is flagged hasInvalidRole — same as an invalid role, not silently valid', () => {
+    const result = extractLegacyRelations([user('u1', { companyId: 'co_ghost' })], [])
+    expect(result.orphans).toHaveLength(1)
+    expect(result.orphans[0]).toMatchObject({
+      companyId: 'co_ghost', uid: 'u1', reason: 'missing_company',
+      observedRoles: [], hasInvalidRole: true, proposedRole: null,
+    })
+  })
+
+  it('a missing_company orphan with an invalid (non-empty, unknown) role string is flagged hasInvalidRole, same as a missing role', () => {
+    const withInvalidRole = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'superadmin' })], [])
+    const withMissingRole = extractLegacyRelations([user('u1', { companyId: 'co_ghost' })], [])
+    expect(withInvalidRole.orphans[0]?.hasInvalidRole).toBe(true)
+    expect(withMissingRole.orphans[0]?.hasInvalidRole).toBe(true)
+  })
+
+  it('a missing_company orphan with one valid role and no other claims is NOT flagged invalid and gets a proposedRole', () => {
+    const result = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'admin' })], [])
+    expect(result.orphans[0]).toMatchObject({ observedRoles: ['admin'], hasInvalidRole: false, proposedRole: 'admin' })
   })
 })
 
 describe('extractLegacyRelations — missing user (via ownerId)', () => {
   it('an ownerId with no corresponding users/{uid} doc becomes a missing_user orphan', () => {
     const result = extractLegacyRelations([], [company('co_a', { ownerId: 'ghost_uid' })])
-    expect(result.orphans).toEqual([{ companyId: 'co_a', uid: 'ghost_uid', reason: 'missing_user' }])
+    expect(result.orphans).toHaveLength(1)
+    expect(result.orphans[0]).toMatchObject({ companyId: 'co_a', uid: 'ghost_uid', reason: 'missing_user', sourceKinds: ['companies.ownerId'] })
     expect(result.ownerAnomalies).toEqual([])
   })
 })
@@ -96,7 +168,8 @@ describe('extractLegacyRelations — owner without confirmed admin membership', 
       [company('co_a', { ownerId: 'owner_uid' }), company('co_other')],
     )
     expect(result.confirmed.some(r => r.companyId === 'co_a')).toBe(false)
-    expect(result.ownerAnomalies).toEqual([{ companyId: 'co_a', uid: 'owner_uid', reason: 'owner_without_admin_membership' }])
+    expect(result.ownerAnomalies).toHaveLength(1)
+    expect(result.ownerAnomalies[0]).toMatchObject({ companyId: 'co_a', uid: 'owner_uid', reason: 'owner_without_admin_membership' })
   })
 
   it('an owner with a confirmed admin membership is accepted with no anomaly', () => {
@@ -115,7 +188,8 @@ describe('extractLegacyRelations — owner without confirmed admin membership', 
       [company('co_a', { ownerId: 'owner_uid' })],
     )
     expect(result.confirmed).toEqual([])
-    expect(result.conflicts).toEqual([{ companyId: 'co_a', uid: 'owner_uid', reason: 'owner_role_not_admin', observedRoles: ['viewer'] }])
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]).toMatchObject({ companyId: 'co_a', uid: 'owner_uid', reason: 'owner_role_not_admin', observedRoles: ['viewer'] })
   })
 })
 
@@ -126,7 +200,8 @@ describe('extractLegacyRelations — internal id mismatch', () => {
       [company('co_a')],
     )
     expect(result.confirmed).toEqual([])
-    expect(result.conflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'user_id_mismatch' }])
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]).toMatchObject({ companyId: 'co_a', uid: 'u1', reason: 'user_id_mismatch', sourceKinds: ['users.home'] })
   })
 
   it('a matching internal id is not a conflict', () => {
@@ -142,7 +217,8 @@ describe('extractLegacyRelations — internal id mismatch', () => {
     )
     expect(result.confirmed).toEqual([])
     expect(result.conflicts).toEqual([])
-    expect(result.orphans).toEqual([{ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' }])
+    expect(result.orphans).toHaveLength(1)
+    expect(result.orphans[0]).toMatchObject({ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' })
   })
 
   it('a mixed id-mismatched document with one claim at an existing company and one at a missing company splits correctly', () => {
@@ -150,8 +226,10 @@ describe('extractLegacyRelations — internal id mismatch', () => {
       [user('u1', { id: 'someone_else', companyId: 'co_a', role: 'admin', companies: [{ companyId: 'co_ghost', role: 'viewer' }] })],
       [company('co_a')],
     )
-    expect(result.conflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'user_id_mismatch' }])
-    expect(result.orphans).toEqual([{ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' }])
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]).toMatchObject({ companyId: 'co_a', uid: 'u1', reason: 'user_id_mismatch' })
+    expect(result.orphans).toHaveLength(1)
+    expect(result.orphans[0]).toMatchObject({ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' })
   })
 
   it('an id-mismatched document with NO usable claims at all does not silently disappear — reported as unknown', () => {
@@ -161,7 +239,8 @@ describe('extractLegacyRelations — internal id mismatch', () => {
     )
     expect(result.conflicts).toEqual([])
     expect(result.orphans).toEqual([])
-    expect(result.unknownUsers).toEqual([{ uid: 'u1', reason: 'no_usable_relations' }])
+    expect(result.unknownUsers).toHaveLength(1)
+    expect(result.unknownUsers[0]).toMatchObject({ uid: 'u1', reason: 'no_usable_relations' })
   })
 })
 
@@ -172,7 +251,8 @@ describe('extractLegacyRelations — malformed companies[] entries (independent 
       [company('co_a')],
     )
     expect(result.confirmed).toEqual([{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }])
-    expect(result.malformedClaims).toEqual([{ uid: 'u1', reason: 'malformed_companies_entry' }])
+    expect(result.malformedClaims).toHaveLength(1)
+    expect(result.malformedClaims[0]).toMatchObject({ uid: 'u1', reason: 'malformed_companies_entry' })
   })
 
   it('a user whose ONLY companies[] entries are malformed still gets a malformedClaims record', () => {
@@ -180,7 +260,65 @@ describe('extractLegacyRelations — malformed companies[] entries (independent 
       [user('u1', { companies: [{ role: 'viewer' }] })],
       [],
     )
-    expect(result.malformedClaims).toEqual([{ uid: 'u1', reason: 'malformed_companies_entry' }])
+    expect(result.malformedClaims).toHaveLength(1)
+    expect(result.malformedClaims[0]).toMatchObject({ uid: 'u1', reason: 'malformed_companies_entry' })
+  })
+})
+
+// ── Independent audit fixes, 4th round, item 3.4: fail-closed for corrupted
+// legacy containers — previously silently ignored entirely. ────────────────
+describe('extractLegacyRelations — fail-closed source anomalies (independent audit fixes, 4th round, item 3.4)', () => {
+  it('users.companies present but NOT an array is a blocking malformedClaims anomaly (companies_field_not_array)', () => {
+    const result = extractLegacyRelations([user('u1', { companies: 'not-an-array' })], [])
+    expect(result.malformedClaims).toHaveLength(1)
+    expect(result.malformedClaims[0]).toMatchObject({ uid: 'u1', reason: 'companies_field_not_array' })
+  })
+
+  it('companies_field_not_array is reported EVEN WHEN the same user has another valid claim', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { companyId: 'co_a', role: 'admin', companies: 'not-an-array' })],
+      [company('co_a')],
+    )
+    expect(result.confirmed).toEqual([{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }])
+    expect(result.malformedClaims).toHaveLength(1)
+    expect(result.malformedClaims[0]).toMatchObject({ uid: 'u1', reason: 'companies_field_not_array' })
+  })
+
+  it('users.companyId present but NOT a usable string is a blocking malformedClaims anomaly (malformed_company_id)', () => {
+    const result = extractLegacyRelations([user('u1', { companyId: 12345, role: 'admin' })], [])
+    expect(result.malformedClaims).toHaveLength(1)
+    expect(result.malformedClaims[0]).toMatchObject({ uid: 'u1', reason: 'malformed_company_id' })
+  })
+
+  it('malformed_company_id is reported EVEN WHEN the same user has another valid claim via companies[]', () => {
+    const result = extractLegacyRelations(
+      [user('u1', { companyId: '', role: 'admin', companies: [{ companyId: 'co_a', role: 'viewer' }] })],
+      [company('co_a')],
+    )
+    expect(result.confirmed).toEqual([{ companyId: 'co_a', uid: 'u1', role: 'viewer', sources: ['users.companies[]'] }])
+    expect(result.malformedClaims).toHaveLength(1)
+    expect(result.malformedClaims[0]).toMatchObject({ uid: 'u1', reason: 'malformed_company_id' })
+  })
+
+  it('a single user can produce BOTH malformed_company_id and companies_field_not_array simultaneously', () => {
+    const result = extractLegacyRelations([user('u1', { companyId: 999, companies: {} })], [])
+    const reasons = result.malformedClaims.map(m => m.reason).sort()
+    expect(reasons).toEqual(['companies_field_not_array', 'malformed_company_id'])
+  })
+
+  it('companies.ownerId present but NOT a usable string is a blocking, never decision-resolvable ownerIdAnomaly', () => {
+    const result = extractLegacyRelations([], [company('co_a', { ownerId: 12345 })])
+    expect(result.ownerIdAnomalies).toHaveLength(1)
+    expect(result.ownerIdAnomalies[0]).toMatchObject({ companyId: 'co_a', reason: 'malformed_owner_id' })
+    expect(result.orphans).toEqual([])
+    expect(result.ownerAnomalies).toEqual([])
+  })
+
+  it('companies.ownerId simply ABSENT (not present at all) is not an anomaly', () => {
+    const result = extractLegacyRelations([], [company('co_a', {})])
+    expect(result.ownerIdAnomalies).toEqual([])
+    expect(result.ownerAnomalies).toEqual([])
+    expect(result.orphans).toEqual([])
   })
 })
 
@@ -191,14 +329,16 @@ describe('extractLegacyRelations — mixed valid+invalid role claims for the sam
       [company('co_a')],
     )
     expect(result.confirmed).toEqual([])
-    expect(result.conflicts).toEqual([{ companyId: 'co_a', uid: 'u1', reason: 'mixed_role_validity' }])
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]).toMatchObject({ companyId: 'co_a', uid: 'u1', reason: 'mixed_role_validity', observedRoles: ['admin'], hasInvalidRole: true })
   })
 })
 
 describe('extractLegacyRelations — users with no usable relation at all (independent audit fix #6)', () => {
   it('a user document with neither companyId nor companies[] is reported as an unknown user', () => {
     const result = extractLegacyRelations([user('u1', { name: 'no legacy relation at all' })], [])
-    expect(result.unknownUsers).toEqual([{ uid: 'u1', reason: 'no_usable_relations' }])
+    expect(result.unknownUsers).toHaveLength(1)
+    expect(result.unknownUsers[0]).toMatchObject({ uid: 'u1', reason: 'no_usable_relations' })
     expect(result.confirmed).toEqual([])
     expect(result.conflicts).toEqual([])
     expect(result.orphans).toEqual([])
@@ -206,12 +346,14 @@ describe('extractLegacyRelations — users with no usable relation at all (indep
 
   it('a user document with only malformed companies[] entries (no companyId, no valid entries) is ALSO an unknown user', () => {
     const result = extractLegacyRelations([user('u1', { companies: ['not-an-object'] })], [])
-    expect(result.unknownUsers).toEqual([{ uid: 'u1', reason: 'no_usable_relations' }])
+    expect(result.unknownUsers).toHaveLength(1)
+    expect(result.unknownUsers[0]).toMatchObject({ uid: 'u1', reason: 'no_usable_relations' })
   })
 
   it('a user with at least one usable claim (even if it becomes an orphan) is NOT reported as unknown', () => {
     const result = extractLegacyRelations([user('u1', { companyId: 'co_ghost', role: 'admin' })], [])
     expect(result.unknownUsers).toEqual([])
-    expect(result.orphans).toEqual([{ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' }])
+    expect(result.orphans).toHaveLength(1)
+    expect(result.orphans[0]).toMatchObject({ companyId: 'co_ghost', uid: 'u1', reason: 'missing_company' })
   })
 })

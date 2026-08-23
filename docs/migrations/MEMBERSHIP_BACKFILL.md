@@ -241,6 +241,8 @@ Passed via `--decisions-file /absolute/path/outside/this/repository.json` —
   {
     "uid": "REDACTED_UID",
     "companyId": "REDACTED_COMPANY_ID",
+    "findingType": "role_mismatch",
+    "evidenceFingerprint": "<64-hex-char SHA-256 — copy from the CURRENT dry-run report's matching conflicts[] entry>",
     "resolution": "confirm_role",
     "role": "admin",
     "reason": "Confirmed with company owner via support ticket #1234 on 2026-01-15.",
@@ -250,6 +252,8 @@ Passed via `--decisions-file /absolute/path/outside/this/repository.json` —
   {
     "uid": "REDACTED_UID_2",
     "companyId": "REDACTED_COMPANY_ID_2",
+    "findingType": "missing_company",
+    "evidenceFingerprint": "<64-hex-char SHA-256 — from the CURRENT dry-run report's matching orphans[] entry>",
     "resolution": "exclude",
     "reason": "Former contractor, access intentionally not migrated.",
     "reviewedBy": "alice@example.test",
@@ -257,6 +261,8 @@ Passed via `--decisions-file /absolute/path/outside/this/repository.json` —
   },
   {
     "uid": "REDACTED_UID_3",
+    "findingType": "no_usable_relations",
+    "evidenceFingerprint": "<64-hex-char SHA-256 — from the CURRENT dry-run report's matching unknownUsers[] entry>",
     "resolution": "exclude",
     "reason": "Confirmed dead account with support — has no companyId/companies[] claim at all, safe to leave unmigrated.",
     "reviewedBy": "alice@example.test",
@@ -264,6 +270,22 @@ Passed via `--decisions-file /absolute/path/outside/this/repository.json` —
   }
 ]
 ```
+
+**Changed in the 4th independent-audit round (finding-bound decisions —
+see "Independent audit fixes — 4th round" at the end of this document for
+the full rationale): every decision now MUST specify `findingType` (exactly
+which kind of finding it resolves — one of `OrphanReason`/`ConflictReason`/
+`'owner_without_admin_membership'`/`'no_usable_relations'`/
+`MalformedClaimReason`, see `scripts/lib/types.ts`'s `FindingType`) and
+`evidenceFingerprint` (a 64-hex-char SHA-256, copied verbatim from the
+matching entry's own `evidenceFingerprint` field in the CURRENT dry-run
+report — every `conflicts`/`orphans`/`ownerAnomalies`/`unknownUsers`/
+`malformedClaims` entry in the report now carries this field). A decision
+only ever applies when `(companyId, uid)` (or `uid` alone for a user-level
+decision), `findingType`, AND `evidenceFingerprint` ALL match the current
+finding exactly — an old decisions file written against a v1-schema report
+(before this round) has neither field and MUST be recreated against a
+fresh dry-run's v2 report.**
 
 The third entry above has **no `companyId` at all** — a "user-level"
 decision (2nd round fix #3). This is the ONLY way to acknowledge an
@@ -274,41 +296,77 @@ companyId-less decision MUST have `resolution: "exclude"` — `confirm_role`
 and `accept_existing` always require a specific `(companyId, uid)` relation
 and are rejected by `scripts/lib/decisions.ts` if `companyId` is omitted.
 
-Resolutions:
+Resolutions — now gated per-`findingType` by `COMPATIBLE_RESOLUTIONS`
+(`scripts/lib/types.ts`), enforced independently at BOTH decisions-file
+validation time (`scripts/lib/decisions.ts`) AND again defensively inside
+`buildPlan()` (`scripts/lib/planner.ts`) at the moment a decision is
+actually applied:
 - `confirm_role` — requires `role` (`viewer`|`accountant`|`admin`) AND a
-  `companyId`. Resolves a conflict or owner anomaly by creating that
-  membership — but ONLY after re-verifying, at the moment the decision is
-  applied, that BOTH the target company and the target user still exist
-  (`scripts/lib/planner.ts`, `confirmRoleTargetExists()`, 2nd round fix #4).
-  **Cannot** target an orphan (a decision can never create a missing
-  company or user) — this is enforced structurally: a claim referencing a
-  nonexistent company is never even classified as a resolvable conflict in
-  the first place, it is a `missing_company` orphan.
-- `accept_existing` — only meaningful for an `existing_membership_conflict`
-  that is `differs_but_valid` (a strictly-schema-valid, active document with
-  merely a different role): treats the existing document as canonical;
-  nothing is written. **Never** resolves an `invalid` existing document
-  (unknown role, disabled/non-active status, uid mismatch, missing
-  timestamps, or extra fields) — that stays a blocking conflict no matter
-  what the decision says.
+  `companyId`. Compatible `findingType`s: `role_mismatch`, `invalid_role`,
+  `mixed_role_validity`, `user_id_mismatch`, `owner_role_not_admin`.
+  Resolves a conflict or owner anomaly by creating that membership — but
+  ONLY after re-verifying, at the moment the decision is applied, that BOTH
+  the target company and the target user still exist (`scripts/lib/planner.ts`,
+  `confirmRoleTargetExists()`, 2nd round fix #4). **Cannot** target an
+  orphan (`missing_company`/`missing_user`) — a decision can never create a
+  missing company or user; `COMPATIBLE_RESOLUTIONS['missing_company']` is
+  `['exclude']` only, enforced structurally (4th round).
+- `accept_existing` — the ONLY compatible `findingType` is
+  `existing_membership_conflict`, and only when the underlying document is
+  `differs_but_valid` (a strictly-schema-valid, active document with merely
+  a different role): treats the existing document as canonical; nothing is
+  written. Its evidence is `{ existingRole }` — the existing document's own
+  role at the moment the finding was produced; if that role changes before
+  `apply` runs, the decision's `evidenceFingerprint` no longer matches and
+  it goes stale (see "stale decisions" below). **Never** resolves an
+  `invalid` existing document (unknown role, disabled/non-active status,
+  uid mismatch, missing timestamps, or extra fields) — that stays a
+  blocking conflict no matter what the decision says (no decision is even
+  looked up for an `invalid` classification).
 - `exclude` — acknowledges a conflict/orphan/owner-anomaly (with a
   `companyId`); no membership is ever created for that pair. WITHOUT a
   `companyId`, acknowledges a user-level `unknownUsers`/`malformedClaims`
   entry instead (2nd round fix #3) — the only resolution valid in that form.
+  Compatible with every `findingType` except `malformed_owner_id`, which is
+  NEVER decision-resolvable at all (`COMPATIBLE_RESOLUTIONS['malformed_owner_id']
+  === []`) — same treatment as a dangling membership (see below): the
+  corrupted `companies/{companyId}.ownerId` field is the only thing that
+  would identify a target, so there is no reliable identity to attach a
+  decision to; the field itself must be repaired.
+
+**Stale and unused decisions (4th round) are now BLOCKING, reported
+explicitly, and never silently dropped:**
+- A **stale** decision is one whose `(companyId, uid)`/`uid` and
+  `findingType` matched a CURRENT finding, but whose `evidenceFingerprint`
+  did NOT — the underlying evidence (role, source kind, existing document's
+  role, etc.) changed since the decision was written. The finding stays
+  unresolved, and the decision is listed in the report's `staleDecisions`
+  (`counts.staleDecisions`).
+- An **unused** decision is one that matched NO current finding at all
+  (e.g. the underlying problem was already fixed, or the target was
+  mistyped). Listed in `unusedDecisions` (`counts.unusedDecisions`).
+- Both make `applyAllowed: false` (and therefore block `apply`/`verify`)
+  until the decisions file is corrected — either by re-deriving a fresh
+  `evidenceFingerprint` from the current dry-run report (stale case) or by
+  removing the decision entirely (unused case).
 
 Validation (`scripts/lib/decisions.ts`) rejects, with no permissive
-fallback: non-array input, unknown fields, unknown `resolution`/`role`
-values, missing required fields, an unparseable `reviewedAt`, a
-companyId-less decision whose resolution is not `exclude`, and
-duplicate/contradicting decisions for the same `(companyId, uid)` pair (or
-the same `uid` for two user-level decisions — a separate namespace from
-relation-level pairs, so a user-level and a relation-level decision for the
-SAME uid never collide).
+fallback: non-array input, unknown fields, unknown `resolution`/`role`/
+`findingType` values, a `resolution` incompatible with the given
+`findingType`, a non-hex-64 `evidenceFingerprint`, missing required fields
+(now including `findingType`/`evidenceFingerprint`), an unparseable
+`reviewedAt`, a `findingType`/`companyId` mismatch (company-scoped finding
+types require `companyId`; user-level ones forbid it), and
+duplicate/contradicting decisions for the same `(companyId, uid,
+findingType)` triple (or the same `(uid, findingType)` for two user-level
+decisions — a separate namespace from relation-level pairs, so a user-level
+and a relation-level decision for the SAME uid never collide; the SAME
+`(companyId, uid)` MAY carry decisions for two DIFFERENT `findingType`s).
 `--decisions-file`'s SHA-256 (over the canonicalized, order-independent
-decision list — see "Checksums" below) is recorded in every report as
-`decisionsChecksum`, so a report can always be tied back to exactly which
-decisions produced it without the decisions file itself ever being
-committed.
+decision list, now including `findingType`/`evidenceFingerprint` — see
+"Checksums" below) is recorded in every report as `decisionsChecksum`, so a
+report can always be tied back to exactly which decisions produced it
+without the decisions file itself ever being committed.
 
 ## CLI reference
 
@@ -327,10 +385,16 @@ node scripts/backfill-memberships.ts \
   --ack-emergency-reconstruction                        (rollback-from-plan only, REQUIRED)
   --backup-reference /absolute/path/to/backup-manifest.json    (production apply only)
   --rollback-reference /absolute/path/to/a/dry-run-report.json (production apply only)
+  --expected-plan-sha256 <64-hex-char SHA-256>          (rollback-from-plan REQUIRED; production apply REQUIRED as of the 4th independent-audit round — verified against --rollback-reference's raw bytes before any parsing)
   --ack-maintenance-readonly                                    (production apply/rollback-from-report/rollback-from-plan only)
 ```
 
-`--apply` is a convenience alias for `--mode apply`.
+`--apply` is a convenience alias for `--mode apply`. **Every flag — value-
+bearing or boolean — may be given at most once** (4th round, item 3.7):
+`--mode` and `--apply` together, a repeated `--mode`, or a repeated
+security-sensitive/path/hash/reference flag is refused outright as
+ambiguous (`scripts/lib/cli.ts`) — there is no "last argument wins"
+anywhere in this parser.
 
 ### Production mode-specific requirements
 
@@ -354,7 +418,7 @@ below by reordering. The actual per-mode requirements, implemented in
 | Mode | `--backup-reference` | `--rollback-reference` | `--ack-maintenance-readonly` | `--expected-report-sha256` | `--expected-plan-sha256` | `--ack-emergency-reconstruction` | Maintenance mode checked live? |
 |---|---|---|---|---|---|---|---|
 | `dry-run` | not required | not required | not required | n/a | n/a | n/a | no — dry-run writes nothing |
-| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified: `sourceGitSha`/`sourceChecksum`/`decisionsChecksum`/`targetChecksum` must ALL exactly match this run's own values** (`verifyRollbackPlanReference` — see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | n/a | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
+| `apply` | **required, strictly verified** (`verifyBackupReference` — see "Backup reference verification" below) | **required, strictly verified in two phases: Phase A (`verifyRollbackPlanFileIntegrity`) reads `--rollback-reference`'s raw bytes, checks their SHA-256 against `--expected-plan-sha256` BEFORE any JSON parsing, and only THEN — once the hash matches — parses the JSON and structurally validates it; both the hash check and the subsequent parsing/validation complete before any credential acquisition or Firestore I/O. Phase B (`matchRollbackPlanAgainstCurrent`), called only after Phase A succeeds, then compares `sourceGitSha`/`sourceChecksum`/`sourceStateChecksum`/`decisionsChecksum`/`targetChecksum` AND `plannedCreates` (direct structural comparison, not just checksums) — all five values (the source Git revision plus four checksums) plus `plannedCreates` must exactly match this run's own values** (see "Two-phase ROLLBACK_REFERENCE" below) | required | n/a | **required** — checked FIRST, before JSON parsing/credential acquisition/Firestore I/O | n/a | **yes, checked FIRST** (`assertMaintenanceModeActive` — its `enabledAt` anchors the backup-freshness check; fail-closed) |
 | `verify` | not required | not required | not required | n/a | n/a | n/a | no — verify only reads |
 | `rollback-from-report` | not required | not required | required | **required** — verified against `--from-report`'s actual bytes BEFORE any parsing/I/O | n/a | n/a | **yes** (`assertMaintenanceModeActive`, fail-closed) |
 | `rollback-from-plan` | not required | not required | required | n/a | **required, checked FIRST** — verified against `--from-plan`'s actual bytes, and the plan structurally validated, BEFORE `assertMaintenanceModeActive()` or any candidate read/delete (final-round fix #1, third pass — see `runEmergencyReconstruction()`, `scripts/lib/emergencyReconstruction.ts`) | **required** — explicit acknowledgement this is the degraded, last-resort path | **yes, checked AFTER the hash/structure checks above** (`assertMaintenanceModeActive`, fail-closed) |
@@ -671,7 +735,8 @@ the file `--backup-reference` will point to.
 
 **Corrected after independent review (final round, second pass, item 4)** —
 a single, decisions-less dry-run cannot become `--rollback-reference`:
-`verifyRollbackPlanReference()` now requires the reference's
+`matchRollbackPlanAgainstCurrent()` (Phase B of the two-phase
+`--rollback-reference` verification) requires the reference's
 `decisionsChecksum` to EXACTLY match apply's own (see "Two-phase
 ROLLBACK_REFERENCE" below) — a dry-run run WITHOUT `--decisions-file` has
 the EMPTY-array `decisionsChecksum`, which can never match an apply that
@@ -746,13 +811,21 @@ node scripts/backfill-memberships.ts \
   --report-path /absolute/path/outside/repo/sec005-prod-apply.json \
   --backup-reference /absolute/path/outside/repo/sec005-prod-backup-manifest.json \
   --rollback-reference /absolute/path/outside/repo/sec005-prod-resolved-dry-run.json \
+  --expected-plan-sha256 <resolved-dry-run-sha256> \
   --ack-maintenance-readonly
 ```
 
-`verifyRollbackPlanReference()` cross-checks `sourceGitSha`,
-`sourceChecksum`, `decisionsChecksum`, AND `targetChecksum` between this
-`--rollback-reference` and THIS apply run's own computed values — all four
-must match exactly (final-round fix #2, second round). Using Step 5b's
+Phase A (`verifyRollbackPlanFileIntegrity()`) reads `--rollback-reference`'s
+raw bytes and checks their SHA-256 against `--expected-plan-sha256` BEFORE
+any JSON parsing; only once that hash matches does it parse the JSON and
+structurally validate it. Both the hash check and the subsequent
+parsing/validation complete before any credential acquisition or Firestore
+I/O. Phase B (`matchRollbackPlanAgainstCurrent()`), called only after
+Phase A succeeds, then cross-checks `sourceGitSha`, `sourceChecksum`,
+`sourceStateChecksum`, `decisionsChecksum`, AND `targetChecksum` between
+this `--rollback-reference` and THIS apply run's own computed values, plus
+`plannedCreates` directly — all five values (the source Git revision plus
+four checksums) plus `plannedCreates` must match exactly. Using Step 5b's
 report with the SAME `--decisions-file` is what makes this possible;
 Step 5a's report (or a dry-run with a different/no decisions file) will
 be refused here, before any write.
@@ -946,43 +1019,62 @@ runs. That is circular.
 The resolution splits `ROLLBACK_REFERENCE` into two distinct, non-circular
 phases:
 
-1. **Pre-apply** (`--rollback-reference` flag, verified by
-   `verifyRollbackPlanReference()`, which delegates the structural checks
-   to the shared `verifyStrictDryRunReport()` — both in
-   `scripts/lib/productionSafety.ts`): points to an EXISTING **dry-run**
-   report, STRICTLY validated (strengthened in the final preflight-safety
-   round, independent review item 4 — a minimal forged/incomplete JSON is
-   rejected, not merely "close enough"):
-   - `schemaVersion` matches this tool's own `REPORT_SCHEMA_VERSION`;
-   - `mode === 'dry-run'` (rejecting an apply report outright — this is
-     what makes the self-referential case structurally impossible);
-   - `environment === 'production'` and `projectId === '--project'`'s
-     value — a staging or emulator dry-run can never authorize a
-     production apply;
-   - `sourceGitSha` is present, non-empty, and (final-round fix #2, second
-     round) never `"unknown"` — a dry-run whose own build could not be
-     traced to a commit can never authorize production, and neither can a
-     CURRENT apply run whose own `sourceGitSha` is `"unknown"` (checked
-     first, before the reference file is even read);
-   - `sourceChecksum`, `decisionsChecksum`, and `targetChecksum` are each
-     present as a well-formed 64-character hex SHA-256 digest — not just
-     "some string";
-   - `counts.unresolved === 0` — a dry-run plan that still has unresolved
-     conflicts/orphans/anomalies cannot be treated as fully reviewed and
-     approved;
-   - `plannedCreates` contains no duplicate `(companyId, uid)` pair
-     (final-round fix #2, second round);
-   - AND, finally — **strengthened in the final preflight-safety round,
-     second pass (item 2)**: `sourceGitSha`, `sourceChecksum`,
-     `decisionsChecksum`, AND `targetChecksum` must ALL FOUR exactly equal
-     THIS apply run's own computed values, not `targetChecksum` alone —
+1. **Pre-apply** (`--rollback-reference` flag, verified in two phases by
+   `scripts/lib/productionSafety.ts`):
+   - **Phase A — `verifyRollbackPlanFileIntegrity()`**: reads
+     `--rollback-reference`'s raw bytes and checks their SHA-256 against
+     `--expected-plan-sha256` BEFORE any JSON parsing — structural
+     validation is not possible before parsing, so it can only happen
+     AFTER the hash check succeeds: only once the hash matches does this
+     function parse the JSON and structurally validate its content
+     (delegating to `validateStrictDryRunReportContent()`). Both the hash
+     check and the subsequent parsing/validation complete BEFORE any
+     credential acquisition or Firestore I/O, and before
+     `matchRollbackPlanAgainstCurrent()` (Phase B) is even called. Takes no
+     Firestore/db parameter at all, so it is structurally impossible for a
+     tampered or wrong-hash reference to cause any Firestore I/O. Points to
+     an EXISTING **dry-run** report, STRICTLY validated — a minimal
+     forged/incomplete JSON is rejected, not merely "close enough":
+     - `schemaVersion` matches this tool's own current
+       `REPORT_SCHEMA_VERSION`;
+     - `mode === 'dry-run'` (rejecting an apply report outright — this is
+       what makes the self-referential case structurally impossible);
+     - `environment === 'production'` and `projectId === '--project'`'s
+       value — a staging or emulator dry-run can never authorize a
+       production apply;
+     - `sourceGitSha` is present, non-empty, and never `"unknown"` — a
+       dry-run whose own build could not be traced to a commit can never
+       authorize production, and neither can a CURRENT apply run whose own
+       `sourceGitSha` is `"unknown"` (checked first, before the reference
+       file is even read);
+     - `sourceChecksum`, `sourceStateChecksum`, `decisionsChecksum`, and
+       `targetChecksum` are each present as a well-formed 64-character hex
+       SHA-256 digest — not just "some string";
+     - `counts.unresolved === 0` — a dry-run plan that still has unresolved
+       conflicts/orphans/anomalies/companies-without-admin cannot be
+       treated as fully reviewed and approved;
+     - the full resolved-findings audit trail (`resolvedConflicts`/
+       `resolvedOrphans`/`resolvedOwnerAnomalies`/`resolvedUnknownUsers`/
+       `resolvedMalformedClaims`, plus `staleDecisions`/`unusedDecisions`)
+       is present, deeply valid, and reconstructs `decisionsChecksum`
+       exactly — see "Counts and checksum contract" below;
+     - `plannedCreates` contains no duplicate `(companyId, uid)` pair.
+   - **Phase B — `matchRollbackPlanAgainstCurrent()`**: pure comparison,
+     no I/O of any kind — takes the ALREADY-verified Phase A result and
+     THIS run's own freshly-computed values. `sourceGitSha`,
+     `sourceChecksum`, `sourceStateChecksum`, `decisionsChecksum`, AND
+     `targetChecksum` — all five values (the source Git revision plus four
+     checksums) — must exactly equal THIS apply run's own
+     computed values, PLUS `plannedCreates` must match directly (structural
+     comparison, not just checksums), not `targetChecksum` alone —
      proving the dry-run was built from the exact same code, the exact
      same legacy source data, AND the exact same `--decisions-file`, not
      merely a dry-run that happens to compute a coincidentally-matching
      final `targetChecksum`. This is why apply's `--decisions-file` must
      be the SAME one used to produce the "resolved dry-run" report passed
      as `--rollback-reference` — see "Future production execution", Step
-     5, above.
+     5, above. Phase B can never even be reached if Phase A rejected the
+     reference file.
    This is not a description of a future rollback — it is proof the
    operator actually looked at a genuine, fully-resolved plan, built from
    the exact same code/data/decisions, before running `apply`.
@@ -1289,24 +1381,68 @@ node scripts/ops/set-maintenance-mode.ts \
 
 ## Counts and checksum contract
 
-Every report (`scripts/lib/report.ts`, `schemaVersion: 1`) includes:
-`mode`, `environment`, `projectId`, `sourceGitSha`, `runId` (a `crypto.randomUUID()`
-— **never** `Date.now()` for identity/ordering), `startedAt`/`finishedAt`,
-the full `counts` object (`usersRead` … `unresolved`), and four checksums:
+Every report (`scripts/lib/report.ts`, currently **`schemaVersion: 4`** —
+see the "Independent audit fixes" changelog sections at the end of this
+document for the full version history; every current validator
+(`validateStrictDryRunReportContent()`/`validateSourceReportForRollback()`)
+rejects a v1, v2, OR v3 report outright, with a clear error explaining
+that a NEW `--mode dry-run` against the CURRENT tool is required — an
+older report can never be reinterpreted as current) includes: `mode`,
+`environment`, `projectId`, `sourceGitSha` (for production, now a
+FAIL-CLOSED-verified commit SHA proving a clean tracked worktree — see
+"source revision verification" in the 4th-round section), `runId` (a
+`crypto.randomUUID()` — **never** `Date.now()` for identity/ordering),
+`startedAt`/`finishedAt`, the full `counts` object (`usersRead` …
+`ownerWithoutAdminMembership`, `companiesWithoutAdmin` …
+`staleDecisions` … `unusedDecisions` … `unresolved`), the private
+`companiesWithoutAdmin: string[]` array (the actual companyIds the
+last-admin gate blocked on — populated from `plan.companiesWithoutAdmin`
+for dry-run/apply/verify, always `[]` for rollback modes; never printed to
+the safe stdout summary — only its COUNT, via `counts.companiesWithoutAdmin`,
+reaches stdout), and five checksums:
 
 - **`sourceChecksum`** — SHA-256 over the canonicalized, `companyId`-then-`uid`-sorted
   set of *confirmed* candidate relations (`companyId`, `uid`, `role`).
+- **`sourceStateChecksum`** (4th round) — a BROADER SHA-256, over the full
+  normalized migration-relevant source state:
+  confirmed relations WITH their source kinds; conflicts (reason +
+  evidenceFingerprint); orphans (reason + evidenceFingerprint); owner
+  anomalies; unknown users; malformed claims/owner-id anomalies; the SET of
+  company/user IDs that currently exist; and a normalized projection of
+  every existing membership document (`companyId`, `uid`, `role`, `status`,
+  schema-validity). Unlike `sourceChecksum` above (which only ever covered
+  `confirmed`), changing ANY migration-relevant fact — a conflict's
+  observed roles, an orphan's source kind, whether a user/company exists,
+  an existing membership's role — changes `sourceStateChecksum`
+  (`scripts/lib/checksum.ts`'s `computeFullSourceStateChecksum()`). Never
+  includes arbitrary unrelated Firestore fields, and never printed with raw
+  identifiers — only the hex digest itself is safe for stdout.
 - **`decisionsChecksum`** — SHA-256 over the canonicalized decisions array,
-  where each decision is normalized to ALL 7 of its meaningful fields —
-  `uid`, `companyId` (`null` for a user-level decision), `resolution`,
-  `role` (`null` unless `confirm_role`), `reason`, `reviewedBy`,
-  `reviewedAt` — before hashing (2nd round fix #5:
-  `scripts/lib/checksum.ts`'s `computeDecisionsChecksum()` takes the full
-  typed `Decision[]`, not a partial shape). Changing ANY one of those 7
-  fields changes the checksum; sorting is by the canonical JSON of each
-  normalized decision itself, so it stays fully deterministic and
-  order-independent (empty-array checksum when no `--decisions-file` is
-  given).
+  where each decision is normalized to ALL 9 of its meaningful fields —
+  `uid`, `companyId` (`null` for a user-level decision), `findingType`,
+  `evidenceFingerprint`, `resolution`, `role` (`null` unless
+  `confirm_role`), `reason`, `reviewedBy`, `reviewedAt` — before hashing
+  (`scripts/lib/checksum.ts`'s `computeDecisionsChecksum()` takes the full
+  typed `Decision[]`, not a partial shape). Changing ANY one of those 9
+  fields changes the checksum — including `findingType` or
+  `evidenceFingerprint` alone, which is exactly what makes a decision
+  finding-bound (see "Decisions file" above); sorting is by the canonical
+  JSON of each normalized decision itself, so it stays fully deterministic
+  and order-independent (empty-array checksum when no `--decisions-file`
+  is given, or when the audit trail below is genuinely empty).
+
+  For a `--rollback-reference`/`--from-plan` used in production,
+  `decisionsChecksum` is not merely present as a hex digest — it must be
+  **reconstructible from the report's own audit trail**:
+  `validateStrictDryRunReportContent()` collects every decision from the
+  five `resolvedX[].decision` arrays (`resolvedConflicts`/`resolvedOrphans`/
+  `resolvedOwnerAnomalies`/`resolvedUnknownUsers`/`resolvedMalformedClaims`)
+  plus `staleDecisions` and `unusedDecisions`, validates that combined set
+  as ONE batch (catching a decision duplicated across buckets, which
+  per-item validation cannot see), and requires
+  `computeDecisionsChecksum()` of that collected set to exactly equal
+  `report.decisionsChecksum` — a decision silently missing from every
+  bucket, or a duplicated `{finding, decision}` pair, is refused outright.
 - **`targetChecksum`** — SHA-256 over the canonicalized, sorted set of
   relations the run INTENDS to exist afterward (planned creates + already-matching
   skips), role+status only (`schemaValid` always implicitly `true` for a target
@@ -1982,3 +2118,656 @@ final production preflight review`. Full technical writeup:
 **Production was not read or modified at any point in this round** — all
 verification is against the Firestore Emulator and unit-level fake
 Firestore stubs.
+
+## Independent audit fixes — 4th round
+
+A fourth independent-audit round, run against the merged doc-only PR #16
+state (base SHA `3e70252faa7d7f48191a58c6e669b9fede82a247`), found 7
+categories of blocking issues not covered by any earlier round. All 7 are
+addressed here, on branch `remediation/SEC-005-independent-audit-fixes`.
+**Production and staging were not read or modified at any point in this
+round** — every fix is proven by pure unit tests (`scripts/lib/**.test.ts`)
+and/or the real Firestore Emulator (`npm run test:migration`,
+`scripts/backfill-memberships.emulator.test.ts`); `SEC-006` was not
+started. This section documents the CODE-LEVEL contract; see
+`docs/remediation/reports/SEC-005.md` for the full round narrative,
+verification evidence, and CI status. **This round is doc+code only —
+submitted as a Draft PR for independent review; `READY_FOR_REVIEW` is the
+executor's own status, not a `REVIEW_RESULT: PASS`.**
+
+### 3.1 — Finding-bound manual decisions
+
+Previously, a decision was matched to a finding by identity alone
+(`(companyId, uid)` or `uid`) — an old `exclude` recorded for a
+`missing_company` orphan could silently "resolve" an unrelated LATER
+finding at the same identity (e.g. a `role_mismatch` once the company
+started existing). Fixed by requiring every `Decision` to carry
+`findingType` (exactly which kind of finding — see `FindingType`,
+`scripts/lib/types.ts`) and `evidenceFingerprint` (a SHA-256 over the
+finding's own normalized evidence — `computeFindingFingerprint()`,
+`scripts/lib/checksum.ts`). A decision is honored only when identity,
+`findingType`, AND `evidenceFingerprint` ALL match the CURRENT finding
+exactly (`buildPlan()`, `scripts/lib/planner.ts`). Resolution/findingType
+compatibility is enforced by `COMPATIBLE_RESOLUTIONS`, checked
+independently at both decisions-file validation time
+(`scripts/lib/decisions.ts`) and again inside `buildPlan()`.
+Stale (identity+findingType matched, fingerprint did not) and unused (no
+current finding matched at all) decisions are now surfaced explicitly
+(`PlanResult.staleDecisions`/`unusedDecisions`, report `counts.staleDecisions`/
+`counts.unusedDecisions`) and always block `apply`/`verify`. Full contract:
+see "Decisions file" above.
+
+### 3.2 — Full source-state checksum
+
+`sourceChecksum` only ever covered `extraction.confirmed` — it could not
+prove the REST of the migration-relevant source (conflicts, orphans,
+owner/malformed anomalies, which users/companies exist, existing
+membership documents) was unchanged between two runs. Added
+`sourceStateChecksum` (`computeFullSourceStateChecksum()`,
+`scripts/lib/checksum.ts`) — see "Counts and checksum contract" above for
+its exact contract. Never includes arbitrary unrelated Firestore fields;
+never logs raw identifiers.
+
+### 3.3 — Report schema v2 and evidence preservation
+
+`REPORT_SCHEMA_VERSION` bumped `1 -> 2`. v1 discarded a finding's
+originating evidence (which legacy source kind produced it, what roles
+were observed, whether an invalid role was involved) at the moment the
+record was created — structurally impossible to recover afterward (this
+exact gap was independently identified and confirmed during a prior,
+separate SEC-005 preflight round's local analysis of a real production
+`missing_company` orphan). Every finding record now carries this evidence
+directly:
+- `OrphanRecord.sourceKinds` — sorted, deduplicated `RelationSourceKind[]`
+  (`'users.home'`/`'users.companies[]'`/`'companies.ownerId'`) that
+  produced the claim.
+- `ConflictRecord.observedRoles`/`.hasInvalidRole`/`.sourceKinds` — valid
+  observed roles (never a raw invalid value), a safe boolean flag for
+  "at least one claim had an unrecognized role", and contributing source
+  kinds.
+- Every record (`OrphanRecord`, `ConflictRecord`, `OwnerAnomalyRecord`,
+  `UnknownUserRecord`, `MalformedClaimRecord`, `OwnerIdAnomalyRecord`,
+  `DanglingMembershipRecord`) carries `evidenceFingerprint`.
+`validateStrictDryRunReportContent()`/`validateSourceReportForRollback()`
+(`scripts/lib/productionSafety.ts`/`scripts/lib/rollbackValidation.ts`)
+reject `schemaVersion !== 2` outright with a clear "wrong schema version"
+error — a v1 report (from before this round) can never be accepted as
+`--rollback-reference`/`--from-report`/`--from-plan`. The strict validator
+was also independently strengthened (see 3.6 below). A production dry-run
+report from BEFORE this round is stale by definition: **the old (pre-4th-round)
+production dry-run result is no longer valid — a NEW production dry-run,
+under a fresh `PRODUCTION_PREFLIGHT_APPROVED: SEC-005` or equivalent grant,
+is required after this round merges. Any decisions file written against
+that old dry-run's v1 report must be recreated from scratch against the
+new v2 report (old decisions have neither `findingType` nor
+`evidenceFingerprint` and are rejected by `scripts/lib/decisions.ts`
+outright). The verification-only backup taken during the earlier
+production preflight round was NEVER a valid `--backup-reference` for
+`apply` in the first place (see "Important: this preflight's backup is
+verification-only, NOT for apply" — freshness and maintenance-mode-ordering
+requirements) and remains unusable for that purpose regardless of this
+round. `apply` remains unconditionally refused for production
+(`assertCycleExecutionAllowed()`, unchanged) — nothing in this round
+touches that gate.**
+
+### 3.4 — Fail-closed for corrupted legacy source containers
+
+Previously silently ignored (no claim, no record, no trace at all):
+`users/{uid}.companies` present but not an array; `users/{uid}.companyId`
+present but not a usable string; `companies/{companyId}.ownerId` present
+but not a usable string. Now all three become typed, BLOCKING findings —
+reported even when the SAME user/company simultaneously has another valid
+relation (`scripts/lib/legacyMapping.ts`):
+- `companies_field_not_array`/`malformed_company_id` — new
+  `MalformedClaimReason` values, user-level (acknowledgeable only via a
+  user-level `exclude` decision, same mechanism as the pre-existing
+  `malformed_companies_entry`).
+- `malformed_owner_id` — a NEW record type, `OwnerIdAnomalyRecord`
+  (`LegacyExtractionResult.ownerIdAnomalies`/`PlanResult.ownerIdAnomalies`),
+  company-scoped, always blocking, and — like `DanglingMembershipRecord` —
+  deliberately NEVER decision-resolvable: the corrupted `ownerId` field is
+  the only thing that could identify a target, so there is no reliable
+  identity to attach a decision to. Only repairing
+  `companies/{companyId}.ownerId` itself clears it.
+`companies.ownerId` simply being ABSENT (field not present at all) remains
+correctly treated as "no owner claim" — not an anomaly.
+
+### 3.5 — Verified source Git revision
+
+`git rev-parse HEAD` alone proves only which commit is checked out, not
+that the working tree still matches it — a locally modified tracked file
+(staged, unstaged, or untracked-and-not-gitignored) meant `sourceGitSha`
+could describe code that was NOT actually what ran. New module
+`scripts/lib/sourceRevision.ts` (`assertCleanTrackedSourceRevision()`,
+dependency-injected — `SourceRevisionDeps` — so the safety-critical order
+is unit-testable with fake git-command results, never by mutating the real
+checkout inside a test): checks `git status --porcelain` is empty BEFORE
+`git rev-parse HEAD`, both BEFORE any credential acquisition or Firestore
+I/O; throws `SourceRevisionError` (never a degraded placeholder like
+`'unknown'`) on a dirty tree, a git-command failure, or a syntactically
+invalid commit SHA. Wired into `scripts/backfill-memberships.ts`'s
+`main()` for `--environment production` (any mode that reaches this point
+— currently only `dry-run`, and automatically also `apply` once a future
+round authorizes it) — a dirty production worktree now fails BEFORE
+`initFirestore()` is ever called. Non-production environments keep the
+existing lenient `readSourceGitSha()` (best-effort, `'unknown'` fallback)
+— only production is required to prove this by task spec.
+
+### 3.6 — Independent SHA-verified plan for production apply
+
+`--expected-plan-sha256` previously only protected `rollback-from-plan`;
+`--rollback-reference` for a production `apply` had no equivalent
+integrity check on its own raw bytes. Fixed
+(`scripts/lib/productionSafety.ts`'s `verifyRollbackPlanReference()`,
+`scripts/backfill-memberships.ts`): `--expected-plan-sha256` is now
+REQUIRED for a production `apply` too, checked against
+`--rollback-reference`'s raw bytes BEFORE JSON parsing, credential
+acquisition, or Firestore I/O — a tampered/swapped plan produces zero
+reads and zero writes. After the hash check, `validateStrictDryRunReportContent()`
+was independently strengthened: every `plannedCreates[].role` must be a
+`KNOWN_ROLES` value (previously any non-empty string was accepted);
+`.status` must be exactly `'active'`; every `counts.*` field must be a
+non-negative integer; `counts.plannedCreates` must equal the actual
+`plannedCreates` array length; `counts.unresolved === 0` must agree with
+the sum of its component counts (an internally-inconsistent report is
+refused). `verifyRollbackPlanReference()` also now performs a DIRECT
+structural comparison of `plannedCreates` against the current run's own
+plan (`plannedCreatesExactlyMatch()`, order-independent) — not reliance on
+`targetChecksum` matching alone.
+
+### 3.7 — Unambiguous CLI
+
+`scripts/lib/cli.ts`'s argument parser now tracks every flag it has seen
+and refuses a repeat outright — value-bearing or boolean, no exceptions —
+so there is no "last argument wins" anywhere. `--apply` and an explicit
+`--mode` together are refused too (two ways of saying the same thing,
+never a legitimate combination, even when they happen to agree).
+
+### Regression tests added
+
+Pure unit coverage: `scripts/lib/checksum.test.ts` (finding fingerprints,
+full source-state checksum — order-independence and per-field
+sensitivity), `scripts/lib/decisions.test.ts` (finding-bound contract,
+resolution compatibility, duplicate-by-triple), `scripts/lib/legacyMapping.test.ts`
+(evidence capture, all three new fail-closed anomaly kinds, evidence
+present alongside another valid claim), `scripts/lib/planner.test.ts`
+(exclude-for-one-findingType-does-not-resolve-another, stale/unused
+decisions, owner-id anomaly always blocking, malformed-source-with-
+concurrent-valid-claim), `scripts/lib/productionSafety.test.ts`
+(schema-v2 role/status/count strictness, plan-sha mismatch before parsing,
+direct `plannedCreates` comparison). Real-behavior/zero-I/O coverage:
+`scripts/lib/emergencyReconstruction.test.ts` (unchanged pattern, schema-v2
+fixtures), `scripts/backfill-memberships.emulator.test.ts` (finding-bound
+decisions end-to-end against the real Firestore Emulator, including the
+new "confirm_role for missing_company is rejected outright" case). All
+pre-existing idempotency/last-admin/rollback/TOCTOU/path-safety/dangling-
+membership tests remain green, run twice consecutively for stability
+(`npm run test:migration`, back-to-back).
+
+## Independent audit fixes — 5th round
+
+A fifth independent-audit round, run against PR #17's head at the time
+(`4d3158a234353514700de0bc6c2425edf736eb13`), found 6 blocking logical
+defects in the 4th round's own implementation — the CI-green, doc-complete
+state of that round was not sufficient proof of correctness. All 6 are
+addressed here, on the same branch (`remediation/SEC-005-independent-audit-fixes`).
+**Production and staging were not read or modified at any point in this
+round**; `SEC-006` was not started. See
+`docs/remediation/reports/SEC-005.md` for the full round narrative.
+
+### 1 — `sourceStateChecksum` was computed but never enforced
+
+The 4th round added `computeFullSourceStateChecksum()` and wrote it into
+every report, but `StrictDryRunReportFields` never required it and
+`verifyRollbackPlanReference()` still only compared the older, narrower
+`sourceChecksum` — a production report entirely missing
+`sourceStateChecksum` was accepted. Fixed: `sourceStateChecksum` is now a
+required field of `StrictDryRunReportFields`, validated as SHA-256 hex by
+`validateStrictDryRunReportContent()`, and compared directly in
+`matchRollbackPlanAgainstCurrent()` (see item 2 below) alongside
+`sourceChecksum` — a mismatch in either is refused.
+
+### 2 — `--expected-plan-sha256` was checked AFTER Firestore I/O
+
+The 4th round's `verifyRollbackPlanReference()` did the hash+structural
+check first internally, but the CALLER (`scripts/backfill-memberships.ts`)
+invoked it only deep inside the `apply` branch — AFTER `initFirestore()`
+and AFTER `readAllUsers()`/`readAllCompanies()`/`readAllExistingMemberships()`
+had already run for every mode, apply included. The documented "wrong hash
+→ zero Firestore I/O" guarantee did not hold as implemented. Fixed by
+splitting the single function into two:
+- `verifyRollbackPlanFileIntegrity(path, expectedPlanSha256, expectedProjectId)`
+  — reads `--rollback-reference`, checks its raw-byte SHA-256, and
+  structurally validates it via `validateStrictDryRunReportContent()`.
+  Takes **no Firestore/db parameter at all** — structurally incapable of
+  Firestore I/O, not merely documented as such.
+- `matchRollbackPlanAgainstCurrent(verified, current)` — a pure comparison
+  (`sourceGitSha`, `sourceChecksum`, `sourceStateChecksum`,
+  `decisionsChecksum`, `targetChecksum`, and a direct `plannedCreates`
+  structural match) against the current run's own computed values, no I/O
+  of any kind.
+
+`scripts/backfill-memberships.ts`'s `main()` now calls
+`verifyRollbackPlanFileIntegrity()` for a production `apply` BEFORE
+`initFirestore()` is ever called; `matchRollbackPlanAgainstCurrent()` runs
+later, once the plan is computed. A wrong `--expected-plan-sha256` now
+throws and returns before line 227's `initFirestore()` — proven by
+`scripts/backfill-memberships.orchestration.test.ts` (source-order
+assertion plus the zero-Firestore-parameter signature check) and by
+`scripts/lib/emergencyReconstruction.test.ts`'s existing read/delete
+counters for the equivalent `rollback-from-plan` path.
+
+### 3 — Strict validator wrongly rejected a correctly-resolved orphan
+
+`ReportCounts.missingCompanies`/`.missingUsers` count every orphan
+DISCOVERED this run, including ones a decision already excluded.
+`validateStrictDryRunReportContent()`'s internal-consistency check summed
+these DISCOVERED totals into its expected `unresolved` total — so the real
+SEC-005 production scenario (1 `missing_company` discovered, correctly
+excluded by decision, 0 unresolved) was wrongly rejected as
+internally-inconsistent. Fixed by adding `unresolvedMissingCompanies`/
+`unresolvedMissingUsers` (post-decision, sourced from
+`plan.unresolvedOrphans`) alongside the unchanged discovered-total fields;
+only the new unresolved-only fields feed the consistency check.
+
+### 4 — Incomplete evidence preservation and no resolved-findings audit trail
+
+`OrphanRecord` lacked `observedRoles`/`hasInvalidRole`/`proposedRole`
+(present on `ConflictRecord` since the 4th round, but never added to
+orphans) — a missing role was not flagged as invalid, and a
+single-valid-role orphan carried no proposal. Separately, a resolved
+finding (a decision applying `exclude`, `accept_existing`, etc.) vanished
+from the report entirely — only the still-unresolved subset was recorded,
+with no trace of what was resolved, how, or by which decision. Fixed:
+`OrphanRecord` now carries `observedRoles`/`hasInvalidRole`/`proposedRole`
+(mirroring `ConflictRecord`); `PlanResult`/`MembershipBackfillReport` gained
+`resolvedConflicts`/`resolvedOrphans`/`resolvedOwnerAnomalies`/
+`resolvedUnknownUsers`/`resolvedMalformedClaims` — each an array of
+`{finding, decision}` pairs — populated by `buildPlan()` at every
+successful-resolution point. `REPORT_SCHEMA_VERSION` bumped `2 -> 3` for
+both changes; `validateStrictDryRunReportContent()`/
+`validateSourceReportForRollback()` reject `schemaVersion !== 3` outright,
+so a v1 or v2 report can never be accepted as `--rollback-reference`/
+`--from-report`/`--from-plan`. As with the 4th round's schema bump, any
+production dry-run report from before this round is stale by definition —
+a new dry-run is required before the next authorized production round.
+
+### 5 — CLI accepted mode-incompatible flag combinations
+
+The 4th round's CLI hardening (duplicate-flag rejection, `--apply`+`--mode`
+mutual exclusion) checked that a mode's REQUIRED flags were present, but
+never that a flag belonging to a DIFFERENT mode was absent — e.g.
+`--mode dry-run --from-report … --expected-report-sha256 …` parsed
+successfully even though `dry-run` reads neither flag. Fixed: `cli.ts` now
+enforces a strict per-mode allowlist (`MODE_ALLOWED_FLAGS`, on top of a
+small `UNIVERSAL_FLAGS` set valid for every mode) — any flag not universal
+and not on the current mode's list is refused outright, after mode
+resolution and before any required-flag check.
+
+### 6 — Missing regression tests
+
+`scripts/lib/sourceRevision.ts` (added in the 4th round) had zero dedicated
+unit tests despite being a fail-closed, production-apply-gating check.
+Added `scripts/lib/sourceRevision.test.ts` — dirty tree (staged/unstaged/
+untracked), `runGitStatus`/`runGitRevParse` throwing, order enforcement
+(rev-parse never called when status is dirty or fails), and malformed/
+empty/wrong-length/non-hex SHA output, all via the module's injected
+`SourceRevisionDeps` fakes — never by mutating this repo's real checkout.
+Added `scripts/backfill-memberships.orchestration.test.ts` for item 2's
+zero-Firestore-I/O claim (see above).
+
+### Regression tests added
+
+`scripts/lib/cli.test.ts` (mode-specific allowlist: each cross-mode flag
+combination the reviewer flagged now throws, each mode's own legitimate
+flag set still parses); `scripts/lib/sourceRevision.test.ts` (new file, see
+item 6); `scripts/backfill-memberships.orchestration.test.ts` (new file,
+see item 6); `scripts/lib/productionSafety.test.ts` (`sourceStateChecksum`
+required and compared, the exact "1 missing_company discovered + correctly
+excluded → 0 unresolved" scenario from item 3, Phase A/Phase B split with a
+dedicated "Phase A alone needs no `current` value" case);
+`scripts/lib/planner.test.ts`/`scripts/lib/checksum.test.ts` (updated
+`OrphanRecord` fixtures for the new required evidence fields);
+`scripts/lib/report.test.ts` (schema v3 fields round-trip);
+`scripts/lib/emergencyReconstruction.test.ts` (fixture updated to include
+`sourceStateChecksum` — this round's item 1 fix made it a required field,
+which the existing fixture predates). All pre-existing tests remain green;
+`npm run test:migration` run twice consecutively for stability.
+
+## Independent audit fixes — 5th round, review of the round's own fix
+
+A follow-up independent-review round, run against this branch's HEAD after
+the 5th round above, confirmed items 1/2/3 of that round genuinely fixed
+but found 3 further blocking defects IN THAT ROUND'S OWN FIX, plus one
+test-adequacy gap. All are addressed here, same branch, same PR.
+**Production and staging were not read or modified.** `SEC-006` not
+started.
+
+### 1 — Missing `role` was still treated as valid orphan evidence
+
+`legacyMapping.ts`'s `recordOrphanEvidence()` set `hasInvalidRole = true`
+only when `roleValue !== undefined` — a relation with NO `role` field at
+all (as opposed to a present-but-wrong one) contributed no evidence at all,
+leaving `hasInvalidRole: false`. This was inconsistent with the
+CONFIRMED/CONFLICT path elsewhere in the same file, which already treats a
+missing role exactly like an invalid one (`isKnownRole(undefined)` is
+`false`, so `invalidClaimKeys` picks it up either way — see the existing
+"treats a missing role field the same way" test). Fixed by removing the
+`roleValue !== undefined` guard — a missing role and an invalid role now
+both set `hasInvalidRole: true` for orphan evidence too. (Unrelated:
+`pushMissingUserOrphan()`'s `hasInvalidRole: false` for `companies.ownerId`
+orphans is intentionally unchanged — that source carries no role claim of
+any kind, so there is nothing to be invalid.)
+
+### 2 — CLI allowlist wrongly treated `--decisions-file` as universal
+
+`--decisions-file` is read unconditionally near the top of `main()`, but
+its result (`decisionsResult`) is only ever consumed by `buildPlan()` for
+`dry-run`/`verify`/`apply` — `rollback-from-report`/`rollback-from-plan`
+return from a dedicated rollback function before it is touched again. The
+5th round's own `UNIVERSAL_FLAGS` incorrectly included it, so
+`--mode rollback-from-report --decisions-file x` parsed successfully even
+though `x` is silently ignored. Fixed by moving `--decisions-file` out of
+`UNIVERSAL_FLAGS` and into only `dry-run`/`verify`/`apply`'s
+`MODE_ALLOWED_FLAGS` entries.
+
+### 3 — Schema v3's resolved-findings audit trail was not actually required
+
+`validateStrictDryRunReportContent()` checks `schemaVersion === 3` but
+never verified that v3's own defining feature — the resolved-findings
+audit trail (`resolvedConflicts`/`resolvedOrphans`/`resolvedOwnerAnomalies`/
+`resolvedUnknownUsers`/`resolvedMalformedClaims`) — was actually present. A
+report claiming `schemaVersion: 3` but missing this audit trail entirely
+was accepted. Fixed: each of the 5 fields must be present as an array of
+`{finding, decision}`-shaped objects (structural presence, not a full
+re-validation against `decisions.ts`'s complete schema — that would
+duplicate decision-file validation for data this tool itself produces).
+
+### 4 — Orchestration proof was textual, not executable
+
+The previous round's `scripts/backfill-memberships.orchestration.test.ts`
+proved "plan-hash check precedes `initFirestore()`" by reading
+`backfill-memberships.ts`'s source text and checking substring order
+(`indexOf()`) — a real claim about the code, but not an EXECUTABLE proof
+that the real running program never acquires credentials on a wrong hash.
+Fixed by extracting the production-apply preflight (flag-presence checks +
+the plan-file-integrity call) out of `main()` into a new exported,
+dependency-injected function, `runProductionApplyPreflight()`
+(`scripts/lib/productionSafety.ts`) — `main()` calls this function
+directly (not a parallel reimplementation of its body), so a test that
+injects a COUNTING FAKE for its `acquireFirestore` dependency (which
+`main()` wires to the real `initFirestore`) and gives it a wrong plan hash
+is observing the real call site's behavior:
+- Wrong hash: `verifyPlanFile` throws, `acquireFirestore` is called **zero**
+  times.
+- Correct hash: `verifyPlanFile` succeeds, `acquireFirestore` is called
+  **exactly once**, strictly after verification.
+
+`scripts/backfill-memberships.orchestration.test.ts` was narrowed to a
+much smaller, honestly-scoped "wiring" guard (main() actually delegates to
+the tested function rather than reimplementing or bypassing it) — the
+executable behavioral proof lives entirely in
+`scripts/lib/productionSafety.test.ts`'s `runProductionApplyPreflight`
+describe block.
+
+### Regression tests added
+
+`scripts/lib/legacyMapping.test.ts` (missing-role orphan now flagged
+`hasInvalidRole: true`; missing role vs. invalid role parity; the
+unaffected valid-single-role case still gets a `proposedRole`);
+`scripts/lib/cli.test.ts` (`--decisions-file` rejected under both rollback
+modes, still accepted under `verify`/`apply`); `scripts/lib/productionSafety.test.ts`
+(schema v3's 5 resolved-findings fields required in all three `validDryRun`
+fixtures; new `runProductionApplyPreflight` describe block — wrong-hash
+zero-acquisition, correct-hash exactly-once-after-verification, argument
+pass-through, and each of the 4 required-flag presence checks refusing
+before either dependency is touched); `scripts/backfill-memberships.orchestration.test.ts`
+(rewritten — wiring-only checks); `scripts/lib/emergencyReconstruction.test.ts`
+(fixture gains the 5 resolved-findings fields, required by item 3 above).
+All pre-existing tests remain green; `npm run test:migration` run twice
+consecutively for stability.
+
+## Independent audit fixes — 5th round, 2nd follow-up review
+
+A second follow-up independent-review round confirmed the previous
+round's 4 fixes correct, but found one further blocking defect: the
+resolved-findings audit trail's schema-v3 validation was shallow.
+**Production and staging were not read or modified.** `SEC-006` not
+started.
+
+### The defect
+
+`validateStrictDryRunReportContent()`'s resolved-findings check (added the
+previous round) only verified that `finding`/`decision` were present,
+non-array objects — never their actual content. Two independent negative
+tests proved the gap:
+- A report claiming `missingCompanies: 1, unresolvedMissingCompanies: 0`
+  with `resolvedOrphans: []` was accepted — the orphan simply vanished,
+  accounted for neither as unresolved nor as resolved.
+- `resolvedOrphans: [{ finding: {}, decision: {} }]` was accepted —
+  structurally present, semantically empty.
+
+### The fix
+
+`scripts/lib/productionSafety.ts` gained two new validators, applied to
+every entry of all 5 resolved-findings arrays:
+- `validateResolvedFindingRecord()` — validates `finding` against its
+  actual record type's shape: `uid` (required), `companyId` (required for
+  conflicts/orphans/owner-anomalies, must be ABSENT for the user-level
+  unknown-users/malformed-claims types), `reason` (must be one of that
+  finding type's real reason literals), `evidenceFingerprint` (SHA-256
+  hex).
+- `validateResolvingDecisionRecord()` — validates `decision` against
+  `Decision`'s shape (`uid`, optional `companyId`, `findingType`,
+  `evidenceFingerprint`, `resolution` ∈ `DecisionResolution`, `reason`,
+  `reviewedBy`, `reviewedAt` as a valid timestamp, `role` required when
+  `resolution === 'confirm_role'`), THEN cross-checks that `decision` is
+  genuinely THE decision that resolved THIS `finding`: `findingType ===
+  finding.reason`, `evidenceFingerprint` equality, `uid`/`companyId`
+  identity equality, and resolution/finding-type compatibility via the
+  existing `COMPATIBLE_RESOLUTIONS` map (e.g. `confirm_role` for a
+  `missing_company` orphan is rejected — only `exclude` is compatible).
+
+Separately, the discovered/unresolved/resolved reconciliation the
+previous round was missing is now enforced directly: `counts.missingCompanies`
+must equal `counts.unresolvedMissingCompanies` PLUS the count of
+`resolvedOrphans` entries whose `finding.reason === 'missing_company'`
+(same for `missingUsers`). This is the only such reconciliation possible —
+conflicts/ownerAnomalies/unknownUsers/malformedClaims only ever expose an
+UNRESOLVED-only count in `ReportCounts` (no discovered-total field for
+those), so there is nothing to reconcile their `resolvedX` arrays against
+beyond the deep structural/cross-field validation above.
+
+### Regression tests added
+
+`scripts/lib/productionSafety.test.ts` — a `resolvedMissingCompanyOrphan()`
+fixture helper producing a genuinely consistent `{finding, decision}` pair,
+plus: rejects "1 missing_company discovered, 0 unresolved" with an empty
+`resolvedOrphans` (the reviewer's first negative example); rejects
+`{finding: {}, decision: {}}` (the second); accepts the same scenario when
+backed by a real, consistent `resolvedOrphans` entry (the reviewer's
+requested positive test); rejects mismatched `evidenceFingerprint`,
+mismatched `findingType`, mismatched `uid`, mismatched `companyId`,
+resolution incompatible with the finding's reason, an invalid `reason` for
+the array's finding type, an invalid `reviewedAt`, and a user-level finding
+(`resolvedUnknownUsers`) whose `finding.companyId` is present when it must
+be absent. The existing "accepts 1 missing_company + 0 unresolved" test
+from the previous round was itself updated to supply a real
+`resolvedOrphans` entry — it was previously passing only because the
+validator did not yet check the array's content. All pre-existing tests
+remain green; `npm run test:migration` run twice consecutively for
+stability.
+
+## Independent audit fixes — 5th round, 3rd follow-up review
+
+A third follow-up independent-review round found the previous round's deep
+resolvedX validation was still incomplete in three ways, all confirmed by
+independent negative tests against real crafted reports. **Production and
+staging were not read or modified.** `SEC-006` not started.
+
+### The three gaps
+
+1. **The report's UNRESOLVED finding arrays were never required or
+   validated at all.** A report entirely missing `conflicts`/`orphans`/
+   `unknownUsers`/`malformedClaims`/`danglingMemberships`/`ownerIdAnomalies`/
+   `staleDecisions`/`unusedDecisions` still passed.
+2. **`resolvedOrphans`' `finding` was only checked for the fields common
+   to every finding type** (uid/companyId/reason/evidenceFingerprint) —
+   `OrphanRecord`'s own required fields (`sourceKinds`/`observedRoles`/
+   `hasInvalidRole`/`proposedRole`) were never checked, so an
+   `OrphanRecord` missing all four still passed.
+3. **`decision` objects were validated by a hand-rolled, parallel
+   reimplementation** of `decisions.ts`'s real contract — it never
+   rejected unknown fields (`{..., unexpected: 'x'}` passed) and never
+   forbade `role` when `resolution !== 'confirm_role'`.
+
+### The fix
+
+`scripts/lib/productionSafety.ts` now has a dedicated shape validator per
+record type (`validateConflictRecordShape`/`validateOrphanRecordShape`/
+`validateOwnerAnomalyRecordShape`/`validateUnknownUserRecordShape`/
+`validateMalformedClaimRecordShape`/`validateDanglingMembershipRecordShape`/
+`validateOwnerIdAnomalyRecordShape`) — each checks every field the real
+`types.ts` interface defines (required vs. optional, exact reason
+literals, array-of-known-role/source-kind contents, and — for
+`OrphanRecord` — that `proposedRole` is derivably consistent with
+`observedRoles`/`hasInvalidRole`, matching the record type's own doc
+comment) and rejects any field not in that type's allowed set. The SAME
+validator is applied to a finding whether it appears in an unresolved
+array (`report.orphans[i]`) or as the `finding` half of a resolved pair
+(`report.resolvedOrphans[i].finding`) — the shape is identical either way.
+
+`decision` validation was replaced entirely with a call to
+`decisions.ts`'s own `validateDecisions()` — the SAME function that
+validates an operator's `--decisions-file` — so the two contracts can
+never drift apart again; this alone closes gap 3 (unknown-field rejection
+and the `role`-forbidden-unless-`confirm_role` rule come for free).
+
+Every unresolved array's length is now reconciled against its
+corresponding `counts` field (`conflicts.length === counts.conflicts`,
+`orphans.length === counts.unresolvedMissingCompanies +
+counts.unresolvedMissingUsers`, etc.) — since `counts.unresolved === 0` is
+already required for any of these validators to accept a report at all,
+every one of these arrays is required to be empty in practice, but the
+presence-and-shape check now actually enforces that rather than merely
+implying it via an unrelated count.
+
+### Regression tests added
+
+`scripts/lib/productionSafety.test.ts` — a report missing all required
+unresolved arrays; each unresolved array missing individually (parametrized
+over all 9); an unresolved array whose length disagrees with its `counts`
+field; a `resolvedOrphans` entry whose `OrphanRecord` lacks
+`sourceKinds`/`observedRoles`/`hasInvalidRole`/`proposedRole`; a decision
+carrying `role` alongside `resolution: 'exclude'`; a decision carrying an
+unknown field; and a full, realistic, internally-consistent schema-v3
+report (one `missing_company` orphan correctly resolved by `exclude`,
+every other array empty) — accepted. All three `validDryRun` fixtures
+across the file gained the 9 required unresolved-array fields (empty, to
+match their all-zero default counts). All pre-existing tests remain green;
+`npm run test:migration` run twice consecutively for stability.
+
+## Independent audit fixes — 5th round, 4th follow-up review
+
+A fourth follow-up independent-review round found two further blocking
+gaps: the resolved/stale/unused audit trail was never cross-checked
+against `decisionsChecksum` (allowing a decision to silently vanish from
+every audit-trail bucket while every other check stayed internally
+consistent), and the last-admin gate's blocked companies
+(`plan.companiesWithoutAdmin`) had no dedicated count or array anywhere in
+the report despite already contributing to `counts.unresolved`.
+**Production and staging were not read or modified.** `SEC-006` not
+started.
+
+### 1 — decisionsChecksum was not linked to the audit trail
+
+`decisionsChecksum` (the checksum over the FULL original `--decisions-file`,
+computed once by `readDecisionsFile()`) was validated only for format
+(SHA-256 hex) — nothing proved it was actually reconstructible from the
+report's own resolved/stale/unused audit trail. A report could claim a
+`decisionsChecksum` matching a real decisions file while silently DROPPING
+one of its decisions from every bucket — every other check stayed
+internally consistent (each bucket's own contents were valid; there was
+simply one fewer entry than there should have been), so the omission was
+invisible to a reviewer relying on the report alone.
+
+Fixed in `scripts/lib/productionSafety.ts`'s `validateStrictDryRunReportContent()`:
+- Every decision is collected from EXACTLY the five `resolvedX[].decision`
+  arrays plus `staleDecisions`/`unusedDecisions`, combined into ONE list.
+- That list is validated as a SINGLE batch via `decisions.ts`'s
+  `validateDecisions()` (not per-item) — a single call over the whole set
+  catches a decision duplicated ACROSS buckets (present in, say, both
+  `resolvedOrphans` and `staleDecisions`), which per-item validation could
+  never see. In practice this specific cross-bucket scenario is also
+  independently caught earlier by the pre-existing `counts.unresolved ===
+  0` / component-sum consistency check, since `staleDecisions`/
+  `unusedDecisions` being non-empty always makes `unresolved` non-zero —
+  the two checks reinforce each other.
+- The validated, normalized decisions are re-hashed with
+  `computeDecisionsChecksum()` and compared byte-for-byte against
+  `report.decisionsChecksum` — any mismatch (missing, duplicated, or
+  altered decision) is refused.
+- Each resolved finding IDENTITY (`companyId?`, `uid`, `reason`,
+  `evidenceFingerprint`) is separately required to appear exactly once
+  across all five `resolvedX` arrays combined — a `{finding, decision}`
+  pair duplicated within (or across) the resolved buckets is refused even
+  before the checksum comparison runs.
+
+Because `verifyRollbackPlanFileIntegrity()` (Phase A) delegates to
+`validateStrictDryRunReportContent()`, this check applies transitively to
+the whole `--rollback-reference` pipeline — `matchRollbackPlanAgainstCurrent()`
+(Phase B) can never even be reached for a report with a missing or
+duplicated audit trail; Phase A already refuses it first.
+
+### 2 — companiesWithoutAdmin was not exposed in the report
+
+`plan.companiesWithoutAdmin.length` (companies whose projected final state
+— existing active admins + planned admin creates — has zero admin) was
+already summed into `counts.unresolved` and already blocked
+`applyAllowed`, but had no dedicated `counts.companiesWithoutAdmin` field
+and no corresponding array anywhere in the report — a reviewer could see
+the last-admin gate had blocked something, but never WHICH company, from
+the report alone.
+
+Fixed:
+- `ReportCounts` gained `companiesWithoutAdmin: number` (included in the
+  strict validator's non-negative-integer check and in the
+  `unresolvedComponents` consistency sum, alongside the pre-existing
+  `ownerWithoutAdminMembership`).
+- `MembershipBackfillReport` gained a private `companiesWithoutAdmin:
+  string[]` field — populated from `plan.companiesWithoutAdmin` in every
+  mode that computes a plan (dry-run/apply/verify), `[]` for every
+  rollback mode (which never computes one). Never printed to the safe
+  stdout summary (`printSafeSummary()` only ever echoes `report.counts`,
+  never this array directly) — only the count reaches stdout.
+- `validateStrictDryRunReportContent()` requires the array present, every
+  entry a non-empty string, no duplicates, and its length matching
+  `counts.companiesWithoutAdmin` exactly.
+- **`REPORT_SCHEMA_VERSION` bumped `3 -> 4`** — a v3 (or earlier) report
+  can never satisfy the new required field; the schemaVersion-mismatch
+  error message now explicitly says a new `--mode dry-run` against the
+  current tool is required.
+
+### Regression tests added
+
+`scripts/lib/productionSafety.test.ts` — two new nested `describe` blocks
+inside `verifyStrictDryRunReport`: "decisionsChecksum <-> audit trail
+reconciliation" (a decision reflected in `decisionsChecksum` but absent
+from every array; the same malformed report also rejected at Phase A of
+`verifyRollbackPlanFileIntegrity` before Phase B is ever reached; a
+duplicated `{finding, decision}` pair within `resolvedOrphans`; a decision
+simultaneously claimed as resolved and stale; a `decisionsChecksum` that
+simply doesn't match the collected audit trail; zero decisions accepted;
+a full multi-bucket audit trail — one resolved orphan + one resolved
+conflict — accepted) and "companiesWithoutAdmin" (length-vs-count
+mismatch, duplicate companyId, empty-string entry, non-string entry,
+`unresolved === 0` with `companiesWithoutAdmin` non-zero, and the
+empty/zero happy path). All three `validDryRun` fixtures across the file
+now use a computed `EMPTY_DECISIONS_CHECKSUM` (`computeDecisionsChecksum([])`)
+instead of an arbitrary hex value, and gained `companiesWithoutAdmin: []`.
+`scripts/backfill-memberships.emulator.test.ts` — a real end-to-end case:
+a company with zero legacy relations and zero existing admin is surfaced
+as `companiesWithoutAdmin` in both dry-run (reports it, exit 0) and apply
+(blocked by it, exit 1) reports, against the real Firestore Emulator. All
+pre-existing tests remain green; `npm run test:migration` run twice
+consecutively for stability (508/508 both times).

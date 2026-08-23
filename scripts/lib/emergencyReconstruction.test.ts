@@ -12,13 +12,14 @@ import { join } from 'node:path'
 import { Timestamp } from 'firebase-admin/firestore'
 import type { Firestore } from 'firebase-admin/firestore'
 import { runEmergencyReconstruction } from './emergencyReconstruction.ts'
-import { sha256Hex } from './checksum.ts'
+import { sha256Hex, computeDecisionsChecksum } from './checksum.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
 
 const PROJECT_ID = 'finapp-prod-10a83'
 const HEX64_A = 'a'.repeat(64)
-const HEX64_B = 'b'.repeat(64)
 const HEX64_C = 'c'.repeat(64)
+const HEX64_D = 'd'.repeat(64)
+const EMPTY_DECISIONS_CHECKSUM = computeDecisionsChecksum([])
 
 function tempFile(name: string, content: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'sec005-emergency-recon-'))
@@ -89,6 +90,18 @@ function makeCountingDb(opts: {
   return { db: db as unknown as Firestore, getCount: () => getCount, deleteCount: () => deleteCount }
 }
 
+function fullCounts(overrides: Record<string, number> = {}): Record<string, number> {
+  return {
+    usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
+    confirmedRelations: 0, plannedCreates: 1, created: 0, skipped: 0, conflicts: 0,
+    missingCompanies: 0, missingUsers: 0, unresolvedMissingCompanies: 0, unresolvedMissingUsers: 0,
+    ownerWithoutAdminMembership: 0, companiesWithoutAdmin: 0,
+    unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0,
+    ownerIdAnomalies: 0, staleDecisions: 0, unusedDecisions: 0, unresolved: 0,
+    ...overrides,
+  }
+}
+
 const validDryRun = {
   schemaVersion: REPORT_SCHEMA_VERSION,
   mode: 'dry-run',
@@ -96,10 +109,13 @@ const validDryRun = {
   projectId: PROJECT_ID,
   sourceGitSha: 'abc123def',
   sourceChecksum: HEX64_A,
-  decisionsChecksum: HEX64_B,
+  sourceStateChecksum: HEX64_D,
+  decisionsChecksum: EMPTY_DECISIONS_CHECKSUM,
   targetChecksum: HEX64_C,
-  counts: { unresolved: 0 },
+  counts: fullCounts(),
   plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
+  conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+  resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
 }
 
 describe('runEmergencyReconstruction — operation order (final-round fix #1, third pass)', () => {

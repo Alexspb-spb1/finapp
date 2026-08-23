@@ -5,10 +5,10 @@ import {
   relationKey, splitRelationKey,
   type LegacyExtractionResult, type Decision, type PlanResult, type PlannedCreate,
   type ConflictRecord, type OrphanRecord, type OwnerAnomalyRecord, type UnknownUserRecord, type MalformedClaimRecord,
-  type DanglingMembershipRecord, type DanglingMembershipReason,
+  type DanglingMembershipRecord, type DanglingMembershipReason, type FindingType,
 } from './types.ts'
 import { classifyExistingMembership, isStrictlyValidActiveMembership } from './membershipValidation.ts'
-import { sortRelations } from './checksum.ts'
+import { sortRelations, computeFindingFingerprint } from './checksum.ts'
 
 export interface BuildPlanParams {
   extraction: LegacyExtractionResult
@@ -38,19 +38,61 @@ function confirmRoleTargetExists(companyId: string, uid: string, allCompanyIds: 
   return allCompanyIds.has(companyId) && allUserIds.has(uid)
 }
 
+/** One index entry per (identity, findingType) — decisions.ts already
+ * rejects a decisions file containing two decisions for the same
+ * (identity, findingType) pair, so this map is safe to build with a plain
+ * `set()` (last-write, but duplicates were already refused upstream). */
+function buildDecisionIndex(decisions: readonly Decision[]): Map<string, Decision> {
+  const index = new Map<string, Decision>()
+  for (const d of decisions) {
+    const identity = d.companyId !== undefined ? relationKey(d.companyId, d.uid) : `user-level:${d.uid}`
+    index.set(`${identity}::${d.findingType}`, d)
+  }
+  return index
+}
+
+interface DecisionLookup {
+  decision: Decision
+  /** True only when the decision's OWN recorded `evidenceFingerprint`
+   * exactly equals the CURRENT finding's fingerprint — independent audit
+   * fixes, 4th round, item 3.1. */
+  fingerprintMatches: boolean
+}
+
+/** Looks up a decision for exactly (identity, findingType) — marks it used
+ * (for later unused-decision detection) whenever found, REGARDLESS of
+ * whether the fingerprint ends up matching (a decision that matched
+ * identity+findingType but went stale on evidence is "used" — it is
+ * reported as `staleDecisions`, not `unusedDecisions`; those are disjoint
+ * categories). */
+function lookupDecision(
+  decisionIndex: ReadonlyMap<string, Decision>,
+  usedKeys: Set<string>,
+  identity: string,
+  findingType: FindingType,
+  currentFingerprint: string,
+): DecisionLookup | undefined {
+  const key = `${identity}::${findingType}`
+  const decision = decisionIndex.get(key)
+  if (!decision) return undefined
+  usedKeys.add(key)
+  return { decision, fingerprintMatches: decision.evidenceFingerprint === currentFingerprint }
+}
+
 export function buildPlan(params: BuildPlanParams): PlanResult {
   const { extraction, decisions, existingMemberships, existingActiveAdmins, allCompanyIds, allUserIds } = params
-  const decisionByKey = new Map(
-    decisions.filter((d): d is Decision & { companyId: string } => d.companyId !== undefined)
-      .map(d => [relationKey(d.companyId, d.uid), d]),
-  )
-  // User-level decisions (no companyId) — the only mechanism that can
-  // acknowledge an unknownUsers/malformedClaims entry (independent audit
-  // fix #3, 2nd round). Always resolution === 'exclude' (validated by
-  // decisions.ts).
-  const userLevelExcludedUids = new Set(
-    decisions.filter(d => d.companyId === undefined && d.resolution === 'exclude').map(d => d.uid),
-  )
+  const decisionIndex = buildDecisionIndex(decisions)
+  const usedDecisionKeys = new Set<string>()
+  const staleDecisions: Decision[] = []
+  // Independent audit fixes, 5th round, item 4: every finding that WAS
+  // successfully resolved this run, paired with the decision that resolved
+  // it — closes the audit-trail gap where a resolved finding left zero
+  // trace in the report.
+  const resolvedConflicts: { finding: ConflictRecord; decision: Decision }[] = []
+  const resolvedOrphans: { finding: OrphanRecord; decision: Decision }[] = []
+  const resolvedOwnerAnomalies: { finding: OwnerAnomalyRecord; decision: Decision }[] = []
+  const resolvedUnknownUsers: { finding: UnknownUserRecord; decision: Decision }[] = []
+  const resolvedMalformedClaims: { finding: MalformedClaimRecord; decision: Decision }[] = []
 
   const confirmed = new Map(extraction.confirmed.map(r => [relationKey(r.companyId, r.uid), r]))
   const unresolvedConflicts: ConflictRecord[] = []
@@ -59,8 +101,10 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
   // ── Step 1: resolve legacy-source conflicts via decisions ──────────────
   for (const conflict of extraction.conflicts) {
     const key = relationKey(conflict.companyId, conflict.uid)
-    const decision = decisionByKey.get(key)
-    if (!decision) { unresolvedConflicts.push(conflict); continue }
+    const lookup = lookupDecision(decisionIndex, usedDecisionKeys, key, conflict.reason, conflict.evidenceFingerprint)
+    if (!lookup) { unresolvedConflicts.push(conflict); continue }
+    if (!lookup.fingerprintMatches) { staleDecisions.push(lookup.decision); unresolvedConflicts.push(conflict); continue }
+    const decision = lookup.decision
 
     if (decision.resolution === 'confirm_role' && decision.role) {
       // Independent audit fix #4 (2nd round): re-verify the target company
@@ -71,13 +115,14 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
         unresolvedConflicts.push(conflict)
       } else {
         confirmed.set(key, { companyId: conflict.companyId, uid: conflict.uid, role: decision.role, sources: [] })
+        resolvedConflicts.push({ finding: conflict, decision })
       }
     } else if (decision.resolution === 'exclude') {
       // Acknowledged, no membership created — dropped silently (not a skip: nothing existed and nothing was planned).
+      resolvedConflicts.push({ finding: conflict, decision })
     } else {
-      // 'accept_existing' has no meaning for a legacy-source conflict (there
-      // is no existing membership doc implicated here) — the conflict
-      // stays unresolved rather than being silently waved through.
+      // Defensive — decisions.ts's COMPATIBLE_RESOLUTIONS check should have
+      // already refused any other resolution for this findingType.
       unresolvedConflicts.push(conflict)
     }
   }
@@ -86,8 +131,10 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
   const unresolvedOwnerAnomalies: OwnerAnomalyRecord[] = []
   for (const anomaly of extraction.ownerAnomalies) {
     const key = relationKey(anomaly.companyId, anomaly.uid)
-    const decision = decisionByKey.get(key)
-    if (!decision) { unresolvedOwnerAnomalies.push(anomaly); continue }
+    const lookup = lookupDecision(decisionIndex, usedDecisionKeys, key, anomaly.reason, anomaly.evidenceFingerprint)
+    if (!lookup) { unresolvedOwnerAnomalies.push(anomaly); continue }
+    if (!lookup.fingerprintMatches) { staleDecisions.push(lookup.decision); unresolvedOwnerAnomalies.push(anomaly); continue }
+    const decision = lookup.decision
 
     if (decision.resolution === 'confirm_role' && decision.role) {
       // Independent audit fix #4 (2nd round) — see Step 1 above.
@@ -95,9 +142,11 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
         unresolvedOwnerAnomalies.push(anomaly)
       } else {
         confirmed.set(key, { companyId: anomaly.companyId, uid: anomaly.uid, role: decision.role, sources: [] })
+        resolvedOwnerAnomalies.push({ finding: anomaly, decision })
       }
     } else if (decision.resolution === 'exclude') {
       // Acknowledged — owner intentionally left without membership.
+      resolvedOwnerAnomalies.push({ finding: anomaly, decision })
     } else {
       unresolvedOwnerAnomalies.push(anomaly)
     }
@@ -107,8 +156,11 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
   const unresolvedOrphans: OrphanRecord[] = []
   for (const orphan of extraction.orphans) {
     const key = relationKey(orphan.companyId, orphan.uid)
-    const decision = decisionByKey.get(key)
-    if (decision && decision.resolution === 'exclude') continue // acknowledged
+    const lookup = lookupDecision(decisionIndex, usedDecisionKeys, key, orphan.reason, orphan.evidenceFingerprint)
+    if (lookup) {
+      if (!lookup.fingerprintMatches) { staleDecisions.push(lookup.decision); unresolvedOrphans.push(orphan); continue }
+      if (lookup.decision.resolution === 'exclude') { resolvedOrphans.push({ finding: orphan, decision: lookup.decision }); continue } // acknowledged
+    }
     unresolvedOrphans.push(orphan)
   }
 
@@ -131,15 +183,26 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     } else if (classification === 'exact_match') {
       skipped.push({ companyId: relation.companyId, uid: relation.uid })
     } else if (classification === 'differs_but_valid') {
-      const decision = decisionByKey.get(key)
-      if (decision && decision.resolution === 'accept_existing') {
+      // Independent audit fixes, 4th round, item 3.1: this finding's
+      // evidence is the EXISTING document's own role — if that role
+      // changes between when a decision was written and this run, the
+      // decision goes stale rather than silently applying to different
+      // evidence.
+      const evidence = { existingRole: typeof existingData?.role === 'string' ? existingData.role : null }
+      const fingerprint = computeFindingFingerprint(evidence)
+      const lookup = lookupDecision(decisionIndex, usedDecisionKeys, key, 'existing_membership_conflict', fingerprint)
+      if (lookup && lookup.fingerprintMatches && lookup.decision.resolution === 'accept_existing') {
         skipped.push({ companyId: relation.companyId, uid: relation.uid })
+        resolvedConflicts.push({ finding: { companyId: relation.companyId, uid: relation.uid, reason: 'existing_membership_conflict', evidenceFingerprint: fingerprint }, decision: lookup.decision })
       } else {
-        unresolvedConflicts.push({ companyId: relation.companyId, uid: relation.uid, reason: 'existing_membership_conflict' })
+        if (lookup && !lookup.fingerprintMatches) staleDecisions.push(lookup.decision)
+        unresolvedConflicts.push({ companyId: relation.companyId, uid: relation.uid, reason: 'existing_membership_conflict', evidenceFingerprint: fingerprint })
       }
     } else {
-      // 'invalid' — never resolvable via accept_existing (or any other decision).
-      unresolvedConflicts.push({ companyId: relation.companyId, uid: relation.uid, reason: 'existing_membership_conflict' })
+      // 'invalid' — never resolvable via accept_existing (or any other
+      // decision) — no decision is even looked up.
+      const evidence = { existingRole: typeof existingData?.role === 'string' ? existingData.role : null }
+      unresolvedConflicts.push({ companyId: relation.companyId, uid: relation.uid, reason: 'existing_membership_conflict', evidenceFingerprint: computeFindingFingerprint(evidence) })
     }
   }
 
@@ -163,9 +226,9 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
   // Independent audit fix #6 (1st round) surfaced these; fix #3 (2nd round)
   // makes them blocking. A uid already covered by a valid canonical
   // membership anywhere is never "unknown" in the first place. Anything
-  // left is only removable via a user-level `exclude` decision
-  // (`userLevelExcludedUids`) — there is no other way to silently ignore
-  // it; the source data must be fixed, or explicitly acknowledged.
+  // left is only removable via a matching, non-stale user-level `exclude`
+  // decision — there is no other way to silently ignore it; the source
+  // data must be fixed, or explicitly acknowledged.
   //
   // Independent audit fix #3 (3rd round): a membership document's own
   // schema being strictly valid is NOT enough to "count" here — it must
@@ -180,11 +243,23 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     if (!allCompanyIds.has(companyId)) continue
     if (isStrictlyValidActiveMembership(uid, data)) uidsWithValidMembership.add(uid)
   }
-  const unknownUsers: UnknownUserRecord[] = extraction.unknownUsers
-    .filter(u => !uidsWithValidMembership.has(u.uid))
-    .filter(u => !userLevelExcludedUids.has(u.uid))
-  const malformedClaims: MalformedClaimRecord[] = extraction.malformedClaims
-    .filter(m => !userLevelExcludedUids.has(m.uid))
+  function resolveUserLevel<T extends { uid: string; reason: FindingType; evidenceFingerprint: string }>(
+    records: readonly T[],
+    resolvedOut: { finding: T; decision: Decision }[],
+  ): T[] {
+    return records.filter(r => {
+      const lookup = lookupDecision(decisionIndex, usedDecisionKeys, `user-level:${r.uid}`, r.reason, r.evidenceFingerprint)
+      if (!lookup) return true
+      if (!lookup.fingerprintMatches) { staleDecisions.push(lookup.decision); return true }
+      if (lookup.decision.resolution === 'exclude') { resolvedOut.push({ finding: r, decision: lookup.decision }); return false }
+      return true
+    })
+  }
+  const unknownUsers: UnknownUserRecord[] = resolveUserLevel(
+    extraction.unknownUsers.filter(u => !uidsWithValidMembership.has(u.uid)),
+    resolvedUnknownUsers,
+  )
+  const malformedClaims: MalformedClaimRecord[] = resolveUserLevel(extraction.malformedClaims, resolvedMalformedClaims)
 
   // ── Step 7: existing-membership integrity — dangling documents ALWAYS blocking ──
   // Independent audit fix #3 (3rd round; follow-up correction after the
@@ -193,25 +268,8 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
   // is strictly valid on its OWN schema (right shape, real Timestamps,
   // known role, active status) but references a company or user that does
   // not exist is dangling data — the document PHYSICALLY EXISTS in
-  // Firestore regardless of anything this run's decisions say.
-  //
-  // The first version of this step reused `unresolvedOrphans` and let a
-  // relation-level `exclude` decision remove the entry from that list —
-  // but excluding a LISTING can never make a document stop existing. If
-  // the affected company happened to have another valid admin, that
-  // allowed `applyAllowed` to become `true` (and `verify` to report
-  // success) with the corrupted document still sitting in Firestore,
-  // undetected forever after.
-  //
-  // Fix: reported in its OWN list (`danglingMemberships`, a distinct type
-  // from `OrphanRecord` — see types.ts) that NO decision of any kind can
-  // ever clear — neither a relation-level `exclude` (matching this exact
-  // companyId/uid) nor a user-level `exclude` (matching just the uid).
-  // `decisionByKey`/`userLevelExcludedUids` are deliberately never
-  // consulted here. The only way to stop this from blocking is to actually
-  // repair the data — create the missing company/user document, or delete
-  // the dangling membership document — which the NEXT run will then
-  // observe as no longer dangling.
+  // Firestore regardless of anything this run's decisions say. No decision
+  // of any kind is consulted — see DanglingMembershipRecord's doc comment.
   const danglingMemberships: DanglingMembershipRecord[] = []
   for (const [key, data] of existingMemberships) {
     const [companyId, uid] = splitRelationKey(key)
@@ -220,7 +278,20 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     const userExists = allUserIds.has(uid)
     if (companyExists && userExists) continue
     const reason: DanglingMembershipReason = companyExists ? 'existing_membership_missing_user' : 'existing_membership_missing_company'
-    danglingMemberships.push({ companyId, uid, reason })
+    danglingMemberships.push({ companyId, uid, reason, evidenceFingerprint: computeFindingFingerprint({}) })
+  }
+
+  // ── Step 8: owner-id anomalies — ALWAYS blocking, never decision-resolvable ──
+  // See OwnerIdAnomalyRecord's doc comment (types.ts) — no decision is ever
+  // looked up for these.
+  const ownerIdAnomalies = extraction.ownerIdAnomalies
+
+  // ── Step 9: unused decisions — provided but never matched by ANY current finding ──
+  // Independent audit fixes, 4th round, item 3.1 ("неиспользованные...
+  // decisions должны блокировать apply и явно попадать в приватный отчёт").
+  const unusedDecisions: Decision[] = []
+  for (const [key, decision] of decisionIndex) {
+    if (!usedDecisionKeys.has(key)) unusedDecisions.push(decision)
   }
 
   const applyAllowed =
@@ -230,7 +301,10 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     companiesWithoutAdmin.length === 0 &&
     unknownUsers.length === 0 &&
     malformedClaims.length === 0 &&
-    danglingMemberships.length === 0
+    danglingMemberships.length === 0 &&
+    ownerIdAnomalies.length === 0 &&
+    staleDecisions.length === 0 &&
+    unusedDecisions.length === 0
 
   return {
     // Independent audit fix #4 (3rd round): `(a.companyId + a.uid).localeCompare(...)`
@@ -249,6 +323,14 @@ export function buildPlan(params: BuildPlanParams): PlanResult {
     unknownUsers,
     malformedClaims,
     danglingMemberships,
+    ownerIdAnomalies,
+    staleDecisions,
+    unusedDecisions,
+    resolvedConflicts,
+    resolvedOrphans,
+    resolvedOwnerAnomalies,
+    resolvedUnknownUsers,
+    resolvedMalformedClaims,
     applyAllowed,
   }
 }

@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import type { Firestore } from 'firebase-admin/firestore'
 
 import { parseCliArgs, CliArgError } from './lib/cli.ts'
 import { assertEnvironmentGuard, assertCycleExecutionAllowed, initFirestore, EnvironmentGuardError, CycleExecutionError, type Environment } from './lib/firebaseAdmin.ts'
@@ -22,7 +23,7 @@ import { extractLegacyRelations } from './lib/legacyMapping.ts'
 import { validateDecisions } from './lib/decisions.ts'
 import { buildPlan } from './lib/planner.ts'
 import { readAllUsers, readAllCompanies, readAllExistingMemberships, computeExistingActiveAdmins } from './lib/firestoreReaders.ts'
-import { computeRelationSetChecksum, computeDecisionsChecksum, canonicalStringify, sha256Hex, sortRelations } from './lib/checksum.ts'
+import { computeRelationSetChecksum, computeDecisionsChecksum, computeFullSourceStateChecksum, computeFindingFingerprint, canonicalStringify, sha256Hex, sortRelations } from './lib/checksum.ts'
 import { assertPathOutsideRepo, UnsafePathError } from './lib/pathSafety.ts'
 import { validateSourceReportForRollback } from './lib/rollbackValidation.ts'
 import { computeObservedState, type TargetRelation } from './lib/observedState.ts'
@@ -33,9 +34,11 @@ import {
   type EmergencyReconstructionAudit,
 } from './lib/report.ts'
 import {
-  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanReference, sha256OfFile, ProductionSafetyError,
+  assertMaintenanceModeActive, verifyBackupReference, verifyRollbackPlanFileIntegrity, matchRollbackPlanAgainstCurrent, runProductionApplyPreflight, sha256OfFile, ProductionSafetyError,
+  type VerifiedRollbackPlanFile,
 } from './lib/productionSafety.ts'
 import { runEmergencyReconstruction } from './lib/emergencyReconstruction.ts'
+import { assertCleanTrackedSourceRevision, realSourceRevisionDeps, SourceRevisionError } from './lib/sourceRevision.ts'
 import { relationKey, type Decision, type ConfirmedRelation } from './lib/types.ts'
 import type { CliOptions } from './lib/cli.ts'
 
@@ -72,8 +75,10 @@ function emptyCounts(): ReportCounts {
   return {
     usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
     confirmedRelations: 0, plannedCreates: 0, created: 0, skipped: 0, conflicts: 0,
-    missingCompanies: 0, missingUsers: 0, ownerWithoutAdminMembership: 0,
-    unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0, unresolved: 0,
+    missingCompanies: 0, missingUsers: 0, unresolvedMissingCompanies: 0, unresolvedMissingUsers: 0,
+    ownerWithoutAdminMembership: 0, companiesWithoutAdmin: 0,
+    unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0,
+    ownerIdAnomalies: 0, staleDecisions: 0, unusedDecisions: 0, unresolved: 0,
   }
 }
 
@@ -174,9 +179,62 @@ async function main(): Promise<number> {
     throw err
   }
 
+  // Independent audit fixes, 4th round, item 3.5: `git rev-parse HEAD`
+  // alone (readSourceGitSha() below) proves only which commit is checked
+  // out — not that the working tree still matches it. For a production
+  // dry-run (and any future production apply, once authorized), the
+  // reported `sourceGitSha` must be a COMPLETE, honest description of the
+  // code that actually ran — verified fail-closed, BEFORE credential
+  // acquisition (initFirestore()) or any Firestore I/O. Not applied to
+  // emulator/staging: only production is asked to prove this by task spec.
+  let verifiedProductionSourceGitSha: string | undefined
+  if (environment === 'production') {
+    try {
+      verifiedProductionSourceGitSha = assertCleanTrackedSourceRevision(realSourceRevisionDeps(REPO_ROOT)).sourceGitSha
+    } catch (err) {
+      if (err instanceof SourceRevisionError) { console.error(`Source revision: ${err.message}`); return 3 }
+      throw err
+    }
+  }
+
+  // Independent audit fixes, 5th round, item 2 (and the follow-up review's
+  // "additional" finding): for a production `apply`, `--rollback-reference`'s
+  // raw-byte hash and structural schema are verified BEFORE `initFirestore()`,
+  // before any credential acquisition, before any Firestore read. The 4th
+  // round's version of this check ran deep inside the apply branch below,
+  // AFTER `readAllUsers()`/`readAllCompanies()`/`readAllExistingMemberships()`
+  // had already executed for every mode (including apply) — so a
+  // tampered/wrong plan hash did NOT actually produce "zero Firestore I/O"
+  // as documented, only zero *writes*. Delegated to
+  // `runProductionApplyPreflight()` (`scripts/lib/productionSafety.ts`) —
+  // the SAME function `scripts/lib/productionSafety.test.ts` unit-tests
+  // with a counting fake `acquireFirestore`, so that test observes THIS
+  // real call site's behavior, not a parallel reimplementation of it.
+  // `acquireFirestore` there IS `initFirestore` here — for a production
+  // apply, credential acquisition happens INSIDE the preflight, only after
+  // `verifyPlanFile` succeeds; every other mode/environment falls through
+  // to the unconditional `initFirestore()` call below unchanged.
+  let verifiedRollbackPlanFile: VerifiedRollbackPlanFile | undefined
+  let db: Firestore
+  if (environment === 'production' && opts.mode === 'apply') {
+    try {
+      const preflight = runProductionApplyPreflight(
+        { ackMaintenance: opts.ackMaintenance, backupReference: opts.backupReference, rollbackReference: opts.rollbackReference, expectedPlanSha256: opts.expectedPlanSha256 },
+        expectedProjectId,
+        { verifyPlanFile: verifyRollbackPlanFileIntegrity, acquireFirestore: () => initFirestore(expectedProjectId) },
+      )
+      verifiedRollbackPlanFile = preflight.verified
+      db = preflight.db
+    } catch (err) {
+      if (err instanceof ProductionSafetyError) { console.error(`Production safety: ${err.message}`); return 3 }
+      throw err
+    }
+  } else {
+    db = initFirestore(expectedProjectId)
+  }
+
   const runId = randomUUID()
   const startedAt = new Date().toISOString()
-  const db = initFirestore(expectedProjectId)
 
   if (opts.mode === 'rollback-from-report') {
     return runRollback(db, opts.fromReport!, environment, expectedProjectId, runId, startedAt, opts.reportPath!, opts)
@@ -206,7 +264,8 @@ async function main(): Promise<number> {
   ]
   const targetChecksum = computeRelationSetChecksum(targetRelations)
   const sourceChecksum = computeSourceChecksum(extraction.confirmed)
-  const sourceGitSha = readSourceGitSha()
+  const sourceStateChecksum = computeFullSourceStateChecksum({ extraction, existingMemberships, allCompanyIds, allUserIds })
+  const sourceGitSha = verifiedProductionSourceGitSha ?? readSourceGitSha()
 
   const counts: ReportCounts = {
     usersRead: users.length,
@@ -218,13 +277,22 @@ async function main(): Promise<number> {
     created: 0,
     skipped: plan.skipped.length,
     conflicts: plan.unresolvedConflicts.length,
+    // DISCOVERED totals — every orphan found this run, including ones a
+    // decision already excluded (independent audit fixes, 5th round, item 3).
     missingCompanies: extraction.orphans.filter(o => o.reason === 'missing_company').length,
     missingUsers: extraction.orphans.filter(o => o.reason === 'missing_user').length,
+    // UNRESOLVED-only counterparts — post-decision, contribute to `unresolved`.
+    unresolvedMissingCompanies: plan.unresolvedOrphans.filter(o => o.reason === 'missing_company').length,
+    unresolvedMissingUsers: plan.unresolvedOrphans.filter(o => o.reason === 'missing_user').length,
     ownerWithoutAdminMembership: plan.unresolvedOwnerAnomalies.length,
+    companiesWithoutAdmin: plan.companiesWithoutAdmin.length,
     unknownUsers: plan.unknownUsers.length,
     malformedClaims: plan.malformedClaims.length,
     danglingMemberships: plan.danglingMemberships.length,
-    unresolved: plan.unresolvedConflicts.length + plan.unresolvedOrphans.length + plan.unresolvedOwnerAnomalies.length + plan.companiesWithoutAdmin.length + plan.unknownUsers.length + plan.malformedClaims.length + plan.danglingMemberships.length,
+    ownerIdAnomalies: plan.ownerIdAnomalies.length,
+    staleDecisions: plan.staleDecisions.length,
+    unusedDecisions: plan.unusedDecisions.length,
+    unresolved: plan.unresolvedConflicts.length + plan.unresolvedOrphans.length + plan.unresolvedOwnerAnomalies.length + plan.companiesWithoutAdmin.length + plan.unknownUsers.length + plan.malformedClaims.length + plan.danglingMemberships.length + plan.ownerIdAnomalies.length + plan.staleDecisions.length + plan.unusedDecisions.length,
   }
 
   let createdPaths: CreatedPathRecord[] = []
@@ -237,7 +305,7 @@ async function main(): Promise<number> {
 
   if (opts.mode === 'apply') {
     if (!plan.applyAllowed) {
-      console.error(`Apply refused: ${counts.unresolved} unresolved item(s) (conflicts/orphans/owner-anomalies/companies-without-admin/dangling-memberships). Resolve via --decisions-file and retry — dangling memberships require repairing the underlying data, no decision can clear them.`)
+      console.error(`Apply refused: ${counts.unresolved} unresolved item(s) (conflicts/orphans/owner-anomalies/companies-without-admin/dangling-memberships/owner-id-anomalies/stale-decisions/unused-decisions). Resolve via --decisions-file and retry — dangling memberships and owner-id anomalies require repairing the underlying data, no decision can clear them; stale/unused decisions require an updated decisions file matching the CURRENT findings' evidenceFingerprint.`)
     } else {
       // Independent review fix #5/6/7 (production preflight, follow-up
       // round) + final-round fixes #1/#3/#4: for a PRODUCTION apply, verify
@@ -258,8 +326,16 @@ async function main(): Promise<number> {
           const maintenance = await assertMaintenanceModeActive(db)
           if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
           const backupRef = verifyBackupReference(opts.backupReference, expectedProjectId, maintenance.enabledAt)
-          if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
-          const rollbackPlanRef = verifyRollbackPlanReference(opts.rollbackReference, { sourceGitSha, sourceChecksum, decisionsChecksum: decisionsResult.checksum, targetChecksum }, expectedProjectId)
+          // Independent audit fixes, 5th round, item 2: the file's raw-byte
+          // hash and structural schema were already verified BEFORE
+          // initFirestore() above (`verifiedRollbackPlanFile`) — this step
+          // only compares that ALREADY-verified content against the
+          // current run's own computed values (pure, no I/O).
+          if (!verifiedRollbackPlanFile) throw new ProductionSafetyError('--rollback-reference/--expected-plan-sha256 were not verified before Firestore I/O — refusing (this should be unreachable; the pre-flight check above must run first).')
+          const rollbackPlanRef = matchRollbackPlanAgainstCurrent(
+            verifiedRollbackPlanFile,
+            { sourceGitSha, sourceChecksum, sourceStateChecksum, decisionsChecksum: decisionsResult.checksum, targetChecksum, plannedCreates: plan.plannedCreates },
+          )
           productionSafety = {
             maintenanceMode: maintenance,
             backupReference: { sha256: backupRef.sha256, createdAtUtc: backupRef.createdAtUtc, membersCount: backupRef.membersCount, membersChecksum: backupRef.membersChecksum },
@@ -323,6 +399,7 @@ async function main(): Promise<number> {
     finishedAt: new Date().toISOString(),
     counts,
     sourceChecksum,
+    sourceStateChecksum,
     decisionsChecksum: decisionsResult.checksum,
     targetChecksum,
     observedChecksum,
@@ -330,9 +407,18 @@ async function main(): Promise<number> {
     conflicts: plan.unresolvedConflicts,
     orphans: plan.unresolvedOrphans,
     ownerAnomalies: plan.unresolvedOwnerAnomalies,
+    companiesWithoutAdmin: plan.companiesWithoutAdmin,
     unknownUsers: plan.unknownUsers,
     malformedClaims: plan.malformedClaims,
     danglingMemberships: plan.danglingMemberships,
+    ownerIdAnomalies: plan.ownerIdAnomalies,
+    staleDecisions: plan.staleDecisions,
+    unusedDecisions: plan.unusedDecisions,
+    resolvedConflicts: plan.resolvedConflicts,
+    resolvedOrphans: plan.resolvedOrphans,
+    resolvedOwnerAnomalies: plan.resolvedOwnerAnomalies,
+    resolvedUnknownUsers: plan.resolvedUnknownUsers,
+    resolvedMalformedClaims: plan.resolvedMalformedClaims,
     plannedCreates: plan.plannedCreates,
     createdPaths,
     writeFailures,
@@ -461,8 +547,10 @@ async function runRollback(
       startedAt,
       finishedAt: new Date().toISOString(),
       counts: emptyCounts(),
-      sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
-      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+      sourceChecksum: '', sourceStateChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
+      conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+      ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+      resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],
@@ -500,8 +588,10 @@ async function runRollback(
       startedAt,
       finishedAt: new Date().toISOString(),
       counts: emptyCounts(),
-      sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
-      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+      sourceChecksum: '', sourceStateChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
+      conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+      ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+      resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],
@@ -540,8 +630,10 @@ async function runRollback(
         startedAt,
         finishedAt: new Date().toISOString(),
         counts: emptyCounts(),
-        sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
-        conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+        sourceChecksum: '', sourceStateChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
+        conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+        ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+        resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
         plannedCreates: [], createdPaths: [], writeFailures: [],
         verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
         rollbackManifest: [],
@@ -575,16 +667,22 @@ async function runRollback(
     finishedAt: new Date().toISOString(),
     counts: { ...emptyCounts(), created: 0, skipped: 0, conflicts: refused.length, unresolved: refused.length },
     sourceChecksum: sourceReport.sourceChecksum,
+    sourceStateChecksum: sourceReport.sourceStateChecksum,
     decisionsChecksum: sourceReport.decisionsChecksum,
     targetChecksum: sourceReport.targetChecksum,
     observedChecksum: null,
     readBackError: null,
-    conflicts: refused.map(r => ({ companyId: r.companyId, uid: r.uid, reason: 'existing_membership_conflict' as const })),
+    conflicts: refused.map(r => ({ companyId: r.companyId, uid: r.uid, reason: 'existing_membership_conflict' as const, evidenceFingerprint: computeFindingFingerprint({ rollbackRefusalReason: r.reason }) })),
     orphans: [],
     ownerAnomalies: [],
+    companiesWithoutAdmin: [],
     unknownUsers: [],
     malformedClaims: [],
     danglingMemberships: [],
+    ownerIdAnomalies: [],
+    staleDecisions: [],
+    unusedDecisions: [],
+    resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
     plannedCreates: [],
     createdPaths: [],
     writeFailures: [],
@@ -644,8 +742,10 @@ async function runRollbackFromPlan(
       startedAt,
       finishedAt: new Date().toISOString(),
       counts: emptyCounts(),
-      sourceChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
-      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+      sourceChecksum: '', sourceStateChecksum: '', decisionsChecksum: '', targetChecksum: '', observedChecksum: null, readBackError: null,
+      conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [],
+      ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+      resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
       plannedCreates: [], createdPaths: [], writeFailures: [],
       verification: { performed: false, matchesTarget: false, missing: [], differing: [] },
       rollbackManifest: [],
@@ -682,7 +782,7 @@ async function runRollbackFromPlan(
     ...baseReport(),
     counts: { ...emptyCounts(), conflicts: refused.length, unresolved: refused.length },
     targetChecksum,
-    conflicts: refused.map(r => ({ companyId: r.companyId, uid: r.uid, reason: 'existing_membership_conflict' as const })),
+    conflicts: refused.map(r => ({ companyId: r.companyId, uid: r.uid, reason: 'existing_membership_conflict' as const, evidenceFingerprint: computeFindingFingerprint({ rollbackRefusalReason: r.reason }) })),
     rollbackManifest: removed,
     productionSafety,
     emergencyReconstruction,

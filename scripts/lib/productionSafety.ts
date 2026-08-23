@@ -16,8 +16,10 @@
 // acceptable design for this tool.
 import { readFileSync } from 'node:fs'
 import type { Firestore } from 'firebase-admin/firestore'
-import { sha256Hex } from './checksum.ts'
+import { sha256Hex, computeDecisionsChecksum } from './checksum.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
+import { isKnownRole, type Decision, type RelationSourceKind } from './types.ts'
+import { validateDecisions } from './decisions.ts'
 
 export class ProductionSafetyError extends Error {}
 
@@ -29,6 +31,245 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isValidIsoTimestamp(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && !Number.isNaN(Date.parse(value))
+}
+
+function isNonEmptyStringValue(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function isSha256HexValue(value: unknown): value is string {
+  return typeof value === 'string' && SHA256_HEX_PATTERN.test(value)
+}
+
+// ── Report findings — deep validation ────────────────────────────────────
+//
+// Independent audit fixes, 5th round, 2nd follow-up review (this pass): the
+// previous version of this validation had three gaps, all confirmed by
+// independent negative tests:
+//   1. The report's UNRESOLVED finding arrays (`conflicts`/`orphans`/
+//      `ownerAnomalies`/`unknownUsers`/`malformedClaims`/`danglingMemberships`/
+//      `ownerIdAnomalies`/`staleDecisions`/`unusedDecisions`) were never
+//      required or validated at all — a report entirely missing them still
+//      passed.
+//   2. `resolvedOrphans`' `finding` was only checked for the fields common
+//      to every finding type (uid/companyId/reason/evidenceFingerprint) —
+//      `OrphanRecord`'s own required fields (`sourceKinds`/`observedRoles`/
+//      `hasInvalidRole`/`proposedRole`) were never checked, so an orphan
+//      missing all four still passed.
+//   3. `decision` objects were checked field-by-field by hand here,
+//      independently of `decisions.ts`'s `validateDecisions()` — drifting
+//      from the real contract (never rejected unknown fields; never
+//      forbade `role` when `resolution !== 'confirm_role'`).
+//
+// Fixed by: (a) a dedicated shape validator per record type, applied
+// uniformly to BOTH the unresolved arrays and each resolved-findings
+// array's `finding` (the shape is identical either way — only the
+// resolved case additionally pairs it with a `decision`); (b) reusing
+// `validateDecisions()` (decisions.ts) for `decision` validation instead
+// of a parallel reimplementation, so the two can never drift; (c)
+// reconciling every unresolved array's length against its corresponding
+// `counts` field, and `resolvedOrphans` against the discovered/unresolved
+// orphan counts (the only finding type with an explicit discovered-total
+// count field).
+const RELATION_SOURCE_KINDS: readonly RelationSourceKind[] = ['users.home', 'users.companies[]', 'companies.ownerId']
+const CONFLICT_REASONS = ['role_mismatch', 'invalid_role', 'mixed_role_validity', 'user_id_mismatch', 'owner_role_not_admin', 'existing_membership_conflict'] as const
+const ORPHAN_REASONS = ['missing_company', 'missing_user'] as const
+const OWNER_ANOMALY_REASONS = ['owner_without_admin_membership'] as const
+const UNKNOWN_USER_REASONS = ['no_usable_relations'] as const
+const MALFORMED_CLAIM_REASONS = ['malformed_companies_entry', 'companies_field_not_array', 'malformed_company_id'] as const
+const DANGLING_MEMBERSHIP_REASONS = ['existing_membership_missing_company', 'existing_membership_missing_user'] as const
+const OWNER_ID_ANOMALY_REASONS = ['malformed_owner_id'] as const
+
+function assertOnlyKnownKeys(field: string, index: number, rec: Record<string, unknown>, allowed: readonly string[]): void {
+  const unknown = Object.keys(rec).filter(k => !allowed.includes(k))
+  if (unknown.length > 0) {
+    throw new ProductionSafetyError(`${field}[${index}] has unknown field(s): ${unknown.sort().join(', ')}.`)
+  }
+}
+function assertNonEmptyStringField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  if (!isNonEmptyStringValue(rec[key])) throw new ProductionSafetyError(`${field}[${index}].${key} is missing.`)
+}
+function assertReasonOneOf(field: string, index: number, rec: Record<string, unknown>, allowed: readonly string[]): void {
+  if (typeof rec.reason !== 'string' || !allowed.includes(rec.reason)) {
+    throw new ProductionSafetyError(`${field}[${index}].reason is missing or not one of: ${allowed.join(', ')}.`)
+  }
+}
+function assertSha256HexField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  if (!isSha256HexValue(rec[key])) throw new ProductionSafetyError(`${field}[${index}].${key} is missing or not a valid SHA-256 hex digest.`)
+}
+function assertBooleanField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  if (typeof rec[key] !== 'boolean') throw new ProductionSafetyError(`${field}[${index}].${key} must be a boolean.`)
+}
+function assertRoleArrayField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  const value = rec[key]
+  if (!Array.isArray(value) || !value.every(isKnownRole)) {
+    throw new ProductionSafetyError(`${field}[${index}].${key} must be an array of known roles.`)
+  }
+}
+function assertSourceKindArrayField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  const value = rec[key]
+  if (!Array.isArray(value) || !value.every(v => RELATION_SOURCE_KINDS.includes(v as RelationSourceKind))) {
+    throw new ProductionSafetyError(`${field}[${index}].${key} must be an array of known source kinds.`)
+  }
+}
+function assertRoleOrNullField(field: string, index: number, rec: Record<string, unknown>, key: string): void {
+  const value = rec[key]
+  if (value !== null && !isKnownRole(value)) {
+    throw new ProductionSafetyError(`${field}[${index}].${key} must be a known role or null.`)
+  }
+}
+
+const CONFLICT_ALLOWED_KEYS = ['companyId', 'uid', 'reason', 'observedRoles', 'hasInvalidRole', 'sourceKinds', 'evidenceFingerprint']
+function validateConflictRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, CONFLICT_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, CONFLICT_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+  if (rec.observedRoles !== undefined) assertRoleArrayField(field, index, rec, 'observedRoles')
+  if (rec.hasInvalidRole !== undefined) assertBooleanField(field, index, rec, 'hasInvalidRole')
+  if (rec.sourceKinds !== undefined) assertSourceKindArrayField(field, index, rec, 'sourceKinds')
+}
+
+const ORPHAN_ALLOWED_KEYS = ['companyId', 'uid', 'reason', 'sourceKinds', 'observedRoles', 'hasInvalidRole', 'proposedRole', 'evidenceFingerprint']
+function validateOrphanRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, ORPHAN_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, ORPHAN_REASONS)
+  assertSourceKindArrayField(field, index, rec, 'sourceKinds')
+  assertRoleArrayField(field, index, rec, 'observedRoles')
+  assertBooleanField(field, index, rec, 'hasInvalidRole')
+  assertRoleOrNullField(field, index, rec, 'proposedRole')
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+  // Derived-consistency: `proposedRole` is set if-and-only-if `observedRoles`
+  // has exactly one entry AND `hasInvalidRole` is false — see
+  // `OrphanRecord`'s own doc comment (types.ts).
+  const observedRoles = rec.observedRoles as string[]
+  const hasInvalidRole = rec.hasInvalidRole as boolean
+  const expectedProposedRole = observedRoles.length === 1 && !hasInvalidRole ? observedRoles[0]! : null
+  if (rec.proposedRole !== expectedProposedRole) {
+    throw new ProductionSafetyError(`${field}[${index}].proposedRole (${JSON.stringify(rec.proposedRole)}) is inconsistent with observedRoles/hasInvalidRole (expected ${JSON.stringify(expectedProposedRole)}).`)
+  }
+}
+
+const OWNER_ANOMALY_ALLOWED_KEYS = ['companyId', 'uid', 'reason', 'evidenceFingerprint']
+function validateOwnerAnomalyRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, OWNER_ANOMALY_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, OWNER_ANOMALY_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+const UNKNOWN_USER_ALLOWED_KEYS = ['uid', 'reason', 'evidenceFingerprint']
+function validateUnknownUserRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, UNKNOWN_USER_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, UNKNOWN_USER_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+const MALFORMED_CLAIM_ALLOWED_KEYS = ['uid', 'reason', 'evidenceFingerprint']
+function validateMalformedClaimRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, MALFORMED_CLAIM_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, MALFORMED_CLAIM_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+const DANGLING_MEMBERSHIP_ALLOWED_KEYS = ['companyId', 'uid', 'reason', 'evidenceFingerprint']
+function validateDanglingMembershipRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, DANGLING_MEMBERSHIP_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertNonEmptyStringField(field, index, rec, 'uid')
+  assertReasonOneOf(field, index, rec, DANGLING_MEMBERSHIP_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+const OWNER_ID_ANOMALY_ALLOWED_KEYS = ['companyId', 'reason', 'evidenceFingerprint']
+function validateOwnerIdAnomalyRecordShape(field: string, index: number, rec: Record<string, unknown>): void {
+  assertOnlyKnownKeys(field, index, rec, OWNER_ID_ANOMALY_ALLOWED_KEYS)
+  assertNonEmptyStringField(field, index, rec, 'companyId')
+  assertReasonOneOf(field, index, rec, OWNER_ID_ANOMALY_REASONS)
+  assertSha256HexField(field, index, rec, 'evidenceFingerprint')
+}
+
+type FindingShapeValidator = (field: string, index: number, rec: Record<string, unknown>) => void
+
+interface ResolvedFieldSpec {
+  field: 'resolvedConflicts' | 'resolvedOrphans' | 'resolvedOwnerAnomalies' | 'resolvedUnknownUsers' | 'resolvedMalformedClaims'
+  validateFinding: FindingShapeValidator
+}
+
+const RESOLVED_FIELD_SPECS: readonly ResolvedFieldSpec[] = [
+  { field: 'resolvedConflicts', validateFinding: validateConflictRecordShape },
+  { field: 'resolvedOrphans', validateFinding: validateOrphanRecordShape },
+  { field: 'resolvedOwnerAnomalies', validateFinding: validateOwnerAnomalyRecordShape },
+  { field: 'resolvedUnknownUsers', validateFinding: validateUnknownUserRecordShape },
+  { field: 'resolvedMalformedClaims', validateFinding: validateMalformedClaimRecordShape },
+]
+
+interface UnresolvedFieldSpec {
+  field: 'conflicts' | 'orphans' | 'ownerAnomalies' | 'unknownUsers' | 'malformedClaims' | 'danglingMemberships' | 'ownerIdAnomalies'
+  validateFinding: FindingShapeValidator
+  /** How to compute the expected length from `counts` — a function so
+   * `orphans` can sum two fields (`unresolvedMissingCompanies` +
+   * `unresolvedMissingUsers`). */
+  expectedLength: (counts: Record<string, unknown>) => number
+}
+
+const UNRESOLVED_FIELD_SPECS: readonly UnresolvedFieldSpec[] = [
+  { field: 'conflicts', validateFinding: validateConflictRecordShape, expectedLength: counts => counts.conflicts as number },
+  { field: 'orphans', validateFinding: validateOrphanRecordShape, expectedLength: counts => (counts.unresolvedMissingCompanies as number) + (counts.unresolvedMissingUsers as number) },
+  { field: 'ownerAnomalies', validateFinding: validateOwnerAnomalyRecordShape, expectedLength: counts => counts.ownerWithoutAdminMembership as number },
+  { field: 'unknownUsers', validateFinding: validateUnknownUserRecordShape, expectedLength: counts => counts.unknownUsers as number },
+  { field: 'malformedClaims', validateFinding: validateMalformedClaimRecordShape, expectedLength: counts => counts.malformedClaims as number },
+  { field: 'danglingMemberships', validateFinding: validateDanglingMembershipRecordShape, expectedLength: counts => counts.danglingMemberships as number },
+  { field: 'ownerIdAnomalies', validateFinding: validateOwnerIdAnomalyRecordShape, expectedLength: counts => counts.ownerIdAnomalies as number },
+]
+
+/** Validates one standalone `Decision` (a `staleDecisions`/`unusedDecisions`
+ * entry, or the `decision` half of a resolved-findings pair) by delegating
+ * to `decisions.ts`'s `validateDecisions()` — the SAME function that
+ * validates an operator's `--decisions-file` — so this contract can never
+ * drift from the real one (rejects unknown fields, forbids `role` unless
+ * `resolution === 'confirm_role'`, checks resolution/findingType
+ * compatibility, etc.). Returns the normalized `Decision`. */
+function validateDecisionRecord(field: string, index: number, rec: Record<string, unknown>): Decision {
+  const result = validateDecisions([rec])
+  if (!result.ok) {
+    throw new ProductionSafetyError(`${field}[${index}].decision: ${result.errors.map(e => e.message).join('; ')}`)
+  }
+  return result.decisions[0]!
+}
+
+function validateResolvingDecisionRecord(field: string, index: number, decision: Record<string, unknown>, finding: Record<string, unknown>): void {
+  const validated = validateDecisionRecord(field, index, decision)
+
+  // Cross-checks: `decision` must genuinely be THE decision that resolved
+  // THIS `finding` — matching identity, `findingType === finding.reason`,
+  // and `evidenceFingerprint`. `validateDecisionRecord()` above already
+  // confirmed `validated.resolution` is compatible with `validated.findingType`
+  // itself (via `COMPATIBLE_RESOLUTIONS`, inside `validateDecisions()`) —
+  // once `findingType === finding.reason` holds too, that compatibility
+  // transfers to `finding.reason`, so no separate check is needed here.
+  if (validated.findingType !== finding.reason) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.findingType (${JSON.stringify(validated.findingType)}) does not match finding.reason (${JSON.stringify(finding.reason)}).`)
+  }
+  if (validated.evidenceFingerprint !== finding.evidenceFingerprint) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.evidenceFingerprint does not match finding.evidenceFingerprint.`)
+  }
+  if (validated.uid !== finding.uid) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.uid does not match finding.uid.`)
+  }
+  if (finding.companyId !== undefined) {
+    if (validated.companyId !== finding.companyId) {
+      throw new ProductionSafetyError(`${field}[${index}]: decision.companyId does not match finding.companyId.`)
+    }
+  } else if (validated.companyId !== undefined) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.companyId must be absent — the finding it resolves is user-level.`)
+  }
 }
 
 // ── Maintenance mode ────────────────────────────────────────────────────
@@ -266,6 +507,14 @@ export interface StrictDryRunReport {
 export interface StrictDryRunReportFields {
   sourceGitSha: string
   sourceChecksum: string
+  /** Independent audit fixes, 5th round, item 1: the full source-state
+   * fingerprint (`computeFullSourceStateChecksum()`, checksum.ts) — broader
+   * than `sourceChecksum` (which only ever covers `extraction.confirmed`).
+   * Now REQUIRED and compared for a `--rollback-reference`, closing the gap
+   * where a production `apply` accepted a report whose confirmed-relations
+   * checksum matched but whose conflicts/orphans/anomalies/existing-membership
+   * state had silently changed. */
+  sourceStateChecksum: string
   decisionsChecksum: string
   targetChecksum: string
 }
@@ -300,7 +549,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   const report = parsed as Record<string, unknown>
 
   if (report.schemaVersion !== REPORT_SCHEMA_VERSION) {
-    throw new ProductionSafetyError(`has schemaVersion ${JSON.stringify(report.schemaVersion)}, expected ${REPORT_SCHEMA_VERSION}.`)
+    throw new ProductionSafetyError(`has schemaVersion ${JSON.stringify(report.schemaVersion)}, expected ${REPORT_SCHEMA_VERSION} — a report from an older version of this tool can never be interpreted as if it were current; re-run --mode dry-run against the CURRENT tool to produce a new, valid reference.`)
   }
   if (report.mode !== 'dry-run') {
     throw new ProductionSafetyError(`must be a dry-run report (mode !== "dry-run", got ${JSON.stringify(report.mode)}).`)
@@ -317,22 +566,219 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   if (expectedEnvironment === 'production' && report.sourceGitSha === 'unknown') {
     throw new ProductionSafetyError('has sourceGitSha "unknown" — the commit that produced this dry-run cannot be traced, which is not acceptable for a production reference (final-round fix #2).')
   }
-  for (const field of ['sourceChecksum', 'decisionsChecksum', 'targetChecksum'] as const) {
+  for (const field of ['sourceChecksum', 'sourceStateChecksum', 'decisionsChecksum', 'targetChecksum'] as const) {
     const value = report[field]
     if (typeof value !== 'string' || !SHA256_HEX_PATTERN.test(value)) {
       throw new ProductionSafetyError(`.${field} is missing or not a valid SHA-256 hex digest.`)
     }
   }
+  // Independent audit fixes, 4th round, item 3.6: every count in the report
+  // must be a non-negative integer (a negative or fractional count can
+  // never legitimately arise from this tool and signals a hand-edited or
+  // corrupted report), and `counts.plannedCreates` must equal the actual
+  // length of the `plannedCreates` array below — a mismatch means the
+  // counts and the array disagree about what this plan actually contains.
   const counts = report.counts as Record<string, unknown> | undefined
-  if (!counts || typeof counts.unresolved !== 'number') {
-    throw new ProductionSafetyError('is missing counts.unresolved.')
+  if (!counts || typeof counts !== 'object') {
+    throw new ProductionSafetyError('is missing counts.')
+  }
+  for (const field of [
+    'usersRead', 'companiesRead', 'existingMembershipsRead', 'candidateRelations', 'confirmedRelations',
+    'plannedCreates', 'created', 'skipped', 'conflicts', 'missingCompanies', 'missingUsers',
+    'unresolvedMissingCompanies', 'unresolvedMissingUsers',
+    'ownerWithoutAdminMembership', 'companiesWithoutAdmin', 'unknownUsers', 'malformedClaims', 'danglingMemberships',
+    'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions', 'unresolved',
+  ] as const) {
+    if (!isNonNegativeInteger(counts[field])) {
+      throw new ProductionSafetyError(`counts.${field} must be a non-negative integer.`)
+    }
   }
   if (counts.unresolved !== 0) {
     throw new ProductionSafetyError(`counts.unresolved is ${counts.unresolved}, expected 0 — this dry-run plan still has unresolved items and cannot be treated as fully approved.`)
   }
+  // Independent audit fixes, 5th round, item 3: `missingCompanies`/
+  // `missingUsers` are DISCOVERED totals (every orphan found, including
+  // ones a decision already excluded) — they legitimately stay nonzero
+  // even when `unresolved === 0`. The consistency check below must sum
+  // only the genuinely UNRESOLVED-only counts:
+  // `unresolvedMissingCompanies`/`unresolvedMissingUsers` (post-decision),
+  // never the discovered totals — the 4th-round version of this check
+  // wrongly summed the discovered totals and rejected a perfectly valid
+  // "1 missing_company, correctly excluded, unresolved: 0" report.
+  const unresolvedComponents = ['conflicts', 'unresolvedMissingCompanies', 'unresolvedMissingUsers', 'ownerWithoutAdminMembership', 'companiesWithoutAdmin', 'unknownUsers', 'malformedClaims', 'danglingMemberships', 'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions'] as const
+  const unresolvedSum = unresolvedComponents.reduce((sum, field) => sum + (counts[field] as number), 0)
+  if (unresolvedSum !== 0) {
+    throw new ProductionSafetyError(`counts.unresolved is 0 but the sum of its component counts (${unresolvedComponents.join(', ')}) is ${unresolvedSum} — internally inconsistent, refusing.`)
+  }
+  // Independent audit fixes, 5th round — DEEPENED across two follow-up
+  // reviews: schemaVersion is checked above to be EXACTLY the current
+  // REPORT_SCHEMA_VERSION, but earlier versions of this check (a) only
+  // verified resolved-findings `finding`/`decision` were present, non-array
+  // objects — never their actual content or per-type shape — and (b) never
+  // required or validated the report's UNRESOLVED finding arrays at all. A
+  // report could omit `conflicts`/`orphans`/`unknownUsers`/`malformedClaims`/
+  // etc. entirely, supply a `resolvedOrphans` entry whose `OrphanRecord` was
+  // missing `sourceKinds`/`observedRoles`/`hasInvalidRole`/`proposedRole`,
+  // or attach a `decision` with an extra unknown field or a forbidden
+  // `role` on a non-`confirm_role` resolution — all previously accepted.
+  //
+  // Fixed by validating BOTH the unresolved arrays and each resolved-
+  // findings array's `finding` half against a per-record-type shape
+  // validator (`validate*RecordShape()` above — the SAME validator either
+  // way, since the shape is identical; only resolved findings additionally
+  // pair it with a `decision`), reusing `decisions.ts`'s `validateDecisions()`
+  // for every `decision` (so this contract can never drift from the one
+  // `--decisions-file` itself is held to), and reconciling every array's
+  // length against its corresponding `counts` field.
+  for (const spec of UNRESOLVED_FIELD_SPECS) {
+    const value = report[spec.field]
+    if (!Array.isArray(value)) {
+      throw new ProductionSafetyError(`is missing ${spec.field} (required by schema v${REPORT_SCHEMA_VERSION}).`)
+    }
+    value.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}] is not an object.`)
+      }
+      spec.validateFinding(spec.field, index, entry as Record<string, unknown>)
+    })
+    const expected = spec.expectedLength(counts)
+    if (value.length !== expected) {
+      throw new ProductionSafetyError(`${spec.field}.length (${value.length}) does not match the corresponding counts field (expected ${expected}) — the report's finding arrays and counts are internally inconsistent.`)
+    }
+  }
+  // Independent audit fixes, 5th round, 4th follow-up review, item 2:
+  // `companiesWithoutAdmin` is a plain array of companyIds (the last-admin
+  // gate's blocked companies) — not a finding-record type, so it gets its
+  // own validation: every entry a non-empty string, no duplicates, length
+  // matching `counts.companiesWithoutAdmin`.
+  const companiesWithoutAdminRaw = report.companiesWithoutAdmin
+  if (!Array.isArray(companiesWithoutAdminRaw)) {
+    throw new ProductionSafetyError(`is missing companiesWithoutAdmin (required by schema v${REPORT_SCHEMA_VERSION}).`)
+  }
+  const seenCompaniesWithoutAdmin = new Set<string>()
+  companiesWithoutAdminRaw.forEach((entry, index) => {
+    if (!isNonEmptyStringValue(entry)) {
+      throw new ProductionSafetyError(`companiesWithoutAdmin[${index}] is not a non-empty string.`)
+    }
+    if (seenCompaniesWithoutAdmin.has(entry)) {
+      throw new ProductionSafetyError(`companiesWithoutAdmin contains a duplicate companyId at index ${index}.`)
+    }
+    seenCompaniesWithoutAdmin.add(entry)
+  })
+  if (companiesWithoutAdminRaw.length !== (counts.companiesWithoutAdmin as number)) {
+    throw new ProductionSafetyError(`companiesWithoutAdmin.length (${companiesWithoutAdminRaw.length}) does not match counts.companiesWithoutAdmin (${counts.companiesWithoutAdmin}) — internally inconsistent.`)
+  }
+  for (const field of ['staleDecisions', 'unusedDecisions'] as const) {
+    const value = report[field]
+    if (!Array.isArray(value)) {
+      throw new ProductionSafetyError(`is missing ${field} (required by schema v${REPORT_SCHEMA_VERSION}).`)
+    }
+    value.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new ProductionSafetyError(`${field}[${index}] is not an object.`)
+      }
+      validateDecisionRecord(field, index, entry as Record<string, unknown>)
+    })
+    if (value.length !== (counts[field] as number)) {
+      throw new ProductionSafetyError(`${field}.length (${value.length}) does not match counts.${field} (${counts[field]}) — internally inconsistent.`)
+    }
+  }
+
+  const resolvedFindingsByField: Record<ResolvedFieldSpec['field'], { finding: Record<string, unknown>; decision: Record<string, unknown> }[]> =
+    { resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [] }
+  for (const spec of RESOLVED_FIELD_SPECS) {
+    const value = report[spec.field]
+    if (!Array.isArray(value)) {
+      throw new ProductionSafetyError(`is missing ${spec.field} (required by schema v${REPORT_SCHEMA_VERSION}'s resolved-findings audit trail).`)
+    }
+    value.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}] is not an object.`)
+      }
+      const rec = entry as Record<string, unknown>
+      if (!rec.finding || typeof rec.finding !== 'object' || Array.isArray(rec.finding)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}].finding is missing.`)
+      }
+      if (!rec.decision || typeof rec.decision !== 'object' || Array.isArray(rec.decision)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}].decision is missing.`)
+      }
+      const finding = rec.finding as Record<string, unknown>
+      const decision = rec.decision as Record<string, unknown>
+      spec.validateFinding(spec.field, index, finding)
+      validateResolvingDecisionRecord(spec.field, index, decision, finding)
+      resolvedFindingsByField[spec.field].push({ finding, decision })
+    })
+  }
+  // Independent audit fixes, 5th round, 4th follow-up review, item 1: each
+  // resolved finding IDENTITY (companyId?, uid, reason, evidenceFingerprint)
+  // must appear exactly once across ALL resolvedX arrays combined — a
+  // duplicated `{finding, decision}` pair (the same finding "resolved"
+  // twice, even by the same decision) is exactly as corrupt an audit trail
+  // as a missing one.
+  const seenResolvedFindingKeys = new Set<string>()
+  for (const spec of RESOLVED_FIELD_SPECS) {
+    resolvedFindingsByField[spec.field].forEach((entry, index) => {
+      const key = JSON.stringify([entry.finding.companyId ?? null, entry.finding.uid, entry.finding.reason, entry.finding.evidenceFingerprint])
+      if (seenResolvedFindingKeys.has(key)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}]: this finding (uid=${JSON.stringify(entry.finding.uid)}, companyId=${JSON.stringify(entry.finding.companyId)}, reason=${JSON.stringify(entry.finding.reason)}) is duplicated in the resolved-findings audit trail.`)
+      }
+      seenResolvedFindingKeys.add(key)
+    })
+  }
+  // Independent audit fixes, 5th round, 4th follow-up review, item 1: prove
+  // that `decisionsChecksum` (the checksum over the FULL original
+  // `--decisions-file`, computed once in `readDecisionsFile()`) is
+  // genuinely reconstructible from the report's own audit trail — every
+  // decision that resolved something, went stale, or went unused,
+  // collected from EXACTLY the five `resolvedX[].decision` arrays plus
+  // `staleDecisions`/`unusedDecisions`, re-validated as ONE combined batch
+  // (not per-item — a single `validateDecisions()` call over the whole set
+  // catches a decision duplicated ACROSS buckets, e.g. present in both
+  // `resolvedOrphans` and `staleDecisions`, which per-item validation could
+  // never see), then re-hashed with `computeDecisionsChecksum()` and
+  // compared byte-for-byte against `report.decisionsChecksum`. Without
+  // this, a report could claim a `decisionsChecksum` matching a real
+  // decisions file while silently DROPPING one of its decisions from every
+  // audit-trail bucket — accepted by every check above (each bucket is
+  // internally consistent; there is simply one fewer entry than there
+  // should be) yet invisible to an operator relying on the report alone.
+  const auditTrailDecisions: Record<string, unknown>[] = [
+    ...resolvedFindingsByField.resolvedConflicts.map(r => r.decision),
+    ...resolvedFindingsByField.resolvedOrphans.map(r => r.decision),
+    ...resolvedFindingsByField.resolvedOwnerAnomalies.map(r => r.decision),
+    ...resolvedFindingsByField.resolvedUnknownUsers.map(r => r.decision),
+    ...resolvedFindingsByField.resolvedMalformedClaims.map(r => r.decision),
+    ...(report.staleDecisions as unknown[]).map(d => d as Record<string, unknown>),
+    ...(report.unusedDecisions as unknown[]).map(d => d as Record<string, unknown>),
+  ]
+  const auditTrailValidation = validateDecisions(auditTrailDecisions)
+  if (!auditTrailValidation.ok) {
+    throw new ProductionSafetyError(`the combined audit trail (resolved*/staleDecisions/unusedDecisions) failed validation as a whole: ${auditTrailValidation.errors.map(e => e.message).join('; ')}`)
+  }
+  const recomputedDecisionsChecksum = computeDecisionsChecksum(auditTrailValidation.decisions)
+  if (recomputedDecisionsChecksum !== report.decisionsChecksum) {
+    throw new ProductionSafetyError(`decisionsChecksum (${report.decisionsChecksum}) does not match the checksum recomputed from the audit trail (resolved*/staleDecisions/unusedDecisions combined: ${recomputedDecisionsChecksum}) — a decision from the original --decisions-file is missing, duplicated, or altered somewhere in the report.`)
+  }
+  // Discovered/unresolved/resolved reconciliation — orphans are the only
+  // finding type with an explicit discovered-total count field
+  // (`missingCompanies`/`missingUsers`; conflicts/ownerAnomalies/
+  // unknownUsers/malformedClaims only ever expose an unresolved-only
+  // count — see report.ts's `ReportCounts` doc comments — so there is no
+  // discovered total to reconcile those against).
+  const resolvedMissingCompanies = resolvedFindingsByField.resolvedOrphans.filter(r => r.finding.reason === 'missing_company').length
+  const resolvedMissingUsers = resolvedFindingsByField.resolvedOrphans.filter(r => r.finding.reason === 'missing_user').length
+  if (counts.missingCompanies !== (counts.unresolvedMissingCompanies as number) + resolvedMissingCompanies) {
+    throw new ProductionSafetyError(`counts.missingCompanies (${counts.missingCompanies}) does not equal unresolvedMissingCompanies (${counts.unresolvedMissingCompanies}) + resolved missing_company orphans in resolvedOrphans (${resolvedMissingCompanies}) — discovered/unresolved/resolved orphan counts are internally inconsistent.`)
+  }
+  if (counts.missingUsers !== (counts.unresolvedMissingUsers as number) + resolvedMissingUsers) {
+    throw new ProductionSafetyError(`counts.missingUsers (${counts.missingUsers}) does not equal unresolvedMissingUsers (${counts.unresolvedMissingUsers}) + resolved missing_user orphans in resolvedOrphans (${resolvedMissingUsers}) — discovered/unresolved/resolved orphan counts are internally inconsistent.`)
+  }
   const plannedCreatesRaw = report.plannedCreates
   if (!Array.isArray(plannedCreatesRaw)) {
     throw new ProductionSafetyError('is missing plannedCreates.')
+  }
+  if (plannedCreatesRaw.length !== counts.plannedCreates) {
+    throw new ProductionSafetyError(`counts.plannedCreates (${counts.plannedCreates}) does not match the actual length of plannedCreates (${plannedCreatesRaw.length}).`)
   }
   const seenPairs = new Set<string>()
   const plannedCreates: PlannedCreateLike[] = plannedCreatesRaw.map((entry, index) => {
@@ -345,6 +791,16 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
         throw new ProductionSafetyError(`plannedCreates[${index}].${field} is missing.`)
       }
     }
+    // Independent audit fixes, 4th round, item 3.6: "роли принимаются
+    // только из KNOWN_ROLES" / "status для создаваемых membership — только
+    // active" — the v1 validator only checked these were non-empty
+    // strings, accepting any arbitrary role/status value.
+    if (!isKnownRole(rec.role)) {
+      throw new ProductionSafetyError(`plannedCreates[${index}].role is not a known role.`)
+    }
+    if (rec.status !== 'active') {
+      throw new ProductionSafetyError(`plannedCreates[${index}].status must be "active".`)
+    }
     const pairKey = JSON.stringify([rec.companyId, rec.uid])
     if (seenPairs.has(pairKey)) {
       throw new ProductionSafetyError(`plannedCreates contains a duplicate (companyId, uid) pair at index ${index} — ambiguous, cannot be trusted.`)
@@ -356,6 +812,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   return {
     sourceGitSha: report.sourceGitSha,
     sourceChecksum: report.sourceChecksum as string,
+    sourceStateChecksum: report.sourceStateChecksum as string,
     decisionsChecksum: report.decisionsChecksum as string,
     targetChecksum: report.targetChecksum as string,
     plannedCreates,
@@ -386,17 +843,148 @@ export interface RollbackPlanReference {
   targetChecksum: string
 }
 
+/** Deterministic, order-independent structural equality of two
+ * `plannedCreates` sets — independent audit fixes, 4th round, item 3.6:
+ * "`plannedCreates` должны совпадать с текущим планом точно и
+ * детерминированно, а не только через четыре checksum-поля". A checksum
+ * match already implies this (same underlying canonical serialization),
+ * but a DIRECT structural comparison is asserted independently, so a future
+ * change to how the checksum is computed can never silently weaken this
+ * specific guarantee. */
+function plannedCreatesExactlyMatch(a: readonly PlannedCreateLike[], b: readonly PlannedCreateLike[]): boolean {
+  if (a.length !== b.length) return false
+  const canonicalize = (list: readonly PlannedCreateLike[]) =>
+    [...list]
+      .map(p => JSON.stringify({ companyId: p.companyId, uid: p.uid, role: p.role, status: p.status }))
+      .sort()
+  const canonA = canonicalize(a)
+  const canonB = canonicalize(b)
+  return canonA.every((v, i) => v === canonB[i])
+}
+
+export interface VerifiedRollbackPlanFile {
+  path: string
+  sha256: string
+  content: Omit<StrictDryRunReport, 'path' | 'sha256'> & StrictDryRunReportFields
+}
+
 /**
- * Verifies `--rollback-reference` points to an existing, readable
- * DRY-RUN report (validated by `verifyStrictDryRunReport()` above) whose
- * `sourceGitSha`, `sourceChecksum`, `decisionsChecksum`, AND
- * `targetChecksum` ALL EXACTLY MATCH the CURRENT run's own values —
- * proving the operator reviewed the exact same planned change set, built
- * from the exact same code, the exact same legacy source data, AND the
- * exact same decisions file this apply is about to use — not merely a
- * dry-run that happens to compute the same final `targetChecksum` by
- * coincidence (final-round fix #2: the previous version of this check
- * compared `targetChecksum` alone).
+ * PHASE A — independent audit fixes, 5th round, item 2. Reads
+ * `--rollback-reference`, verifies its raw bytes against
+ * `--expected-plan-sha256`, and structurally validates its content
+ * (`validateStrictDryRunReportContent()`) — and NOTHING ELSE. Deliberately
+ * takes NO `Firestore`/`db` parameter and performs NO comparison against
+ * "the current run" — it is structurally impossible for this function to
+ * touch Firestore, which is the strongest available proof that a
+ * tampered/wrong plan produces zero credential acquisition and zero
+ * Firestore I/O, not merely a claim in a comment.
+ *
+ * The 4th round's `verifyRollbackPlanReference()` did this same hash+
+ * structural-validation work, but ONLY as the first few lines of a single
+ * function that the caller invoked AFTER `initFirestore()` and AFTER
+ * reading `users`/`companies`/`companies/{companyId}/members` — so in practice the
+ * hash check ran well after real Firestore I/O had already happened for
+ * `apply`. The caller (`scripts/backfill-memberships.ts`) now calls THIS
+ * function BEFORE `initFirestore()` for a production `apply`; the
+ * comparison against the current run's own computed values happens
+ * separately, in `matchRollbackPlanAgainstCurrent()` below, AFTER the plan
+ * is computed.
+ */
+export function verifyRollbackPlanFileIntegrity(
+  path: string,
+  expectedPlanSha256: string,
+  expectedProjectId: string,
+): VerifiedRollbackPlanFile {
+  let raw: string
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch (err) {
+    throw new ProductionSafetyError(`--rollback-reference could not be read: ${err instanceof Error ? err.message : 'unknown error'}`)
+  }
+
+  // Independent audit fixes, 4th/5th round: the SHA-256 the operator
+  // independently saved for this plan (`--expected-plan-sha256`) is checked
+  // against the RAW BYTES of `--rollback-reference` BEFORE any JSON
+  // parsing — and, as of the 5th round, this whole function runs BEFORE
+  // credential acquisition or Firestore I/O for a production `apply`. A
+  // tampered or swapped plan produces zero reads and zero writes.
+  const actualPlanSha256 = sha256Hex(raw)
+  if (actualPlanSha256 !== expectedPlanSha256) {
+    throw new ProductionSafetyError(`--rollback-reference content does not match --expected-plan-sha256 (expected ${expectedPlanSha256}, got ${actualPlanSha256}) — the plan may have been tampered with, corrupted, or is the wrong file.`)
+  }
+
+  let content: ReturnType<typeof validateStrictDryRunReportContent>
+  try {
+    content = validateStrictDryRunReportContent(raw, expectedProjectId, 'production')
+  } catch (err) {
+    if (err instanceof ProductionSafetyError) throw new ProductionSafetyError(`--rollback-reference ${err.message}`)
+    throw err
+  }
+
+  return { path, sha256: actualPlanSha256, content }
+}
+
+export interface ProductionApplyPreflightOpts {
+  ackMaintenance: boolean
+  backupReference: string | undefined
+  rollbackReference: string | undefined
+  expectedPlanSha256: string | undefined
+}
+
+export interface ProductionApplyPreflightDeps<TDb> {
+  /** Phase A above — real caller passes `verifyRollbackPlanFileIntegrity`
+   * itself; a test passes a spy/fake to observe call count and arguments. */
+  verifyPlanFile: (path: string, expectedPlanSha256: string, expectedProjectId: string) => VerifiedRollbackPlanFile
+  /** Stands in for credential acquisition + Firestore client construction
+   * (`initFirestore()` in `scripts/backfill-memberships.ts`). Invoked ONLY
+   * after `verifyPlanFile` succeeds — never before, never on a throw. */
+  acquireFirestore: () => TDb
+}
+
+/**
+ * Independent audit fixes, 5th round (review of the 5th round's own fix) —
+ * the "additional" finding: a wrong `--expected-plan-sha256` producing zero
+ * credential acquisition / Firestore I/O was previously provable only by
+ * reading `backfill-memberships.ts`'s source text (a textual `indexOf()`
+ * ordering check) plus `verifyRollbackPlanFileIntegrity()`'s own lack of a
+ * `db` parameter. Neither is an EXECUTABLE proof that the real orchestration
+ * — flag presence checks, then plan-file verification, and ONLY THEN
+ * credential acquisition — actually holds.
+ *
+ * This function IS the exact preflight `scripts/backfill-memberships.ts`'s
+ * `main()` runs for a production `apply` (main() calls this, not a parallel
+ * reimplementation of its body) — so a test that injects a counting fake
+ * for `deps.acquireFirestore` and gives it a wrong plan hash, and observes
+ * the fake was called zero times, is testing REAL behavior, not asserting
+ * that JS `throw` skips subsequent statements (see
+ * `scripts/lib/productionSafety.test.ts`, "runProductionApplyPreflight").
+ */
+export function runProductionApplyPreflight<TDb>(
+  opts: ProductionApplyPreflightOpts,
+  expectedProjectId: string,
+  deps: ProductionApplyPreflightDeps<TDb>,
+): { verified: VerifiedRollbackPlanFile; db: TDb } {
+  if (!opts.ackMaintenance) throw new ProductionSafetyError('--ack-maintenance-readonly is required for a production apply.')
+  if (!opts.backupReference) throw new ProductionSafetyError('--backup-reference is required for a production apply.')
+  if (!opts.rollbackReference) throw new ProductionSafetyError('--rollback-reference is required for a production apply.')
+  if (!opts.expectedPlanSha256) throw new ProductionSafetyError('--expected-plan-sha256 is required for a production apply (verified against --rollback-reference before any parsing, credential acquisition, or Firestore I/O).')
+  const verified = deps.verifyPlanFile(opts.rollbackReference, opts.expectedPlanSha256, expectedProjectId)
+  const db = deps.acquireFirestore()
+  return { verified, db }
+}
+
+/**
+ * PHASE B — pure, no I/O of any kind (not even file reads — `verified` was
+ * already produced by Phase A above). Compares an ALREADY-verified plan
+ * file's content against the CURRENT run's own computed values:
+ * `sourceGitSha`, `sourceChecksum`, `sourceStateChecksum` (independent
+ * audit fixes, 5th round, item 1 — the full source-state fingerprint, not
+ * only the confirmed-relations-only `sourceChecksum`), `decisionsChecksum`,
+ * `targetChecksum`, ALL must match exactly, AND `plannedCreates` must match
+ * via direct structural comparison (4th round, item 3.6) — proving the
+ * operator reviewed the exact same planned change set, built from the
+ * exact same code, the exact same legacy source AND existing-Firestore
+ * state, and the exact same decisions file this apply is about to use.
  *
  * Independent review fix #7 ("circular ROLLBACK_REFERENCE"): the apply
  * report — which is what `rollback-from-report` actually consumes —
@@ -406,23 +994,14 @@ export interface RollbackPlanReference {
  * report); the executable rollback artifact (the apply report itself,
  * hashed) is recorded separately, AFTER apply, by the caller.
  */
-export function verifyRollbackPlanReference(path: string, current: StrictDryRunReportFields, expectedProjectId: string): RollbackPlanReference {
+export function matchRollbackPlanAgainstCurrent(
+  verified: VerifiedRollbackPlanFile,
+  current: StrictDryRunReportFields & { plannedCreates: readonly PlannedCreateLike[] },
+): RollbackPlanReference {
   if (current.sourceGitSha === 'unknown') {
     throw new ProductionSafetyError('--rollback-reference cannot be verified: this run\'s own sourceGitSha is "unknown" — the commit producing this apply cannot be traced, which is not acceptable for production (final-round fix #2).')
   }
-  let raw: string
-  try {
-    raw = readFileSync(path, 'utf8')
-  } catch (err) {
-    throw new ProductionSafetyError(`--rollback-reference could not be read: ${err instanceof Error ? err.message : 'unknown error'}`)
-  }
-  let content: ReturnType<typeof validateStrictDryRunReportContent>
-  try {
-    content = validateStrictDryRunReportContent(raw, expectedProjectId, 'production')
-  } catch (err) {
-    if (err instanceof ProductionSafetyError) throw new ProductionSafetyError(`--rollback-reference ${err.message}`)
-    throw err
-  }
+  const content = verified.content
 
   if (content.sourceGitSha !== current.sourceGitSha) {
     throw new ProductionSafetyError(`--rollback-reference sourceGitSha (${content.sourceGitSha}) does not match this run's own sourceGitSha (${current.sourceGitSha}) — the dry-run was built from different code.`)
@@ -430,13 +1009,26 @@ export function verifyRollbackPlanReference(path: string, current: StrictDryRunR
   if (content.sourceChecksum !== current.sourceChecksum) {
     throw new ProductionSafetyError('--rollback-reference sourceChecksum does not match this run\'s own sourceChecksum — the legacy source data has changed since that dry-run was taken.')
   }
+  // Independent audit fixes, 5th round, item 1: the BROADER source-state
+  // checksum must also match — closes the gap where `sourceChecksum`
+  // (confirmed relations only) matched but conflicts/orphans/anomalies/
+  // existing-membership state had silently changed since the reference
+  // dry-run.
+  if (content.sourceStateChecksum !== current.sourceStateChecksum) {
+    throw new ProductionSafetyError('--rollback-reference sourceStateChecksum does not match this run\'s own sourceStateChecksum — migration-relevant Firestore state (conflicts/orphans/anomalies/existing memberships) has changed since that dry-run was taken.')
+  }
   if (content.decisionsChecksum !== current.decisionsChecksum) {
     throw new ProductionSafetyError('--rollback-reference decisionsChecksum does not match this run\'s own decisionsChecksum — apply must be run with the SAME --decisions-file that produced this dry-run.')
   }
   if (content.targetChecksum !== current.targetChecksum) {
     throw new ProductionSafetyError('--rollback-reference targetChecksum does not match this run\'s computed target — it does not describe the change this apply is about to make (re-run dry-run and supply its report).')
   }
-  return { path, sha256: sha256Hex(raw), targetChecksum: content.targetChecksum }
+  // Independent audit fixes, 4th round, item 3.6: direct structural
+  // comparison, not merely reliance on targetChecksum having matched above.
+  if (!plannedCreatesExactlyMatch(content.plannedCreates, current.plannedCreates)) {
+    throw new ProductionSafetyError('--rollback-reference plannedCreates does not exactly match this run\'s own planned creates — refusing despite matching checksums.')
+  }
+  return { path: verified.path, sha256: verified.sha256, targetChecksum: content.targetChecksum }
 }
 
 // ── Post-apply rollback artifact ────────────────────────────────────────

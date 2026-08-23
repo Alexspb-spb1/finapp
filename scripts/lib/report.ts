@@ -9,12 +9,56 @@ import { writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type {
   ConflictRecord, OrphanRecord, OwnerAnomalyRecord, PlannedCreate, UnknownUserRecord, MalformedClaimRecord,
-  DanglingMembershipRecord,
+  DanglingMembershipRecord, OwnerIdAnomalyRecord, Decision,
 } from './types.ts'
 import type { Environment } from './firebaseAdmin.ts'
 import { assertPathOutsideRepo } from './pathSafety.ts'
 
-export const REPORT_SCHEMA_VERSION = 1
+/** Bumped 1 -> 2 for independent audit fixes, 4th round, item 3.3: v1
+ * discarded a finding's originating evidence (source kind, observed roles,
+ * invalid-role flag) at the moment an `OrphanRecord`/`ConflictRecord`/etc.
+ * was created — making it structurally impossible to determine, from a
+ * saved report alone, whether e.g. a `missing_company` orphan came from
+ * `users.home`, `users.companies[]`, or both. v2 reports carry that
+ * evidence (via each record's `evidenceFingerprint` plus the new
+ * `sourceKinds`/`observedRoles`/`hasInvalidRole` fields already present on
+ * the record types themselves — see types.ts), plus the new
+ * `ownerIdAnomalies`/`staleDecisions`/`unusedDecisions` sections and the
+ * full source-state checksum (`sourceStateChecksum` — see checksum.ts's
+ * computeFullSourceStateChecksum()). A v1 report can never satisfy any of
+ * this — `validateStrictDryRunReportContent()`/`validateSourceReportForRollback()`
+ * (productionSafety.ts / rollbackValidation.ts) now reject `schemaVersion
+ * !== 2` outright, with a clear "re-run against the current tool" error,
+ * rather than attempting to interpret a v1 report's different shape.
+ *
+ * Bumped 2 -> 3 for independent audit fixes, 5th round: `OrphanRecord` now
+ * also carries `observedRoles`/`hasInvalidRole`/`proposedRole` (v2 baked
+ * these into `evidenceFingerprint` but never exposed them on the record
+ * itself, so a human reading the report could not see WHICH role(s) were
+ * actually observed for an orphan); `counts` now distinguishes DISCOVERED
+ * totals (`missingCompanies`/`missingUsers` — every orphan ever found,
+ * including ones a decision excluded) from UNRESOLVED-only counts
+ * (`unresolvedMissingCompanies`/`unresolvedMissingUsers`); and the report
+ * now records RESOLVED findings (`resolvedConflicts`/`resolvedOrphans`/
+ * `resolvedOwnerAnomalies`/`resolvedUnknownUsers`/`resolvedMalformedClaims`,
+ * each paired with the decision that resolved it) — v2 only ever recorded
+ * the UNRESOLVED subset, so a finding a decision successfully excluded or
+ * confirmed left zero trace in the report, breaking the audit trail.
+ *
+ * Bumped 3 -> 4 for independent audit fixes, 5th round, 4th follow-up
+ * review: `plan.companiesWithoutAdmin.length` (a company with zero active
+ * admin — existing or planned — after this run) was already summed into
+ * `counts.unresolved` and already blocked `applyAllowed`, but had no
+ * dedicated `counts.companiesWithoutAdmin` field and no corresponding
+ * array anywhere in the report — a reviewer could see the last-admin gate
+ * had blocked something, but never WHICH company, from the report alone.
+ * `counts.companiesWithoutAdmin` and the private
+ * `companiesWithoutAdmin: string[]` field close that gap. A v3 (or
+ * earlier) report can never satisfy either — `validateStrictDryRunReportContent()`
+ * rejects `schemaVersion !== 4` outright, with a message explicit that a
+ * NEW dry-run against the current tool is required (never attempts to
+ * interpret an older report's different shape). */
+export const REPORT_SCHEMA_VERSION = 4
 
 export type ReportMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from-report' | 'rollback-from-plan'
 
@@ -28,15 +72,44 @@ export interface ReportCounts {
   created: number
   skipped: number
   conflicts: number
+  /** DISCOVERED total — every `missing_company`/`missing_user` orphan found
+   * this run, INCLUDING ones a decision already excluded. Independent
+   * audit fixes, 5th round, item 3: kept separate from
+   * `unresolvedMissingCompanies`/`unresolvedMissingUsers` below (which are
+   * the actually-still-blocking subset) — conflating the two previously
+   * made a perfectly valid "1 missing_company, correctly excluded,
+   * unresolved: 0" report look internally inconsistent. */
   missingCompanies: number
   missingUsers: number
+  /** UNRESOLVED-only counterpart to `missingCompanies` above — post-decision,
+   * contributes to `unresolved`. Independent audit fixes, 5th round, item 3. */
+  unresolvedMissingCompanies: number
+  unresolvedMissingUsers: number
   ownerWithoutAdminMembership: number
+  /** Companies whose PROJECTED final state (existing active admins +
+   * planned admin creates) has zero active admin — always blocking, never
+   * decision-resolvable (only creating/confirming an admin membership for
+   * the company clears it). Independent audit fixes, 5th round, 4th
+   * follow-up review — previously summed into `counts.unresolved` with no
+   * dedicated count or corresponding array anywhere in the report. */
+  companiesWithoutAdmin: number
   unknownUsers: number
   malformedClaims: number
   /** Independent audit fix #3 (3rd round, follow-up correction): existing
    * membership documents that physically exist but reference a missing
    * company/user — always non-decision-resolvable, always counted here. */
   danglingMemberships: number
+  /** `companies/{companyId}.ownerId` present but not a usable string —
+   * always non-decision-resolvable. Independent audit fixes, 4th round,
+   * item 3.4. */
+  ownerIdAnomalies: number
+  /** Decisions whose (identity, findingType) matched a current finding but
+   * whose evidenceFingerprint did not — always blocking. Independent audit
+   * fixes, 4th round, item 3.1. */
+  staleDecisions: number
+  /** Decisions that matched no current finding at all — always blocking.
+   * Independent audit fixes, 4th round, item 3.1. */
+  unusedDecisions: number
   unresolved: number
 }
 
@@ -134,6 +207,13 @@ export interface MembershipBackfillReport {
   finishedAt: string
   counts: ReportCounts
   sourceChecksum: string
+  /** Full normalized source-state fingerprint — checksum.ts's
+   * computeFullSourceStateChecksum(). Independent audit fixes, 4th round,
+   * item 3.2: broader than `sourceChecksum` (which only ever covered
+   * `extraction.confirmed`) — covers everything migration-relevant:
+   * conflicts/orphans/anomalies with their evidence, which users/companies
+   * exist, and normalized existing-membership state. */
+  sourceStateChecksum: string
   decisionsChecksum: string
   targetChecksum: string
   observedChecksum: string | null
@@ -153,6 +233,39 @@ export interface MembershipBackfillReport {
    * Firestore but references a missing company/user. Deliberately never
    * merged into `orphans` above; no decision can ever clear an entry here. */
   danglingMemberships: DanglingMembershipRecord[]
+  /** Independent audit fixes, 4th round, item 3.4 — see
+   * `OwnerIdAnomalyRecord`. Never decision-resolvable. */
+  ownerIdAnomalies: OwnerIdAnomalyRecord[]
+  /** Independent audit fixes, 5th round, 4th follow-up review — private
+   * companion to `counts.companiesWithoutAdmin`: the actual companyIds the
+   * last-admin gate blocked on (`plan.companiesWithoutAdmin`), sorted,
+   * never duplicated. Never printed to the safe stdout summary (contains
+   * companyId, same sensitivity as `conflicts`/`orphans`/etc. above) —
+   * only its count reaches stdout, via `counts`. */
+  companiesWithoutAdmin: string[]
+  /** Independent audit fixes, 4th round, item 3.1 — decisions whose
+   * (identity, findingType) matched a current finding but whose
+   * `evidenceFingerprint` did not. */
+  staleDecisions: Decision[]
+  /** Independent audit fixes, 4th round, item 3.1 — decisions that matched
+   * no current finding at all. */
+  unusedDecisions: Decision[]
+  /** Findings that WERE successfully resolved this run, each paired with
+   * the decision that resolved it — independent audit fixes, 5th round,
+   * item 4. Previously, `conflicts`/`orphans`/`ownerAnomalies`/
+   * `unknownUsers`/`malformedClaims` above only ever held the UNRESOLVED
+   * subset (`plan.unresolvedConflicts` etc.) — a finding a decision
+   * successfully excluded or confirmed left ZERO trace anywhere in the
+   * report, breaking the audit trail (what was found, and what happened to
+   * it, could not both be reconstructed from the report alone). These
+   * fields close that gap; they are never printed to the safe stdout
+   * summary (contain companyId/uid, same sensitivity as the unresolved
+   * lists). */
+  resolvedConflicts: { finding: ConflictRecord; decision: Decision }[]
+  resolvedOrphans: { finding: OrphanRecord; decision: Decision }[]
+  resolvedOwnerAnomalies: { finding: OwnerAnomalyRecord; decision: Decision }[]
+  resolvedUnknownUsers: { finding: UnknownUserRecord; decision: Decision }[]
+  resolvedMalformedClaims: { finding: MalformedClaimRecord; decision: Decision }[]
   plannedCreates: PlannedCreate[]
   createdPaths: CreatedPathRecord[]
   writeFailures: WriteFailureRecord[]
@@ -214,6 +327,7 @@ export function printSafeSummary(report: MembershipBackfillReport): void {
     runId: report.runId,
     counts: report.counts,
     sourceChecksum: report.sourceChecksum,
+    sourceStateChecksum: report.sourceStateChecksum,
     decisionsChecksum: report.decisionsChecksum,
     targetChecksum: report.targetChecksum,
     observedChecksum: report.observedChecksum,

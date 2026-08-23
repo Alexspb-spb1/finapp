@@ -20,7 +20,25 @@ import { randomUUID } from 'node:crypto'
 import { initializeApp, getApps } from 'firebase-admin/app'
 import { getFirestore, Timestamp, type Firestore } from 'firebase-admin/firestore'
 import type { MembershipBackfillReport } from './lib/report.ts'
-import { sha256Hex } from './lib/checksum.ts'
+import { sha256Hex, computeFindingFingerprint } from './lib/checksum.ts'
+import type { Decision, FindingType } from './lib/types.ts'
+
+/** Builds a well-formed Decision for these end-to-end fixtures — defaults
+ * to a placeholder findingType/evidenceFingerprint that is always VALID
+ * (passes decisions.ts's schema/compatibility checks) but matches nothing
+ * in a real plan, so a decision only needs its real findingType/evidence
+ * overridden when the test specifically depends on it being HONORED. */
+function decision(overrides: Partial<Decision> & { uid: string }): Decision {
+  return {
+    findingType: 'existing_membership_conflict' as FindingType,
+    evidenceFingerprint: computeFindingFingerprint({}),
+    resolution: 'exclude',
+    reason: 'test decision',
+    reviewedBy: 'alice',
+    reviewedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
 
 const PROJECT_ID = 'demo-finapp'
 const REPO_ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
@@ -235,7 +253,8 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     await seedCompany(companyId)
     await seedUser(uid, { companyId, role: 'admin', companies: [{ companyId, role: 'viewer' }] })
 
-    const decisions = decisionsFile([{ uid, companyId, resolution: 'confirm_role', role: 'admin', reason: 'checked with owner', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const roleMismatchEvidence = { sourceKinds: ['users.companies[]', 'users.home'], observedRoles: ['admin', 'viewer'], hasInvalidRole: false }
+    const decisions = decisionsFile([decision({ uid, companyId, findingType: 'role_mismatch', evidenceFingerprint: computeFindingFingerprint(roleMismatchEvidence), resolution: 'confirm_role', role: 'admin', reason: 'checked with owner' })])
     const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
 
     expect(result.code).toBe(0)
@@ -247,7 +266,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     const uid = uniqueId('u'); const companyId = uniqueId('co')
     await seedCompany(companyId)
     await seedUser(uid, { companyId, role: 'admin' })
-    const decisions = decisionsFile([{ uid, companyId, resolution: 'bogus_resolution', reason: 'x', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const decisions = decisionsFile([decision({ uid, companyId, findingType: 'role_mismatch', evidenceFingerprint: computeFindingFingerprint({}), resolution: 'bogus_resolution' as Decision['resolution'], reason: 'x' })])
 
     const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
 
@@ -388,6 +407,27 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     expect(result.report?.counts.created).toBe(0)
   })
 
+  // ── Independent audit fixes, 5th round, 4th follow-up review, item 2:
+  // a company blocked by the last-admin gate must be surfaced in the
+  // report itself — previously only rolled into counts.unresolved, with
+  // no dedicated count and no array anywhere in the report, so a reviewer
+  // could tell SOMETHING was blocked but never WHICH company. ──────────
+  it('a company with zero legacy relations and zero existing admin is surfaced as companiesWithoutAdmin — dry-run reports it, apply is blocked by it', async () => {
+    const companyId = uniqueId('co')
+    await seedCompany(companyId) // no seedUser at all — zero relations, zero admin
+
+    const dryRunResult = runCli(baseArgs('dry-run'))
+    expect(dryRunResult.code).toBe(0) // dry-run never fails on unresolved items — it only reports
+    expect(dryRunResult.report?.counts.companiesWithoutAdmin).toBe(1)
+    expect(dryRunResult.report?.companiesWithoutAdmin).toEqual([companyId])
+
+    const applyResult = runCli(baseArgs('apply'))
+    expect(applyResult.code).toBe(1) // apply IS blocked by the last-admin gate
+    expect(applyResult.report?.counts.created).toBe(0)
+    expect(applyResult.report?.counts.companiesWithoutAdmin).toBe(1)
+    expect(applyResult.report?.companiesWithoutAdmin).toEqual([companyId])
+  })
+
   // ── Independent audit fix #2 ─────────────────────────────────────────────
   it('accept_existing does NOT resolve a corrupted existing membership (extra field)', async () => {
     const uid = uniqueId('u'); const companyId = uniqueId('co')
@@ -395,7 +435,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     await seedUser(uid, { companyId, role: 'admin' })
     const now = Timestamp.now()
     await seedExistingMembership(companyId, uid, { uid, role: 'admin', status: 'active', createdAt: now, updatedAt: now, hacked: true })
-    const decisions = decisionsFile([{ uid, companyId, resolution: 'accept_existing', reason: 'trying to force it through', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const decisions = decisionsFile([decision({ uid, companyId, findingType: 'existing_membership_conflict', evidenceFingerprint: computeFindingFingerprint({ existingRole: 'admin' }), resolution: 'accept_existing', reason: 'trying to force it through' })])
 
     const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
 
@@ -408,7 +448,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     await seedUser(uid, { companyId, role: 'admin' })
     const now = Timestamp.now()
     await seedExistingMembership(companyId, uid, { uid, role: 'admin', status: 'disabled', createdAt: now, updatedAt: now })
-    const decisions = decisionsFile([{ uid, companyId, resolution: 'accept_existing', reason: 'trying to force it through', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const decisions = decisionsFile([decision({ uid, companyId, findingType: 'existing_membership_conflict', evidenceFingerprint: computeFindingFingerprint({ existingRole: 'admin' }), resolution: 'accept_existing', reason: 'trying to force it through' })])
 
     const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
 
@@ -421,7 +461,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     await seedUser(uid, { companyId, role: 'admin' })
     const now = Timestamp.now()
     await seedExistingMembership(companyId, uid, { uid, role: 'accountant', status: 'active', createdAt: now, updatedAt: now })
-    const decisions = decisionsFile([{ uid, companyId, resolution: 'accept_existing', reason: 'existing role is correct, legacy is stale', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const decisions = decisionsFile([decision({ uid, companyId, findingType: 'existing_membership_conflict', evidenceFingerprint: computeFindingFingerprint({ existingRole: 'accountant' }), resolution: 'accept_existing', reason: 'existing role is correct, legacy is stale' })])
 
     // NOTE: this company now has zero admin (existing role is accountant) —
     // the last-admin gate still legitimately blocks apply. This test only
@@ -652,7 +692,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
 
     const result = runCli(baseArgs('dry-run'))
 
-    expect(result.report?.unknownUsers).toContainEqual({ uid, reason: 'no_usable_relations' })
+    expect(result.report?.unknownUsers).toContainEqual(expect.objectContaining({ uid, reason: 'no_usable_relations' }))
     expect(result.report?.counts.unknownUsers).toBeGreaterThanOrEqual(1)
   })
 
@@ -711,7 +751,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     // proven directly and exhaustively in observedState.test.ts.
     expect(result.code).toBe(1)
     expect(result.report?.verification.matchesTarget).toBe(false)
-    expect(result.report?.conflicts).toContainEqual({ companyId, uid, reason: 'existing_membership_conflict' })
+    expect(result.report?.conflicts).toContainEqual(expect.objectContaining({ companyId, uid, reason: 'existing_membership_conflict' }))
   })
 
   it('verify cannot pass with an unresolved conflict, even when target and observed are both empty (no false PASS via empty-checksum equality)', async () => {
@@ -754,7 +794,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
 
     const applyResult = runCli(baseArgs('apply'))
     expect(applyResult.code).toBe(1)
-    expect(applyResult.report?.unknownUsers).toContainEqual({ uid, reason: 'no_usable_relations' })
+    expect(applyResult.report?.unknownUsers).toContainEqual(expect.objectContaining({ uid, reason: 'no_usable_relations' }))
 
     const verifyResult = runCli(baseArgs('verify'))
     expect(verifyResult.code).toBe(1)
@@ -764,7 +804,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
   it('a user-level exclude decision unblocks apply for an acknowledged unknown user', async () => {
     const uid = uniqueId('u')
     await seedUser(uid, { name: 'no legacy relation at all' })
-    const decisions = decisionsFile([{ uid, resolution: 'exclude', reason: 'confirmed dead account', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const decisions = decisionsFile([decision({ uid, companyId: undefined, findingType: 'no_usable_relations', evidenceFingerprint: computeFindingFingerprint({}), resolution: 'exclude', reason: 'confirmed dead account' })])
 
     const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
 
@@ -783,7 +823,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     const result = runCli(baseArgs('apply'))
 
     expect(result.code).toBe(1)
-    expect(result.report?.malformedClaims).toContainEqual({ uid, reason: 'malformed_companies_entry' })
+    expect(result.report?.malformedClaims).toContainEqual(expect.objectContaining({ uid, reason: 'malformed_companies_entry' }))
     expect(await getMembership(companyId, uid)).toBeUndefined()
   })
 
@@ -794,19 +834,34 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
 
     const result = runCli(baseArgs('dry-run'))
 
-    expect(result.report?.unknownUsers).toContainEqual({ uid, reason: 'no_usable_relations' })
+    expect(result.report?.unknownUsers).toContainEqual(expect.objectContaining({ uid, reason: 'no_usable_relations' }))
   })
 
-  it('a user_id_mismatch claim referencing a MISSING company cannot be resolved via confirm_role — stays a missing_company orphan', async () => {
+  // ── Independent audit fixes, 4th round, item 3.1: a decision's resolution
+  // must be COMPATIBLE with its findingType — confirm_role is never valid
+  // for missing_company (an orphan can only ever be excluded, never role-
+  // confirmed into existence). This is now enforced at decisions-file
+  // VALIDATION time (exit 2), not silently ignored deep inside buildPlan(). ──
+  it('a decisions file attempting confirm_role for a missing_company orphan is rejected outright (exit 2), before any Firestore write', async () => {
     const uid = uniqueId('u'); const ghostCompanyId = uniqueId('co_ghost')
     await seedUser(uid, { id: 'someone_else', companyId: ghostCompanyId, role: 'admin' })
-    const decisions = decisionsFile([{ uid, companyId: ghostCompanyId, resolution: 'confirm_role', role: 'admin', reason: 'trying to force it through anyway', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const decisions = decisionsFile([decision({ uid, companyId: ghostCompanyId, findingType: 'missing_company', evidenceFingerprint: computeFindingFingerprint({}), resolution: 'confirm_role', role: 'admin', reason: 'trying to force it through anyway' })])
 
     const result = runCli(baseArgs('apply', ['--decisions-file', decisions]))
 
-    expect(result.code).toBe(1)
-    expect(result.report?.orphans).toContainEqual({ companyId: ghostCompanyId, uid, reason: 'missing_company' })
+    expect(result.code).toBe(2)
+    expect(result.report).toBeUndefined() // rejected before any report was even written
     expect(await getMembership(ghostCompanyId, uid)).toBeUndefined()
+  })
+
+  it('a user_id_mismatch claim referencing a MISSING company stays a missing_company orphan (never silently promoted to a conflict)', async () => {
+    const uid = uniqueId('u'); const ghostCompanyId = uniqueId('co_ghost')
+    await seedUser(uid, { id: 'someone_else', companyId: ghostCompanyId, role: 'admin' })
+
+    const result = runCli(baseArgs('dry-run'))
+
+    expect(result.report?.orphans).toContainEqual(expect.objectContaining({ companyId: ghostCompanyId, uid, reason: 'missing_company' }))
+    expect(result.report?.conflicts.some(c => c.reason === 'user_id_mismatch')).toBe(false)
   })
 
   // ── Independent audit (2nd round) fix #5 ─────────────────────────────────
@@ -815,8 +870,10 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     await seedCompany(companyId)
     await seedUser(uid, { companyId, role: 'admin', companies: [{ companyId, role: 'viewer' }] })
 
-    const adminDecisions = decisionsFile([{ uid, companyId, resolution: 'confirm_role', role: 'admin', reason: 'checked with owner', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
-    const viewerDecisions = decisionsFile([{ uid, companyId, resolution: 'confirm_role', role: 'viewer', reason: 'checked with owner', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const roleMismatchEvidence = { sourceKinds: ['users.companies[]', 'users.home'], observedRoles: ['admin', 'viewer'], hasInvalidRole: false }
+    const roleMismatchFingerprint = computeFindingFingerprint(roleMismatchEvidence)
+    const adminDecisions = decisionsFile([decision({ uid, companyId, findingType: 'role_mismatch', evidenceFingerprint: roleMismatchFingerprint, resolution: 'confirm_role', role: 'admin', reason: 'checked with owner' })])
+    const viewerDecisions = decisionsFile([decision({ uid, companyId, findingType: 'role_mismatch', evidenceFingerprint: roleMismatchFingerprint, resolution: 'confirm_role', role: 'viewer', reason: 'checked with owner' })])
 
     const adminResult = runCli(baseArgs('dry-run', ['--decisions-file', adminDecisions]))
     const viewerResult = runCli(baseArgs('dry-run', ['--decisions-file', viewerDecisions]))
@@ -862,7 +919,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
 
     expect(result.code).toBe(1)
     expect(result.report?.verification.matchesTarget).toBe(false)
-    expect(result.report?.conflicts).toContainEqual({ companyId, uid, reason: 'existing_membership_conflict' })
+    expect(result.report?.conflicts).toContainEqual(expect.objectContaining({ companyId, uid, reason: 'existing_membership_conflict' }))
   })
 
   it('an observed membership with the correct role/status but an EXTRA field does not pass verify', async () => {
@@ -877,7 +934,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
 
     expect(result.code).toBe(1)
     expect(result.report?.verification.matchesTarget).toBe(false)
-    expect(result.report?.conflicts).toContainEqual({ companyId, uid, reason: 'existing_membership_conflict' })
+    expect(result.report?.conflicts).toContainEqual(expect.objectContaining({ companyId, uid, reason: 'existing_membership_conflict' }))
   })
 
   // ── Independent audit (3rd round) fix #1 — rollback manifest completeness ──
@@ -929,7 +986,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     const applyResult = runCli(baseArgs('apply'))
     expect(applyResult.code).toBe(1)
     expect(applyResult.report?.counts.created).toBe(0)
-    expect(applyResult.report?.danglingMemberships).toContainEqual({ companyId: ghostCompanyId, uid, reason: 'existing_membership_missing_company' })
+    expect(applyResult.report?.danglingMemberships).toContainEqual(expect.objectContaining({ companyId: ghostCompanyId, uid, reason: 'existing_membership_missing_company' }))
 
     const verifyResult = runCli(baseArgs('verify'))
     expect(verifyResult.code).toBe(1)
@@ -946,7 +1003,7 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     const applyResult = runCli(baseArgs('apply'))
     expect(applyResult.code).toBe(1)
     expect(applyResult.report?.counts.created).toBe(0)
-    expect(applyResult.report?.danglingMemberships).toContainEqual({ companyId, uid: ghostUid, reason: 'existing_membership_missing_user' })
+    expect(applyResult.report?.danglingMemberships).toContainEqual(expect.objectContaining({ companyId, uid: ghostUid, reason: 'existing_membership_missing_user' }))
     // The dangling admin membership must not have satisfied the last-admin
     // gate for this (otherwise real) company.
     expect(applyResult.report?.counts.unresolved).toBeGreaterThanOrEqual(1)
@@ -965,12 +1022,12 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     // A second, dangling admin membership whose uid has no users/{uid} doc.
     await seedExistingMembership(companyId, ghostUid, { uid: ghostUid, role: 'admin', status: 'active', createdAt: Timestamp.now(), updatedAt: Timestamp.now() })
 
-    const decisions = decisionsFile([{ uid: ghostUid, companyId, resolution: 'exclude', reason: 'trying to acknowledge the dangling doc away', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }])
+    const decisions = decisionsFile([decision({ uid: ghostUid, companyId, resolution: 'exclude', reason: 'trying to acknowledge the dangling doc away' })])
 
     const applyResult = runCli(baseArgs('apply', ['--decisions-file', decisions]))
     expect(applyResult.code).toBe(1)
     expect(applyResult.report?.counts.created).toBe(0)
-    expect(applyResult.report?.danglingMemberships).toContainEqual({ companyId, uid: ghostUid, reason: 'existing_membership_missing_user' })
+    expect(applyResult.report?.danglingMemberships).toContainEqual(expect.objectContaining({ companyId, uid: ghostUid, reason: 'existing_membership_missing_user' }))
     expect(await getMembership(companyId, realAdminUid)).toBeUndefined() // nothing written at all
     expect(await getMembership(companyId, ghostUid)).toBeDefined() // the dangling doc is untouched, still there
 

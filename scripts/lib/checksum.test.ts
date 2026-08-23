@@ -1,13 +1,20 @@
 import { describe, it, expect } from 'vitest'
-import { canonicalStringify, sha256Hex, computeRelationSetChecksum, computeDecisionsChecksum, sortRelations } from './checksum.ts'
-import type { Decision } from './types.ts'
+import {
+  canonicalStringify, sha256Hex, computeRelationSetChecksum, computeDecisionsChecksum, sortRelations,
+  computeFindingFingerprint, computeFullSourceStateChecksum,
+} from './checksum.ts'
+import type { Decision, LegacyExtractionResult } from './types.ts'
 
 function decision(overrides: Partial<Decision> = {}): Decision {
   return {
-    uid: 'u1', companyId: 'co_a', resolution: 'exclude',
+    uid: 'u1', companyId: 'co_a', findingType: 'role_mismatch', evidenceFingerprint: 'a'.repeat(64), resolution: 'exclude',
     reason: 'reviewed manually', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   }
+}
+
+function emptyExtraction(overrides: Partial<LegacyExtractionResult> = {}): LegacyExtractionResult {
+  return { confirmed: [], conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], ownerIdAnomalies: [], ...overrides }
 }
 
 describe('canonicalStringify', () => {
@@ -140,7 +147,88 @@ describe('computeDecisionsChecksum', () => {
 
   it('a user-level decision (no companyId) produces a different checksum than the same decision WITH a companyId', () => {
     const withCompany = [decision({ companyId: 'co_a' })]
-    const userLevel = [{ uid: 'u1', resolution: 'exclude' as const, reason: 'reviewed manually', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' }]
+    const userLevel = [decision({ companyId: undefined, findingType: 'no_usable_relations' })]
     expect(computeDecisionsChecksum(withCompany)).not.toBe(computeDecisionsChecksum(userLevel))
+  })
+
+  // ── Independent audit fixes, 4th round, item 3.1 ────────────────────────
+  it('changing findingType changes the checksum', () => {
+    const a = [decision({ findingType: 'role_mismatch' })]
+    const b = [decision({ findingType: 'invalid_role' })]
+    expect(computeDecisionsChecksum(a)).not.toBe(computeDecisionsChecksum(b))
+  })
+
+  it('changing evidenceFingerprint changes the checksum', () => {
+    const a = [decision({ evidenceFingerprint: 'a'.repeat(64) })]
+    const b = [decision({ evidenceFingerprint: 'b'.repeat(64) })]
+    expect(computeDecisionsChecksum(a)).not.toBe(computeDecisionsChecksum(b))
+  })
+})
+
+describe('computeFindingFingerprint', () => {
+  it('is deterministic and order-independent of key insertion', () => {
+    expect(computeFindingFingerprint({ sourceKinds: ['users.home'], observedRoles: ['admin'] }))
+      .toBe(computeFindingFingerprint({ observedRoles: ['admin'], sourceKinds: ['users.home'] }))
+  })
+
+  it('differs when evidence differs', () => {
+    const a = computeFindingFingerprint({ sourceKinds: ['users.home'] })
+    const b = computeFindingFingerprint({ sourceKinds: ['users.companies[]'] })
+    expect(a).not.toBe(b)
+  })
+
+  it('is a 64-character hex digest', () => {
+    expect(computeFindingFingerprint({})).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+describe('computeFullSourceStateChecksum — independent audit fixes, 4th round, item 3.2', () => {
+  it('is identical for the same logical state regardless of Map/array insertion order', () => {
+    const extraction = emptyExtraction({
+      confirmed: [
+        { companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] },
+        { companyId: 'co_b', uid: 'u2', role: 'viewer', sources: ['users.companies[]'] },
+      ],
+    })
+    const membershipsA = new Map([['["co_a","u1"]', { role: 'admin' }], ['["co_b","u2"]', { role: 'viewer' }]])
+    const membershipsB = new Map([['["co_b","u2"]', { role: 'viewer' }], ['["co_a","u1"]', { role: 'admin' }]])
+    const a = computeFullSourceStateChecksum({ extraction, existingMemberships: membershipsA, allCompanyIds: new Set(['co_a', 'co_b']), allUserIds: new Set(['u1', 'u2']) })
+    const b = computeFullSourceStateChecksum({ extraction, existingMemberships: membershipsB, allCompanyIds: new Set(['co_b', 'co_a']), allUserIds: new Set(['u2', 'u1']) })
+    expect(a).toBe(b)
+  })
+
+  it('changing a confirmed relation role changes the checksum', () => {
+    const base = { existingMemberships: new Map(), allCompanyIds: new Set(['co_a']), allUserIds: new Set(['u1']) }
+    const a = computeFullSourceStateChecksum({ extraction: emptyExtraction({ confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }] }), ...base })
+    const b = computeFullSourceStateChecksum({ extraction: emptyExtraction({ confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'viewer', sources: ['users.home'] }] }), ...base })
+    expect(a).not.toBe(b)
+  })
+
+  it('changing a confirmed relation source kind changes the checksum (scenario: users.home -> users.companies[])', () => {
+    const base = { existingMemberships: new Map(), allCompanyIds: new Set(['co_a']), allUserIds: new Set(['u1']) }
+    const a = computeFullSourceStateChecksum({ extraction: emptyExtraction({ confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.home'] }] }), ...base })
+    const b = computeFullSourceStateChecksum({ extraction: emptyExtraction({ confirmed: [{ companyId: 'co_a', uid: 'u1', role: 'admin', sources: ['users.companies[]'] }] }), ...base })
+    expect(a).not.toBe(b)
+  })
+
+  it('changing an orphan evidenceFingerprint changes the checksum', () => {
+    const base = { existingMemberships: new Map(), allCompanyIds: new Set<string>(), allUserIds: new Set(['u1']) }
+    const a = computeFullSourceStateChecksum({ extraction: emptyExtraction({ orphans: [{ companyId: 'co_a', uid: 'u1', reason: 'missing_company', sourceKinds: ['users.home'], observedRoles: [], hasInvalidRole: false, proposedRole: null, evidenceFingerprint: 'a'.repeat(64) }] }), ...base })
+    const b = computeFullSourceStateChecksum({ extraction: emptyExtraction({ orphans: [{ companyId: 'co_a', uid: 'u1', reason: 'missing_company', sourceKinds: ['users.home'], observedRoles: [], hasInvalidRole: false, proposedRole: null, evidenceFingerprint: 'b'.repeat(64) }] }), ...base })
+    expect(a).not.toBe(b)
+  })
+
+  it('changing an existing membership document role changes the checksum', () => {
+    const base = { extraction: emptyExtraction(), allCompanyIds: new Set(['co_a']), allUserIds: new Set(['u1']) }
+    const a = computeFullSourceStateChecksum({ existingMemberships: new Map([['["co_a","u1"]', { role: 'admin' }]]), ...base })
+    const b = computeFullSourceStateChecksum({ existingMemberships: new Map([['["co_a","u1"]', { role: 'viewer' }]]), ...base })
+    expect(a).not.toBe(b)
+  })
+
+  it('changing the set of existing company/user IDs changes the checksum', () => {
+    const base = { extraction: emptyExtraction(), existingMemberships: new Map() }
+    const a = computeFullSourceStateChecksum({ allCompanyIds: new Set(['co_a']), allUserIds: new Set(['u1']), ...base })
+    const b = computeFullSourceStateChecksum({ allCompanyIds: new Set(['co_a', 'co_b']), allUserIds: new Set(['u1']), ...base })
+    expect(a).not.toBe(b)
   })
 })
