@@ -1,4 +1,4 @@
-// Real Firestore Emulator proof for set-maintenance-mode.ts's
+// Real Firestore Emulator proof for maintenanceModeTransaction.ts's
 // transactionalEnable()/transactionalDisable() — production execution
 // gate round. Tests the state-machine logic DIRECTLY (importing the
 // exported functions against the shared demo-finapp emulator) rather
@@ -8,6 +8,13 @@
 // argument parsing. scripts/ops/set-maintenance-mode.emulator.test.ts
 // covers the CLI-wiring level on top of this.
 //
+// Audit-fix round, item 1: imports from ./maintenanceModeTransaction.ts,
+// NOT from ./set-maintenance-mode.ts — the latter is a pure CLI
+// entrypoint that unconditionally parses process.argv and calls main() at
+// import time, which is unsafe to import from a test runner (see the
+// "import-safety" describe block below, and set-maintenance-mode.ts's own
+// header comment).
+//
 // `--no-file-parallelism` (via test:migration) matters here for the same
 // reason as the other emulator test files in this suite: this file's
 // beforeEach wipes the ENTIRE demo-finapp Firestore project, which would
@@ -16,7 +23,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import { initializeApp, getApps } from 'firebase-admin/app'
 import { getFirestore, type Firestore } from 'firebase-admin/firestore'
-import { transactionalEnable, transactionalDisable, MaintenanceModeStateError } from './set-maintenance-mode.ts'
+import { transactionalEnable, transactionalDisable, MaintenanceModeStateError } from './maintenanceModeTransaction.ts'
 
 const PROJECT_ID = 'demo-finapp'
 
@@ -126,6 +133,72 @@ describe('transactionalDisable', () => {
     expect(result.noopReason).toBeDefined()
     const after = await getMaintenanceDoc()
     expect(after).toEqual(beforeSecondDisable) // no spurious re-write (disabledAt does not change)
+  })
+
+  // Audit-fix round, item 2: after the taskId check, ONLY `enabled ===
+  // true` or `enabled === false` are meaningful states. Every other value
+  // — missing entirely, null, a string, a number, an object — must be
+  // refused (fail-closed), never silently treated as "assume enabled" or
+  // "assume disabled". The document must be byte-for-byte unchanged after
+  // each refusal.
+  it('refuses when the taskId matches but the "enabled" field is missing entirely — document left byte-for-byte unchanged', async () => {
+    const ref = db.collection('system').doc('maintenance')
+    await ref.set({ taskId: 'SEC-005', reason: 'legacy record with no enabled field' })
+    const before = await getMaintenanceDoc()
+
+    await expect(transactionalDisable(db, { taskId: 'SEC-005', operator: 'alice' }))
+      .rejects.toThrow(MaintenanceModeStateError)
+
+    const after = await getMaintenanceDoc()
+    expect(after).toEqual(before)
+  })
+
+  it('refuses when "enabled" is a string, not a boolean — document left byte-for-byte unchanged', async () => {
+    const ref = db.collection('system').doc('maintenance')
+    await ref.set({ taskId: 'SEC-005', enabled: 'true', reason: 'malformed record' })
+    const before = await getMaintenanceDoc()
+
+    await expect(transactionalDisable(db, { taskId: 'SEC-005', operator: 'alice' }))
+      .rejects.toThrow(MaintenanceModeStateError)
+
+    const after = await getMaintenanceDoc()
+    expect(after).toEqual(before)
+  })
+
+  it('refuses when "enabled" is null — document left byte-for-byte unchanged', async () => {
+    const ref = db.collection('system').doc('maintenance')
+    await ref.set({ taskId: 'SEC-005', enabled: null, reason: 'malformed record' })
+    const before = await getMaintenanceDoc()
+
+    await expect(transactionalDisable(db, { taskId: 'SEC-005', operator: 'alice' }))
+      .rejects.toThrow(MaintenanceModeStateError)
+
+    const after = await getMaintenanceDoc()
+    expect(after).toEqual(before)
+  })
+
+  it('refuses when "enabled" is a number — document left byte-for-byte unchanged', async () => {
+    const ref = db.collection('system').doc('maintenance')
+    await ref.set({ taskId: 'SEC-005', enabled: 1, reason: 'malformed record' })
+    const before = await getMaintenanceDoc()
+
+    await expect(transactionalDisable(db, { taskId: 'SEC-005', operator: 'alice' }))
+      .rejects.toThrow(MaintenanceModeStateError)
+
+    const after = await getMaintenanceDoc()
+    expect(after).toEqual(before)
+  })
+
+  it('refuses when "enabled" is an object — document left byte-for-byte unchanged', async () => {
+    const ref = db.collection('system').doc('maintenance')
+    await ref.set({ taskId: 'SEC-005', enabled: { nested: true }, reason: 'malformed record' })
+    const before = await getMaintenanceDoc()
+
+    await expect(transactionalDisable(db, { taskId: 'SEC-005', operator: 'alice' }))
+      .rejects.toThrow(MaintenanceModeStateError)
+
+    const after = await getMaintenanceDoc()
+    expect(after).toEqual(before)
   })
 })
 

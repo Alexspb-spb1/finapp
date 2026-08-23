@@ -26,99 +26,20 @@
 // only task currently granted a production maintenance-mode authorization.
 //
 // See docs/migrations/MEMBERSHIP_BACKFILL.md, "Maintenance/read-only mode"
-// and "Future production execution" — this is Step 2/Step 6 of that
-// runbook (create maintenance doc / enable BEFORE backup, disable only
-// AFTER verify).
+// and "Production execution" — this is Step 2/Step 6 of that runbook
+// (enable BEFORE backup, disable only AFTER verify).
+//
+// Audit-fix round, item 1: this file is now a PURE CLI entrypoint — it
+// parses argv and calls main() unconditionally at import time (see the
+// bottom of this file), which is exactly the behavior that made it unsafe
+// to import from a test runner. The actual transaction logic
+// (transactionalEnable/transactionalDisable/MaintenanceModeStateError) now
+// lives in the side-effect-free ./maintenanceModeTransaction.ts, which
+// tests import directly instead of importing this file.
 import process from 'node:process'
-import { FieldValue, type Firestore } from 'firebase-admin/firestore'
 import { parseMaintenanceModeCliArgs, MaintenanceModeCliArgError } from './maintenanceModeCli.ts'
+import { transactionalEnable, transactionalDisable, MaintenanceModeStateError, type MaintenanceTransitionResult } from './maintenanceModeTransaction.ts'
 import { assertEnvironmentGuard, assertCycleExecutionAllowed, initFirestore, EnvironmentGuardError, CycleExecutionError } from '../lib/firebaseAdmin.ts'
-
-export class MaintenanceModeStateError extends Error {}
-
-export interface MaintenanceTransitionResult {
-  changed: boolean
-  /** Human-readable, safe-to-log reason a no-op transition was still
-   * successful (idempotent disable, nothing to disable) — never set for
-   * `changed: true`, which is self-explanatory. */
-  noopReason?: string
-}
-
-/**
- * `--enable`: allowed only when `system/maintenance` does not exist yet, or
- * exists with `enabled === false` (verifiably, strictly disabled — not
- * merely "not `true`", so a malformed/corrupted existing document is
- * refused rather than silently overwritten). Runs as a single Firestore
- * transaction — a concurrent writer changing the document between the
- * read and this write aborts the transaction (Firestore retries it
- * automatically against the new state), so two concurrent `--enable`
- * calls can never both believe they "won" against a stale read.
- */
-export async function transactionalEnable(
-  db: Firestore,
-  opts: { reason: string; taskId: string; operator: string },
-): Promise<MaintenanceTransitionResult> {
-  const ref = db.collection('system').doc('maintenance')
-  return db.runTransaction(async tx => {
-    const snap = await tx.get(ref)
-    if (snap.exists) {
-      const data = snap.data()!
-      if (data.enabled !== false) {
-        throw new MaintenanceModeStateError('system/maintenance is already enabled (or in an unverifiable state) — refusing to overwrite, which would reset enabledAt and discard the existing reason/taskId/enabledBy audit trail. Disable it first if you intend to start a new maintenance window.')
-      }
-    }
-    // Full overwrite (not merge) — a fresh --enable must never inherit
-    // stale reason/taskId/enabledBy fields from a previous maintenance
-    // cycle on the same document.
-    tx.set(ref, {
-      enabled: true,
-      enabledAt: FieldValue.serverTimestamp(),
-      enabledBy: opts.operator,
-      reason: opts.reason,
-      taskId: opts.taskId,
-    })
-    return { changed: true }
-  })
-}
-
-/**
- * `--disable`: allowed only against a maintenance record whose own
- * `taskId` field exactly matches `opts.taskId` — a caller can never
- * disable another task's maintenance window, even accidentally. Disabling
- * a record that does not exist, or one that already has `enabled ===
- * false` (and the SAME taskId), is a safe, idempotent no-op — `changed:
- * false` with a `noopReason`, never an error. Also a single Firestore
- * transaction, for the same concurrent-modification safety as
- * `transactionalEnable()`.
- */
-export async function transactionalDisable(
-  db: Firestore,
-  opts: { taskId: string; operator: string },
-): Promise<MaintenanceTransitionResult> {
-  const ref = db.collection('system').doc('maintenance')
-  return db.runTransaction(async tx => {
-    const snap = await tx.get(ref)
-    if (!snap.exists) {
-      return { changed: false, noopReason: 'system/maintenance does not exist — nothing to disable.' }
-    }
-    const data = snap.data()!
-    if (data.taskId !== opts.taskId) {
-      throw new MaintenanceModeStateError(`system/maintenance belongs to a different task than ${JSON.stringify(opts.taskId)} — refusing to disable another task's maintenance record.`)
-    }
-    if (data.enabled === false) {
-      return { changed: false, noopReason: `system/maintenance is already disabled for task ${opts.taskId} — idempotent no-op.` }
-    }
-    // merge:true deliberately PRESERVES the historical enabledAt/enabledBy/
-    // reason/taskId fields for audit — only `enabled` flips, plus a
-    // disabledAt/disabledBy pair is added.
-    tx.set(ref, {
-      enabled: false,
-      disabledAt: FieldValue.serverTimestamp(),
-      disabledBy: opts.operator,
-    }, { merge: true })
-    return { changed: true }
-  })
-}
 
 async function main(): Promise<number> {
   let opts

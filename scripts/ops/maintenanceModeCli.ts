@@ -46,31 +46,47 @@ export function parseMaintenanceModeCliArgs(args: readonly string[]): Maintenanc
   let environmentSet = false
   const mutableArgs = [...args]
 
+  // Audit-fix round, item 3 — mirrors scripts/lib/cli.ts's markSeenOnce():
+  // EVERY flag, value-bearing or boolean, may appear at most once. There is
+  // no "last argument wins" anywhere in this parser, even when the
+  // repeated values are identical — a repeated flag is always an
+  // ambiguous command and is refused outright.
+  const seenFlags = new Set<string>()
+  function markSeenOnce(flag: string): void {
+    if (seenFlags.has(flag)) {
+      throw new MaintenanceModeCliArgError(`${flag} was specified more than once — ambiguous, refusing (no "last argument wins").`)
+    }
+    seenFlags.add(flag)
+  }
+
   for (let i = 0; i < mutableArgs.length; i++) {
     const arg = mutableArgs[i]!
     switch (arg) {
       case '--environment': {
+        markSeenOnce(arg)
         const value = readFlagValue(mutableArgs, i, arg); i++
         if (!KNOWN_ENVIRONMENTS.includes(value as Environment)) throw new MaintenanceModeCliArgError(`Unknown --environment: ${value}`)
         opts.environment = value as Environment
         environmentSet = true
         break
       }
-      case '--project': { opts.project = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--confirm-project': { opts.confirmProject = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--project': { markSeenOnce(arg); opts.project = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--confirm-project': { markSeenOnce(arg); opts.confirmProject = readFlagValue(mutableArgs, i, arg); i++; break }
       case '--enable': {
+        markSeenOnce(arg)
         if (opts.action !== undefined) throw new MaintenanceModeCliArgError('--enable and --disable are mutually exclusive.')
         opts.action = 'enable'
         break
       }
       case '--disable': {
+        markSeenOnce(arg)
         if (opts.action !== undefined) throw new MaintenanceModeCliArgError('--enable and --disable are mutually exclusive.')
         opts.action = 'disable'
         break
       }
-      case '--reason': { opts.reason = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--task-id': { opts.taskId = readFlagValue(mutableArgs, i, arg); i++; break }
-      case '--operator': { opts.operator = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--reason': { markSeenOnce(arg); opts.reason = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--task-id': { markSeenOnce(arg); opts.taskId = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--operator': { markSeenOnce(arg); opts.operator = readFlagValue(mutableArgs, i, arg); i++; break }
       default:
         throw new MaintenanceModeCliArgError(`Unknown argument: ${arg}`)
     }
