@@ -2251,3 +2251,133 @@ new "confirm_role for missing_company is rejected outright" case). All
 pre-existing idempotency/last-admin/rollback/TOCTOU/path-safety/dangling-
 membership tests remain green, run twice consecutively for stability
 (`npm run test:migration`, back-to-back).
+
+## Independent audit fixes — 5th round
+
+A fifth independent-audit round, run against PR #17's head at the time
+(`4d3158a234353514700de0bc6c2425edf736eb13`), found 6 blocking logical
+defects in the 4th round's own implementation — the CI-green, doc-complete
+state of that round was not sufficient proof of correctness. All 6 are
+addressed here, on the same branch (`remediation/SEC-005-independent-audit-fixes`).
+**Production and staging were not read or modified at any point in this
+round**; `SEC-006` was not started. See
+`docs/remediation/reports/SEC-005.md` for the full round narrative.
+
+### 1 — `sourceStateChecksum` was computed but never enforced
+
+The 4th round added `computeFullSourceStateChecksum()` and wrote it into
+every report, but `StrictDryRunReportFields` never required it and
+`verifyRollbackPlanReference()` still only compared the older, narrower
+`sourceChecksum` — a production report entirely missing
+`sourceStateChecksum` was accepted. Fixed: `sourceStateChecksum` is now a
+required field of `StrictDryRunReportFields`, validated as SHA-256 hex by
+`validateStrictDryRunReportContent()`, and compared directly in
+`matchRollbackPlanAgainstCurrent()` (see item 2 below) alongside
+`sourceChecksum` — a mismatch in either is refused.
+
+### 2 — `--expected-plan-sha256` was checked AFTER Firestore I/O
+
+The 4th round's `verifyRollbackPlanReference()` did the hash+structural
+check first internally, but the CALLER (`scripts/backfill-memberships.ts`)
+invoked it only deep inside the `apply` branch — AFTER `initFirestore()`
+and AFTER `readAllUsers()`/`readAllCompanies()`/`readAllExistingMemberships()`
+had already run for every mode, apply included. The documented "wrong hash
+→ zero Firestore I/O" guarantee did not hold as implemented. Fixed by
+splitting the single function into two:
+- `verifyRollbackPlanFileIntegrity(path, expectedPlanSha256, expectedProjectId)`
+  — reads `--rollback-reference`, checks its raw-byte SHA-256, and
+  structurally validates it via `validateStrictDryRunReportContent()`.
+  Takes **no Firestore/db parameter at all** — structurally incapable of
+  Firestore I/O, not merely documented as such.
+- `matchRollbackPlanAgainstCurrent(verified, current)` — a pure comparison
+  (`sourceGitSha`, `sourceChecksum`, `sourceStateChecksum`,
+  `decisionsChecksum`, `targetChecksum`, and a direct `plannedCreates`
+  structural match) against the current run's own computed values, no I/O
+  of any kind.
+
+`scripts/backfill-memberships.ts`'s `main()` now calls
+`verifyRollbackPlanFileIntegrity()` for a production `apply` BEFORE
+`initFirestore()` is ever called; `matchRollbackPlanAgainstCurrent()` runs
+later, once the plan is computed. A wrong `--expected-plan-sha256` now
+throws and returns before line 227's `initFirestore()` — proven by
+`scripts/backfill-memberships.orchestration.test.ts` (source-order
+assertion plus the zero-Firestore-parameter signature check) and by
+`scripts/lib/emergencyReconstruction.test.ts`'s existing read/delete
+counters for the equivalent `rollback-from-plan` path.
+
+### 3 — Strict validator wrongly rejected a correctly-resolved orphan
+
+`ReportCounts.missingCompanies`/`.missingUsers` count every orphan
+DISCOVERED this run, including ones a decision already excluded.
+`validateStrictDryRunReportContent()`'s internal-consistency check summed
+these DISCOVERED totals into its expected `unresolved` total — so the real
+SEC-005 production scenario (1 `missing_company` discovered, correctly
+excluded by decision, 0 unresolved) was wrongly rejected as
+internally-inconsistent. Fixed by adding `unresolvedMissingCompanies`/
+`unresolvedMissingUsers` (post-decision, sourced from
+`plan.unresolvedOrphans`) alongside the unchanged discovered-total fields;
+only the new unresolved-only fields feed the consistency check.
+
+### 4 — Incomplete evidence preservation and no resolved-findings audit trail
+
+`OrphanRecord` lacked `observedRoles`/`hasInvalidRole`/`proposedRole`
+(present on `ConflictRecord` since the 4th round, but never added to
+orphans) — a missing role was not flagged as invalid, and a
+single-valid-role orphan carried no proposal. Separately, a resolved
+finding (a decision applying `exclude`, `accept_existing`, etc.) vanished
+from the report entirely — only the still-unresolved subset was recorded,
+with no trace of what was resolved, how, or by which decision. Fixed:
+`OrphanRecord` now carries `observedRoles`/`hasInvalidRole`/`proposedRole`
+(mirroring `ConflictRecord`); `PlanResult`/`MembershipBackfillReport` gained
+`resolvedConflicts`/`resolvedOrphans`/`resolvedOwnerAnomalies`/
+`resolvedUnknownUsers`/`resolvedMalformedClaims` — each an array of
+`{finding, decision}` pairs — populated by `buildPlan()` at every
+successful-resolution point. `REPORT_SCHEMA_VERSION` bumped `2 -> 3` for
+both changes; `validateStrictDryRunReportContent()`/
+`validateSourceReportForRollback()` reject `schemaVersion !== 3` outright,
+so a v1 or v2 report can never be accepted as `--rollback-reference`/
+`--from-report`/`--from-plan`. As with the 4th round's schema bump, any
+production dry-run report from before this round is stale by definition —
+a new dry-run is required before the next authorized production round.
+
+### 5 — CLI accepted mode-incompatible flag combinations
+
+The 4th round's CLI hardening (duplicate-flag rejection, `--apply`+`--mode`
+mutual exclusion) checked that a mode's REQUIRED flags were present, but
+never that a flag belonging to a DIFFERENT mode was absent — e.g.
+`--mode dry-run --from-report … --expected-report-sha256 …` parsed
+successfully even though `dry-run` reads neither flag. Fixed: `cli.ts` now
+enforces a strict per-mode allowlist (`MODE_ALLOWED_FLAGS`, on top of a
+small `UNIVERSAL_FLAGS` set valid for every mode) — any flag not universal
+and not on the current mode's list is refused outright, after mode
+resolution and before any required-flag check.
+
+### 6 — Missing regression tests
+
+`scripts/lib/sourceRevision.ts` (added in the 4th round) had zero dedicated
+unit tests despite being a fail-closed, production-apply-gating check.
+Added `scripts/lib/sourceRevision.test.ts` — dirty tree (staged/unstaged/
+untracked), `runGitStatus`/`runGitRevParse` throwing, order enforcement
+(rev-parse never called when status is dirty or fails), and malformed/
+empty/wrong-length/non-hex SHA output, all via the module's injected
+`SourceRevisionDeps` fakes — never by mutating this repo's real checkout.
+Added `scripts/backfill-memberships.orchestration.test.ts` for item 2's
+zero-Firestore-I/O claim (see above).
+
+### Regression tests added
+
+`scripts/lib/cli.test.ts` (mode-specific allowlist: each cross-mode flag
+combination the reviewer flagged now throws, each mode's own legitimate
+flag set still parses); `scripts/lib/sourceRevision.test.ts` (new file, see
+item 6); `scripts/backfill-memberships.orchestration.test.ts` (new file,
+see item 6); `scripts/lib/productionSafety.test.ts` (`sourceStateChecksum`
+required and compared, the exact "1 missing_company discovered + correctly
+excluded → 0 unresolved" scenario from item 3, Phase A/Phase B split with a
+dedicated "Phase A alone needs no `current` value" case);
+`scripts/lib/planner.test.ts`/`scripts/lib/checksum.test.ts` (updated
+`OrphanRecord` fixtures for the new required evidence fields);
+`scripts/lib/report.test.ts` (schema v3 fields round-trip);
+`scripts/lib/emergencyReconstruction.test.ts` (fixture updated to include
+`sourceStateChecksum` — this round's item 1 fix made it a required field,
+which the existing fixture predates). All pre-existing tests remain green;
+`npm run test:migration` run twice consecutively for stability.
