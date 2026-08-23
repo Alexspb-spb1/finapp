@@ -2474,3 +2474,74 @@ before either dependency is touched); `scripts/backfill-memberships.orchestratio
 (fixture gains the 5 resolved-findings fields, required by item 3 above).
 All pre-existing tests remain green; `npm run test:migration` run twice
 consecutively for stability.
+
+## Independent audit fixes — 5th round, 2nd follow-up review
+
+A second follow-up independent-review round confirmed the previous
+round's 4 fixes correct, but found one further blocking defect: the
+resolved-findings audit trail's schema-v3 validation was shallow.
+**Production and staging were not read or modified.** `SEC-006` not
+started.
+
+### The defect
+
+`validateStrictDryRunReportContent()`'s resolved-findings check (added the
+previous round) only verified that `finding`/`decision` were present,
+non-array objects — never their actual content. Two independent negative
+tests proved the gap:
+- A report claiming `missingCompanies: 1, unresolvedMissingCompanies: 0`
+  with `resolvedOrphans: []` was accepted — the orphan simply vanished,
+  accounted for neither as unresolved nor as resolved.
+- `resolvedOrphans: [{ finding: {}, decision: {} }]` was accepted —
+  structurally present, semantically empty.
+
+### The fix
+
+`scripts/lib/productionSafety.ts` gained two new validators, applied to
+every entry of all 5 resolved-findings arrays:
+- `validateResolvedFindingRecord()` — validates `finding` against its
+  actual record type's shape: `uid` (required), `companyId` (required for
+  conflicts/orphans/owner-anomalies, must be ABSENT for the user-level
+  unknown-users/malformed-claims types), `reason` (must be one of that
+  finding type's real reason literals), `evidenceFingerprint` (SHA-256
+  hex).
+- `validateResolvingDecisionRecord()` — validates `decision` against
+  `Decision`'s shape (`uid`, optional `companyId`, `findingType`,
+  `evidenceFingerprint`, `resolution` ∈ `DecisionResolution`, `reason`,
+  `reviewedBy`, `reviewedAt` as a valid timestamp, `role` required when
+  `resolution === 'confirm_role'`), THEN cross-checks that `decision` is
+  genuinely THE decision that resolved THIS `finding`: `findingType ===
+  finding.reason`, `evidenceFingerprint` equality, `uid`/`companyId`
+  identity equality, and resolution/finding-type compatibility via the
+  existing `COMPATIBLE_RESOLUTIONS` map (e.g. `confirm_role` for a
+  `missing_company` orphan is rejected — only `exclude` is compatible).
+
+Separately, the discovered/unresolved/resolved reconciliation the
+previous round was missing is now enforced directly: `counts.missingCompanies`
+must equal `counts.unresolvedMissingCompanies` PLUS the count of
+`resolvedOrphans` entries whose `finding.reason === 'missing_company'`
+(same for `missingUsers`). This is the only such reconciliation possible —
+conflicts/ownerAnomalies/unknownUsers/malformedClaims only ever expose an
+UNRESOLVED-only count in `ReportCounts` (no discovered-total field for
+those), so there is nothing to reconcile their `resolvedX` arrays against
+beyond the deep structural/cross-field validation above.
+
+### Regression tests added
+
+`scripts/lib/productionSafety.test.ts` — a `resolvedMissingCompanyOrphan()`
+fixture helper producing a genuinely consistent `{finding, decision}` pair,
+plus: rejects "1 missing_company discovered, 0 unresolved" with an empty
+`resolvedOrphans` (the reviewer's first negative example); rejects
+`{finding: {}, decision: {}}` (the second); accepts the same scenario when
+backed by a real, consistent `resolvedOrphans` entry (the reviewer's
+requested positive test); rejects mismatched `evidenceFingerprint`,
+mismatched `findingType`, mismatched `uid`, mismatched `companyId`,
+resolution incompatible with the finding's reason, an invalid `reason` for
+the array's finding type, an invalid `reviewedAt`, and a user-level finding
+(`resolvedUnknownUsers`) whose `finding.companyId` is present when it must
+be absent. The existing "accepts 1 missing_company + 0 unresolved" test
+from the previous round was itself updated to supply a real
+`resolvedOrphans` entry — it was previously passing only because the
+validator did not yet check the array's content. All pre-existing tests
+remain green; `npm run test:migration` run twice consecutively for
+stability.
