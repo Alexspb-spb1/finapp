@@ -16,7 +16,7 @@
 // acceptable design for this tool.
 import { readFileSync } from 'node:fs'
 import type { Firestore } from 'firebase-admin/firestore'
-import { sha256Hex } from './checksum.ts'
+import { sha256Hex, computeDecisionsChecksum } from './checksum.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
 import { isKnownRole, type Decision, type RelationSourceKind } from './types.ts'
 import { validateDecisions } from './decisions.ts'
@@ -549,7 +549,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   const report = parsed as Record<string, unknown>
 
   if (report.schemaVersion !== REPORT_SCHEMA_VERSION) {
-    throw new ProductionSafetyError(`has schemaVersion ${JSON.stringify(report.schemaVersion)}, expected ${REPORT_SCHEMA_VERSION}.`)
+    throw new ProductionSafetyError(`has schemaVersion ${JSON.stringify(report.schemaVersion)}, expected ${REPORT_SCHEMA_VERSION} — a report from an older version of this tool can never be interpreted as if it were current; re-run --mode dry-run against the CURRENT tool to produce a new, valid reference.`)
   }
   if (report.mode !== 'dry-run') {
     throw new ProductionSafetyError(`must be a dry-run report (mode !== "dry-run", got ${JSON.stringify(report.mode)}).`)
@@ -586,7 +586,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
     'usersRead', 'companiesRead', 'existingMembershipsRead', 'candidateRelations', 'confirmedRelations',
     'plannedCreates', 'created', 'skipped', 'conflicts', 'missingCompanies', 'missingUsers',
     'unresolvedMissingCompanies', 'unresolvedMissingUsers',
-    'ownerWithoutAdminMembership', 'unknownUsers', 'malformedClaims', 'danglingMemberships',
+    'ownerWithoutAdminMembership', 'companiesWithoutAdmin', 'unknownUsers', 'malformedClaims', 'danglingMemberships',
     'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions', 'unresolved',
   ] as const) {
     if (!isNonNegativeInteger(counts[field])) {
@@ -605,7 +605,7 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
   // never the discovered totals — the 4th-round version of this check
   // wrongly summed the discovered totals and rejected a perfectly valid
   // "1 missing_company, correctly excluded, unresolved: 0" report.
-  const unresolvedComponents = ['conflicts', 'unresolvedMissingCompanies', 'unresolvedMissingUsers', 'ownerWithoutAdminMembership', 'unknownUsers', 'malformedClaims', 'danglingMemberships', 'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions'] as const
+  const unresolvedComponents = ['conflicts', 'unresolvedMissingCompanies', 'unresolvedMissingUsers', 'ownerWithoutAdminMembership', 'companiesWithoutAdmin', 'unknownUsers', 'malformedClaims', 'danglingMemberships', 'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions'] as const
   const unresolvedSum = unresolvedComponents.reduce((sum, field) => sum + (counts[field] as number), 0)
   if (unresolvedSum !== 0) {
     throw new ProductionSafetyError(`counts.unresolved is 0 but the sum of its component counts (${unresolvedComponents.join(', ')}) is ${unresolvedSum} — internally inconsistent, refusing.`)
@@ -645,6 +645,28 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
     if (value.length !== expected) {
       throw new ProductionSafetyError(`${spec.field}.length (${value.length}) does not match the corresponding counts field (expected ${expected}) — the report's finding arrays and counts are internally inconsistent.`)
     }
+  }
+  // Independent audit fixes, 5th round, 4th follow-up review, item 2:
+  // `companiesWithoutAdmin` is a plain array of companyIds (the last-admin
+  // gate's blocked companies) — not a finding-record type, so it gets its
+  // own validation: every entry a non-empty string, no duplicates, length
+  // matching `counts.companiesWithoutAdmin`.
+  const companiesWithoutAdminRaw = report.companiesWithoutAdmin
+  if (!Array.isArray(companiesWithoutAdminRaw)) {
+    throw new ProductionSafetyError(`is missing companiesWithoutAdmin (required by schema v${REPORT_SCHEMA_VERSION}).`)
+  }
+  const seenCompaniesWithoutAdmin = new Set<string>()
+  companiesWithoutAdminRaw.forEach((entry, index) => {
+    if (!isNonEmptyStringValue(entry)) {
+      throw new ProductionSafetyError(`companiesWithoutAdmin[${index}] is not a non-empty string.`)
+    }
+    if (seenCompaniesWithoutAdmin.has(entry)) {
+      throw new ProductionSafetyError(`companiesWithoutAdmin contains a duplicate companyId at index ${index}.`)
+    }
+    seenCompaniesWithoutAdmin.add(entry)
+  })
+  if (companiesWithoutAdminRaw.length !== (counts.companiesWithoutAdmin as number)) {
+    throw new ProductionSafetyError(`companiesWithoutAdmin.length (${companiesWithoutAdminRaw.length}) does not match counts.companiesWithoutAdmin (${counts.companiesWithoutAdmin}) — internally inconsistent.`)
   }
   for (const field of ['staleDecisions', 'unusedDecisions'] as const) {
     const value = report[field]
@@ -686,6 +708,56 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
       validateResolvingDecisionRecord(spec.field, index, decision, finding)
       resolvedFindingsByField[spec.field].push({ finding, decision })
     })
+  }
+  // Independent audit fixes, 5th round, 4th follow-up review, item 1: each
+  // resolved finding IDENTITY (companyId?, uid, reason, evidenceFingerprint)
+  // must appear exactly once across ALL resolvedX arrays combined — a
+  // duplicated `{finding, decision}` pair (the same finding "resolved"
+  // twice, even by the same decision) is exactly as corrupt an audit trail
+  // as a missing one.
+  const seenResolvedFindingKeys = new Set<string>()
+  for (const spec of RESOLVED_FIELD_SPECS) {
+    resolvedFindingsByField[spec.field].forEach((entry, index) => {
+      const key = JSON.stringify([entry.finding.companyId ?? null, entry.finding.uid, entry.finding.reason, entry.finding.evidenceFingerprint])
+      if (seenResolvedFindingKeys.has(key)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}]: this finding (uid=${JSON.stringify(entry.finding.uid)}, companyId=${JSON.stringify(entry.finding.companyId)}, reason=${JSON.stringify(entry.finding.reason)}) is duplicated in the resolved-findings audit trail.`)
+      }
+      seenResolvedFindingKeys.add(key)
+    })
+  }
+  // Independent audit fixes, 5th round, 4th follow-up review, item 1: prove
+  // that `decisionsChecksum` (the checksum over the FULL original
+  // `--decisions-file`, computed once in `readDecisionsFile()`) is
+  // genuinely reconstructible from the report's own audit trail — every
+  // decision that resolved something, went stale, or went unused,
+  // collected from EXACTLY the five `resolvedX[].decision` arrays plus
+  // `staleDecisions`/`unusedDecisions`, re-validated as ONE combined batch
+  // (not per-item — a single `validateDecisions()` call over the whole set
+  // catches a decision duplicated ACROSS buckets, e.g. present in both
+  // `resolvedOrphans` and `staleDecisions`, which per-item validation could
+  // never see), then re-hashed with `computeDecisionsChecksum()` and
+  // compared byte-for-byte against `report.decisionsChecksum`. Without
+  // this, a report could claim a `decisionsChecksum` matching a real
+  // decisions file while silently DROPPING one of its decisions from every
+  // audit-trail bucket — accepted by every check above (each bucket is
+  // internally consistent; there is simply one fewer entry than there
+  // should be) yet invisible to an operator relying on the report alone.
+  const auditTrailDecisions: Record<string, unknown>[] = [
+    ...resolvedFindingsByField.resolvedConflicts.map(r => r.decision),
+    ...resolvedFindingsByField.resolvedOrphans.map(r => r.decision),
+    ...resolvedFindingsByField.resolvedOwnerAnomalies.map(r => r.decision),
+    ...resolvedFindingsByField.resolvedUnknownUsers.map(r => r.decision),
+    ...resolvedFindingsByField.resolvedMalformedClaims.map(r => r.decision),
+    ...(report.staleDecisions as unknown[]).map(d => d as Record<string, unknown>),
+    ...(report.unusedDecisions as unknown[]).map(d => d as Record<string, unknown>),
+  ]
+  const auditTrailValidation = validateDecisions(auditTrailDecisions)
+  if (!auditTrailValidation.ok) {
+    throw new ProductionSafetyError(`the combined audit trail (resolved*/staleDecisions/unusedDecisions) failed validation as a whole: ${auditTrailValidation.errors.map(e => e.message).join('; ')}`)
+  }
+  const recomputedDecisionsChecksum = computeDecisionsChecksum(auditTrailValidation.decisions)
+  if (recomputedDecisionsChecksum !== report.decisionsChecksum) {
+    throw new ProductionSafetyError(`decisionsChecksum (${report.decisionsChecksum}) does not match the checksum recomputed from the audit trail (resolved*/staleDecisions/unusedDecisions combined: ${recomputedDecisionsChecksum}) — a decision from the original --decisions-file is missing, duplicated, or altered somewhere in the report.`)
   }
   // Discovered/unresolved/resolved reconciliation — orphans are the only
   // finding type with an explicit discovered-total count field

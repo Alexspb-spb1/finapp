@@ -407,6 +407,27 @@ describe('backfill-memberships CLI — real Firestore Emulator', { timeout: 20_0
     expect(result.report?.counts.created).toBe(0)
   })
 
+  // ── Independent audit fixes, 5th round, 4th follow-up review, item 2:
+  // a company blocked by the last-admin gate must be surfaced in the
+  // report itself — previously only rolled into counts.unresolved, with
+  // no dedicated count and no array anywhere in the report, so a reviewer
+  // could tell SOMETHING was blocked but never WHICH company. ──────────
+  it('a company with zero legacy relations and zero existing admin is surfaced as companiesWithoutAdmin — dry-run reports it, apply is blocked by it', async () => {
+    const companyId = uniqueId('co')
+    await seedCompany(companyId) // no seedUser at all — zero relations, zero admin
+
+    const dryRunResult = runCli(baseArgs('dry-run'))
+    expect(dryRunResult.code).toBe(0) // dry-run never fails on unresolved items — it only reports
+    expect(dryRunResult.report?.counts.companiesWithoutAdmin).toBe(1)
+    expect(dryRunResult.report?.companiesWithoutAdmin).toEqual([companyId])
+
+    const applyResult = runCli(baseArgs('apply'))
+    expect(applyResult.code).toBe(1) // apply IS blocked by the last-admin gate
+    expect(applyResult.report?.counts.created).toBe(0)
+    expect(applyResult.report?.counts.companiesWithoutAdmin).toBe(1)
+    expect(applyResult.report?.companiesWithoutAdmin).toEqual([companyId])
+  })
+
   // ── Independent audit fix #2 ─────────────────────────────────────────────
   it('accept_existing does NOT resolve a corrupted existing membership (extra field)', async () => {
     const uid = uniqueId('u'); const companyId = uniqueId('co')

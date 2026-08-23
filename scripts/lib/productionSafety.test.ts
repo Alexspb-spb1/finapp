@@ -16,7 +16,8 @@ import {
   type VerifiedRollbackPlanFile,
 } from './productionSafety.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
-import { sha256Hex } from './checksum.ts'
+import { sha256Hex, computeDecisionsChecksum } from './checksum.ts'
+import type { Decision } from './types.ts'
 
 /** A complete, all-zero `ReportCounts`-shaped object with `overrides`
  * applied — independent audit fixes, 4th round, item 3.6: the strict
@@ -27,12 +28,20 @@ function fullCounts(overrides: Record<string, number> = {}): Record<string, numb
     usersRead: 0, companiesRead: 0, existingMembershipsRead: 0, candidateRelations: 0,
     confirmedRelations: 0, plannedCreates: 0, created: 0, skipped: 0, conflicts: 0,
     missingCompanies: 0, missingUsers: 0, unresolvedMissingCompanies: 0, unresolvedMissingUsers: 0,
-    ownerWithoutAdminMembership: 0,
+    ownerWithoutAdminMembership: 0, companiesWithoutAdmin: 0,
     unknownUsers: 0, malformedClaims: 0, danglingMemberships: 0,
     ownerIdAnomalies: 0, staleDecisions: 0, unusedDecisions: 0, unresolved: 0,
     ...overrides,
   }
 }
+
+/** The `decisionsChecksum` for a report whose full audit trail (all five
+ * `resolvedX` arrays + `staleDecisions` + `unusedDecisions`) is empty —
+ * independent audit fixes, 5th round, 4th follow-up review, item 1:
+ * `decisionsChecksum` must now equal `computeDecisionsChecksum()` of the
+ * decisions actually reconstructed from the report's own audit trail, not
+ * an arbitrary hex value. */
+const EMPTY_DECISIONS_CHECKSUM = computeDecisionsChecksum([])
 
 /** Matches tempFile()'s exact serialization (`JSON.stringify`, no
  * indentation) so the computed hash equals what actually lands on disk. */
@@ -294,11 +303,11 @@ describe('verifyStrictDryRunReport', () => {
     sourceGitSha: 'abc123def',
     sourceChecksum: HEX64_A,
     sourceStateChecksum: HEX64_D,
-    decisionsChecksum: HEX64_B,
+    decisionsChecksum: EMPTY_DECISIONS_CHECKSUM,
     targetChecksum: HEX64_C,
     counts: fullCounts({ plannedCreates: 1 }),
     plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
-    conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+    conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
     resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
   }
 
@@ -417,6 +426,7 @@ describe('verifyStrictDryRunReport', () => {
     const path = tempFile('dry-run.json', {
       ...validDryRun,
       counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      decisionsChecksum: computeDecisionsChecksum([decision as unknown as Decision]),
       resolvedOrphans: [{ finding, decision }],
     })
     expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
@@ -453,6 +463,7 @@ describe('verifyStrictDryRunReport', () => {
     const path = tempFile('dry-run.json', {
       ...validDryRun,
       counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      decisionsChecksum: computeDecisionsChecksum([decision as unknown as Decision]),
       resolvedOrphans: [{ finding, decision }],
     })
     expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
@@ -546,13 +557,13 @@ describe('verifyStrictDryRunReport', () => {
   // the previous round still accepted, plus a full positive schema-v3
   // report. ─────────────────────────────────────────────────────────────
   it('rejects a report entirely missing the required unresolved finding arrays (conflicts/orphans/unknownUsers/malformedClaims/etc.)', () => {
-    const { conflicts: _c, orphans: _o, ownerAnomalies: _oa, unknownUsers: _uu, malformedClaims: _mc, danglingMemberships: _dm, ownerIdAnomalies: _oia, staleDecisions: _sd, unusedDecisions: _ud, ...withoutUnresolvedArrays } = validDryRun as typeof validDryRun & Record<string, unknown>
+    const { conflicts: _c, orphans: _o, ownerAnomalies: _oa, companiesWithoutAdmin: _cwa, unknownUsers: _uu, malformedClaims: _mc, danglingMemberships: _dm, ownerIdAnomalies: _oia, staleDecisions: _sd, unusedDecisions: _ud, ...withoutUnresolvedArrays } = validDryRun as typeof validDryRun & Record<string, unknown>
     const path = tempFile('dry-run.json', withoutUnresolvedArrays)
     expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
   })
 
   it('rejects each unresolved array individually when missing', () => {
-    for (const field of ['conflicts', 'orphans', 'ownerAnomalies', 'unknownUsers', 'malformedClaims', 'danglingMemberships', 'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions']) {
+    for (const field of ['conflicts', 'orphans', 'ownerAnomalies', 'companiesWithoutAdmin', 'unknownUsers', 'malformedClaims', 'danglingMemberships', 'ownerIdAnomalies', 'staleDecisions', 'unusedDecisions']) {
       const withoutField = { ...validDryRun } as Record<string, unknown>
       delete withoutField[field]
       const path = tempFile('dry-run.json', withoutField)
@@ -606,7 +617,8 @@ describe('verifyStrictDryRunReport', () => {
     const path = tempFile('dry-run.json', {
       ...validDryRun,
       counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
-      conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [],
+      decisionsChecksum: computeDecisionsChecksum([decision as unknown as Decision]),
+      conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [],
       danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
       resolvedConflicts: [], resolvedOrphans: [{ finding, decision }], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
     })
@@ -673,6 +685,139 @@ describe('verifyStrictDryRunReport', () => {
     const path = tempFile('dry-run.json', { ...validDryRun, environment: 'emulator', projectId: 'demo-finapp', sourceGitSha: 'unknown' })
     expect(() => verifyStrictDryRunReport(path, 'demo-finapp', 'emulator')).not.toThrow()
   })
+
+  // ── Independent audit fixes, 5th round, 4th follow-up review, item 1:
+  // decisionsChecksum must be reconstructible from the report's own audit
+  // trail (resolvedX[].decision + staleDecisions + unusedDecisions,
+  // combined). Previously `decisionsChecksum` was validated only for
+  // format (SHA-256 hex), never for actually matching the audit trail. ──
+  describe('decisionsChecksum <-> audit trail reconciliation', () => {
+    function conflictResolvedByExclude(overrides: { findingOverrides?: Record<string, unknown>; decisionOverrides?: Record<string, unknown> } = {}) {
+      const fingerprint = HEX64_C
+      return {
+        finding: {
+          companyId: 'co_conf', uid: 'u_conf', reason: 'role_mismatch',
+          observedRoles: ['admin', 'viewer'], evidenceFingerprint: fingerprint,
+          ...overrides.findingOverrides,
+        },
+        decision: {
+          uid: 'u_conf', companyId: 'co_conf', findingType: 'role_mismatch',
+          evidenceFingerprint: fingerprint, resolution: 'exclude', reason: 'legacy noise, ignore',
+          reviewedBy: 'bob', reviewedAt: '2026-01-01T00:00:00.000Z',
+          ...overrides.decisionOverrides,
+        },
+      }
+    }
+
+    it('rejects: decisionsChecksum reflects one decision, but every audit-trail array is empty (the decision vanished)', () => {
+      const { decision } = resolvedMissingCompanyOrphan()
+      const path = tempFile('dry-run.json', {
+        ...validDryRun,
+        decisionsChecksum: computeDecisionsChecksum([decision as unknown as Decision]),
+        // resolvedOrphans/staleDecisions/unusedDecisions all stay empty (validDryRun's default).
+      })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/decisionsChecksum/)
+    })
+
+    it('the same malformed report is also rejected by Phase A of verifyRollbackPlanFileIntegrity + matchRollbackPlanAgainstCurrent (never reaches Phase B)', () => {
+      const { decision } = resolvedMissingCompanyOrphan()
+      const malformed = { ...validDryRun, decisionsChecksum: computeDecisionsChecksum([decision as unknown as Decision]) }
+      const path = tempFile('dry-run.json', malformed)
+      expect(() => verifyRollbackPlanFileIntegrity(path, sha256OfJson(malformed), PROJECT_ID)).toThrow(/decisionsChecksum/)
+    })
+
+    it('rejects: the SAME resolved {finding, decision} pair duplicated within resolvedOrphans', () => {
+      const { finding, decision } = resolvedMissingCompanyOrphan()
+      const path = tempFile('dry-run.json', {
+        ...validDryRun,
+        counts: fullCounts({ plannedCreates: 1, missingCompanies: 2, unresolvedMissingCompanies: 0, unresolved: 0 }),
+        decisionsChecksum: computeDecisionsChecksum([decision as unknown as Decision]),
+        resolvedOrphans: [{ finding, decision }, { finding, decision }],
+      })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/duplicated in the resolved-findings audit trail/)
+    })
+
+    it('rejects: a decision claimed as both resolving a finding AND stale/unused at once — caught by the pre-existing unresolved-components consistency check (a decision cannot count as both)', () => {
+      const { finding, decision } = resolvedMissingCompanyOrphan()
+      const path = tempFile('dry-run.json', {
+        ...validDryRun,
+        counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, staleDecisions: 1, unresolved: 0 }),
+        resolvedOrphans: [{ finding, decision }],
+        staleDecisions: [decision],
+      })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/inconsistent/)
+    })
+
+    it('rejects: decisionsChecksum is simply wrong — does not match the (otherwise valid) collected audit trail', () => {
+      const { finding, decision } = resolvedMissingCompanyOrphan()
+      const path = tempFile('dry-run.json', {
+        ...validDryRun,
+        counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+        decisionsChecksum: HEX64_B, // arbitrary, does not match [decision]
+        resolvedOrphans: [{ finding, decision }],
+      })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/decisionsChecksum/)
+    })
+
+    it('ACCEPTS: zero decisions at all, decisionsChecksum === computeDecisionsChecksum([])', () => {
+      const path = tempFile('dry-run.json', validDryRun) // already EMPTY_DECISIONS_CHECKSUM + all-empty audit trail
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
+    })
+
+    it('ACCEPTS: a full, multi-bucket audit trail (one resolved orphan + one resolved conflict), each decision represented exactly once, checksum matching', () => {
+      const orphan = resolvedMissingCompanyOrphan()
+      const conflict = conflictResolvedByExclude()
+      const path = tempFile('dry-run.json', {
+        ...validDryRun,
+        counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+        decisionsChecksum: computeDecisionsChecksum([orphan.decision, conflict.decision] as unknown as Decision[]),
+        resolvedOrphans: [{ finding: orphan.finding, decision: orphan.decision }],
+        resolvedConflicts: [{ finding: conflict.finding, decision: conflict.decision }],
+      })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
+    })
+  })
+
+  // ── Independent audit fixes, 5th round, 4th follow-up review, item 2:
+  // `companiesWithoutAdmin` — the last-admin gate's own private audit
+  // array + count, previously summed into `counts.unresolved` with no
+  // dedicated field or array anywhere in the report. ──────────────────
+  describe('companiesWithoutAdmin', () => {
+    it('rejects a length mismatch against counts.companiesWithoutAdmin', () => {
+      const path = tempFile('dry-run.json', { ...validDryRun, companiesWithoutAdmin: ['co_orphan_admin'] })
+      // counts.companiesWithoutAdmin stays 0 (fullCounts() default) — array says 1.
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/companiesWithoutAdmin/)
+    })
+
+    it('rejects a duplicate companyId in companiesWithoutAdmin', () => {
+      // counts.companiesWithoutAdmin stays 0 (fullCounts() default,
+      // matching unresolved: 0) — the per-entry duplicate check runs
+      // before the length-vs-count check, so this is caught as a
+      // duplicate specifically, independent of the (also-wrong) length.
+      const path = tempFile('dry-run.json', { ...validDryRun, companiesWithoutAdmin: ['co_a', 'co_a'] })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/duplicate/)
+    })
+
+    it('rejects an empty-string entry in companiesWithoutAdmin', () => {
+      const path = tempFile('dry-run.json', { ...validDryRun, companiesWithoutAdmin: [''] })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+    })
+
+    it('rejects a non-string entry in companiesWithoutAdmin', () => {
+      const path = tempFile('dry-run.json', { ...validDryRun, companiesWithoutAdmin: [42] })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+    })
+
+    it('rejects counts.unresolved === 0 while counts.companiesWithoutAdmin is nonzero (internally inconsistent)', () => {
+      const path = tempFile('dry-run.json', { ...validDryRun, counts: fullCounts({ plannedCreates: 1, companiesWithoutAdmin: 1, unresolved: 0 }) })
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/inconsistent/)
+    })
+
+    it('ACCEPTS a fully-resolved plan with an empty companiesWithoutAdmin array and count 0', () => {
+      const path = tempFile('dry-run.json', validDryRun) // companiesWithoutAdmin: [] / count 0 already
+      expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
+    })
+  })
 })
 
 describe('validateStrictDryRunReportContent', () => {
@@ -684,11 +829,11 @@ describe('validateStrictDryRunReportContent', () => {
     sourceGitSha: 'abc123def',
     sourceChecksum: HEX64_A,
     sourceStateChecksum: HEX64_D,
-    decisionsChecksum: HEX64_B,
+    decisionsChecksum: EMPTY_DECISIONS_CHECKSUM,
     targetChecksum: HEX64_C,
     counts: fullCounts({ plannedCreates: 1 }),
     plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
-    conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+    conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
     resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
   }
 
@@ -698,7 +843,7 @@ describe('validateStrictDryRunReportContent', () => {
       sourceGitSha: 'abc123def',
       sourceChecksum: HEX64_A,
       sourceStateChecksum: HEX64_D,
-      decisionsChecksum: HEX64_B,
+      decisionsChecksum: EMPTY_DECISIONS_CHECKSUM,
       targetChecksum: HEX64_C,
       plannedCreates: [{ companyId: 'co1', uid: 'u1', role: 'admin', status: 'active' }],
     })
@@ -718,15 +863,15 @@ describe('verifyRollbackPlanFileIntegrity + matchRollbackPlanAgainstCurrent (ind
     sourceGitSha: 'abc123def',
     sourceChecksum: HEX64_A,
     sourceStateChecksum: HEX64_D,
-    decisionsChecksum: HEX64_B,
+    decisionsChecksum: EMPTY_DECISIONS_CHECKSUM,
     targetChecksum: HEX64_C,
     counts: fullCounts(),
     plannedCreates: [],
-    conflicts: [], orphans: [], ownerAnomalies: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
+    conflicts: [], orphans: [], ownerAnomalies: [], companiesWithoutAdmin: [], unknownUsers: [], malformedClaims: [], danglingMemberships: [], ownerIdAnomalies: [], staleDecisions: [], unusedDecisions: [],
     resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
   }
   const currentRun = {
-    sourceGitSha: 'abc123def', sourceChecksum: HEX64_A, sourceStateChecksum: HEX64_D, decisionsChecksum: HEX64_B, targetChecksum: HEX64_C,
+    sourceGitSha: 'abc123def', sourceChecksum: HEX64_A, sourceStateChecksum: HEX64_D, decisionsChecksum: EMPTY_DECISIONS_CHECKSUM, targetChecksum: HEX64_C,
     plannedCreates: [] as { companyId: string; uid: string; role: string; status: string }[],
   }
 

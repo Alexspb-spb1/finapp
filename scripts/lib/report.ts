@@ -43,8 +43,22 @@ import { assertPathOutsideRepo } from './pathSafety.ts'
  * `resolvedOwnerAnomalies`/`resolvedUnknownUsers`/`resolvedMalformedClaims`,
  * each paired with the decision that resolved it) — v2 only ever recorded
  * the UNRESOLVED subset, so a finding a decision successfully excluded or
- * confirmed left zero trace in the report, breaking the audit trail. */
-export const REPORT_SCHEMA_VERSION = 3
+ * confirmed left zero trace in the report, breaking the audit trail.
+ *
+ * Bumped 3 -> 4 for independent audit fixes, 5th round, 4th follow-up
+ * review: `plan.companiesWithoutAdmin.length` (a company with zero active
+ * admin — existing or planned — after this run) was already summed into
+ * `counts.unresolved` and already blocked `applyAllowed`, but had no
+ * dedicated `counts.companiesWithoutAdmin` field and no corresponding
+ * array anywhere in the report — a reviewer could see the last-admin gate
+ * had blocked something, but never WHICH company, from the report alone.
+ * `counts.companiesWithoutAdmin` and the private
+ * `companiesWithoutAdmin: string[]` field close that gap. A v3 (or
+ * earlier) report can never satisfy either — `validateStrictDryRunReportContent()`
+ * rejects `schemaVersion !== 4` outright, with a message explicit that a
+ * NEW dry-run against the current tool is required (never attempts to
+ * interpret an older report's different shape). */
+export const REPORT_SCHEMA_VERSION = 4
 
 export type ReportMode = 'dry-run' | 'apply' | 'verify' | 'rollback-from-report' | 'rollback-from-plan'
 
@@ -72,6 +86,13 @@ export interface ReportCounts {
   unresolvedMissingCompanies: number
   unresolvedMissingUsers: number
   ownerWithoutAdminMembership: number
+  /** Companies whose PROJECTED final state (existing active admins +
+   * planned admin creates) has zero active admin — always blocking, never
+   * decision-resolvable (only creating/confirming an admin membership for
+   * the company clears it). Independent audit fixes, 5th round, 4th
+   * follow-up review — previously summed into `counts.unresolved` with no
+   * dedicated count or corresponding array anywhere in the report. */
+  companiesWithoutAdmin: number
   unknownUsers: number
   malformedClaims: number
   /** Independent audit fix #3 (3rd round, follow-up correction): existing
@@ -215,6 +236,13 @@ export interface MembershipBackfillReport {
   /** Independent audit fixes, 4th round, item 3.4 — see
    * `OwnerIdAnomalyRecord`. Never decision-resolvable. */
   ownerIdAnomalies: OwnerIdAnomalyRecord[]
+  /** Independent audit fixes, 5th round, 4th follow-up review — private
+   * companion to `counts.companiesWithoutAdmin`: the actual companyIds the
+   * last-admin gate blocked on (`plan.companiesWithoutAdmin`), sorted,
+   * never duplicated. Never printed to the safe stdout summary (contains
+   * companyId, same sensitivity as `conflicts`/`orphans`/etc. above) —
+   * only its count reaches stdout, via `counts`. */
+  companiesWithoutAdmin: string[]
   /** Independent audit fixes, 4th round, item 3.1 — decisions whose
    * (identity, findingType) matched a current finding but whose
    * `evidenceFingerprint` did not. */
