@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs'
 import type { Firestore } from 'firebase-admin/firestore'
 import { sha256Hex } from './checksum.ts'
 import { REPORT_SCHEMA_VERSION } from './report.ts'
-import { isKnownRole } from './types.ts'
+import { isKnownRole, COMPATIBLE_RESOLUTIONS, type FindingType, type DecisionResolution } from './types.ts'
 
 export class ProductionSafetyError extends Error {}
 
@@ -30,6 +30,131 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isValidIsoTimestamp(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && !Number.isNaN(Date.parse(value))
+}
+
+function isNonEmptyStringValue(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function isSha256HexValue(value: unknown): value is string {
+  return typeof value === 'string' && SHA256_HEX_PATTERN.test(value)
+}
+
+// ── Resolved-findings audit trail — deep validation ─────────────────────
+//
+// Independent audit fixes, 5th round (2nd follow-up review of the round's
+// own fix): the previous version of this validation only checked that
+// `finding`/`decision` were present, non-array objects — it never checked
+// their CONTENT, so `{finding: {}, decision: {}}` passed as a "resolved"
+// finding, and a report could claim `missingCompanies: 1,
+// unresolvedMissingCompanies: 0` while `resolvedOrphans: []` (the orphan
+// simply vanished — neither unresolved nor accounted for as resolved).
+// Fixed by (1) validating `finding`'s shape against the specific record
+// type each field carries, (2) validating `decision`'s shape against
+// `Decision`, (3) cross-checking that `decision` is genuinely THE decision
+// that resolved THIS `finding` — identity (uid/companyId),
+// `findingType === finding.reason`, `evidenceFingerprint` equality, and
+// resolution/finding-type compatibility (`COMPATIBLE_RESOLUTIONS`) — and
+// (4) reconciling `counts.missingCompanies`/`missingUsers` (discovered
+// totals) against `counts.unresolvedMissingCompanies`/`unresolvedMissingUsers`
+// PLUS the matching subset of `resolvedOrphans` (the only finding type
+// with an explicit discovered-total count field — see report.ts's
+// `ReportCounts` doc comments; conflicts/ownerAnomalies/unknownUsers/
+// malformedClaims only ever expose an unresolved-only count, so there is
+// no discovered total to reconcile for those).
+const CONFLICT_REASONS = ['role_mismatch', 'invalid_role', 'mixed_role_validity', 'user_id_mismatch', 'owner_role_not_admin', 'existing_membership_conflict'] as const
+const ORPHAN_REASONS = ['missing_company', 'missing_user'] as const
+const OWNER_ANOMALY_REASONS = ['owner_without_admin_membership'] as const
+const UNKNOWN_USER_REASONS = ['no_usable_relations'] as const
+const MALFORMED_CLAIM_REASONS = ['malformed_companies_entry', 'companies_field_not_array', 'malformed_company_id'] as const
+const DECISION_RESOLUTIONS: readonly DecisionResolution[] = ['confirm_role', 'accept_existing', 'exclude']
+
+interface ResolvedFieldSpec {
+  field: 'resolvedConflicts' | 'resolvedOrphans' | 'resolvedOwnerAnomalies' | 'resolvedUnknownUsers' | 'resolvedMalformedClaims'
+  requiresCompanyId: boolean
+  allowedReasons: readonly string[]
+}
+
+const RESOLVED_FIELD_SPECS: readonly ResolvedFieldSpec[] = [
+  { field: 'resolvedConflicts', requiresCompanyId: true, allowedReasons: CONFLICT_REASONS },
+  { field: 'resolvedOrphans', requiresCompanyId: true, allowedReasons: ORPHAN_REASONS },
+  { field: 'resolvedOwnerAnomalies', requiresCompanyId: true, allowedReasons: OWNER_ANOMALY_REASONS },
+  { field: 'resolvedUnknownUsers', requiresCompanyId: false, allowedReasons: UNKNOWN_USER_REASONS },
+  { field: 'resolvedMalformedClaims', requiresCompanyId: false, allowedReasons: MALFORMED_CLAIM_REASONS },
+]
+
+function validateResolvedFindingRecord(field: string, index: number, finding: Record<string, unknown>, spec: ResolvedFieldSpec): void {
+  if (!isNonEmptyStringValue(finding.uid)) {
+    throw new ProductionSafetyError(`${field}[${index}].finding.uid is missing.`)
+  }
+  if (spec.requiresCompanyId) {
+    if (!isNonEmptyStringValue(finding.companyId)) {
+      throw new ProductionSafetyError(`${field}[${index}].finding.companyId is missing.`)
+    }
+  } else if (finding.companyId !== undefined) {
+    throw new ProductionSafetyError(`${field}[${index}].finding.companyId must be absent — this finding type is user-level (no company target).`)
+  }
+  if (typeof finding.reason !== 'string' || !spec.allowedReasons.includes(finding.reason)) {
+    throw new ProductionSafetyError(`${field}[${index}].finding.reason is missing or not a valid reason for ${field} (expected one of: ${spec.allowedReasons.join(', ')}).`)
+  }
+  if (!isSha256HexValue(finding.evidenceFingerprint)) {
+    throw new ProductionSafetyError(`${field}[${index}].finding.evidenceFingerprint is missing or not a valid SHA-256 hex digest.`)
+  }
+}
+
+function validateResolvingDecisionRecord(field: string, index: number, decision: Record<string, unknown>, finding: Record<string, unknown>): void {
+  if (!isNonEmptyStringValue(decision.uid)) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.uid is missing.`)
+  }
+  if (decision.companyId !== undefined && !isNonEmptyStringValue(decision.companyId)) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.companyId is present but not a non-empty string.`)
+  }
+  if (typeof decision.findingType !== 'string' || decision.findingType.length === 0) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.findingType is missing.`)
+  }
+  if (!isSha256HexValue(decision.evidenceFingerprint)) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.evidenceFingerprint is missing or not a valid SHA-256 hex digest.`)
+  }
+  if (typeof decision.resolution !== 'string' || !DECISION_RESOLUTIONS.includes(decision.resolution as DecisionResolution)) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.resolution is missing or not a known resolution.`)
+  }
+  if (!isNonEmptyStringValue(decision.reason)) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.reason is missing.`)
+  }
+  if (!isNonEmptyStringValue(decision.reviewedBy)) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.reviewedBy is missing.`)
+  }
+  if (!isValidIsoTimestamp(decision.reviewedAt)) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.reviewedAt is missing or not a valid timestamp.`)
+  }
+  if (decision.resolution === 'confirm_role' && !isKnownRole(decision.role)) {
+    throw new ProductionSafetyError(`${field}[${index}].decision.role is required and must be a known role when resolution is confirm_role.`)
+  }
+
+  // Cross-checks: `decision` must genuinely be THE decision that resolved
+  // THIS `finding` — matching every field the real finding-bound-decision
+  // contract (decisions.ts / planner.ts) itself requires, not merely two
+  // independently-valid-looking objects placed next to each other.
+  if (decision.findingType !== finding.reason) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.findingType (${JSON.stringify(decision.findingType)}) does not match finding.reason (${JSON.stringify(finding.reason)}).`)
+  }
+  if (decision.evidenceFingerprint !== finding.evidenceFingerprint) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.evidenceFingerprint does not match finding.evidenceFingerprint.`)
+  }
+  if (decision.uid !== finding.uid) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.uid does not match finding.uid.`)
+  }
+  if (finding.companyId !== undefined) {
+    if (decision.companyId !== finding.companyId) {
+      throw new ProductionSafetyError(`${field}[${index}]: decision.companyId does not match finding.companyId.`)
+    }
+  } else if (decision.companyId !== undefined) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.companyId must be absent — the finding it resolves is user-level.`)
+  }
+  const compatibleResolutions = COMPATIBLE_RESOLUTIONS[finding.reason as FindingType] ?? []
+  if (!compatibleResolutions.includes(decision.resolution as DecisionResolution)) {
+    throw new ProductionSafetyError(`${field}[${index}]: decision.resolution (${JSON.stringify(decision.resolution)}) is not compatible with finding.reason (${JSON.stringify(finding.reason)}).`)
+  }
 }
 
 // ── Maintenance mode ────────────────────────────────────────────────────
@@ -371,36 +496,60 @@ export function validateStrictDryRunReportContent(raw: string, expectedProjectId
     throw new ProductionSafetyError(`counts.unresolved is 0 but the sum of its component counts (${unresolvedComponents.join(', ')}) is ${unresolvedSum} — internally inconsistent, refusing.`)
   }
   // Independent audit fixes, 5th round (review of the 5th round's own
-  // fix), item 3: schemaVersion is checked above to be EXACTLY
-  // REPORT_SCHEMA_VERSION (3), but until now nothing here actually
-  // verified that the v3-specific resolved-findings audit trail
-  // (report.ts's `resolvedConflicts`/`resolvedOrphans`/
-  // `resolvedOwnerAnomalies`/`resolvedUnknownUsers`/`resolvedMalformedClaims`)
-  // was present — a report claiming schemaVersion 3 but missing this audit
-  // trail entirely (e.g. hand-edited, or produced by a regressed writer)
-  // was accepted as if it were a genuine, complete v3 report. Each field
-  // must be an array of `{finding, decision}` pairs — not deeply
-  // re-validated against decisions.ts's full schema (that would duplicate
-  // decision-file validation for data this tool itself produced), but
-  // structurally present and shaped, so a report that dropped the array
-  // entirely (or replaced it with something that isn't one) is refused.
-  for (const field of ['resolvedConflicts', 'resolvedOrphans', 'resolvedOwnerAnomalies', 'resolvedUnknownUsers', 'resolvedMalformedClaims'] as const) {
-    const value = report[field]
+  // fix), item 3, DEEPENED by a 2nd follow-up review: schemaVersion is
+  // checked above to be EXACTLY REPORT_SCHEMA_VERSION (3), but the
+  // previous version of this check only verified `finding`/`decision`
+  // were present, non-array objects — never their actual content. A
+  // report could claim `missingCompanies: 1, unresolvedMissingCompanies: 0`
+  // while `resolvedOrphans: []` (the orphan simply vanished, unaccounted
+  // for either way), or supply `resolvedOrphans: [{finding: {}, decision:
+  // {}}]` (structurally present, semantically empty). See
+  // `validateResolvedFindingRecord()`/`validateResolvingDecisionRecord()`
+  // above for the full per-field/cross-field contract now enforced: each
+  // `finding` validated against its record type's real shape, each
+  // `decision` validated against `Decision`'s real shape, and —
+  // decisively — `decision` cross-checked to be genuinely THE decision
+  // that resolved THIS `finding` (matching identity, `findingType ===
+  // finding.reason`, `evidenceFingerprint`, and resolution/finding-type
+  // compatibility via `COMPATIBLE_RESOLUTIONS`).
+  const resolvedFindingsByField: Record<ResolvedFieldSpec['field'], { finding: Record<string, unknown>; decision: Record<string, unknown> }[]> =
+    { resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [] }
+  for (const spec of RESOLVED_FIELD_SPECS) {
+    const value = report[spec.field]
     if (!Array.isArray(value)) {
-      throw new ProductionSafetyError(`is missing ${field} (required by schema v${REPORT_SCHEMA_VERSION}'s resolved-findings audit trail).`)
+      throw new ProductionSafetyError(`is missing ${spec.field} (required by schema v${REPORT_SCHEMA_VERSION}'s resolved-findings audit trail).`)
     }
     value.forEach((entry, index) => {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-        throw new ProductionSafetyError(`${field}[${index}] is not an object.`)
+        throw new ProductionSafetyError(`${spec.field}[${index}] is not an object.`)
       }
       const rec = entry as Record<string, unknown>
-      if (!rec.finding || typeof rec.finding !== 'object') {
-        throw new ProductionSafetyError(`${field}[${index}].finding is missing.`)
+      if (!rec.finding || typeof rec.finding !== 'object' || Array.isArray(rec.finding)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}].finding is missing.`)
       }
-      if (!rec.decision || typeof rec.decision !== 'object') {
-        throw new ProductionSafetyError(`${field}[${index}].decision is missing.`)
+      if (!rec.decision || typeof rec.decision !== 'object' || Array.isArray(rec.decision)) {
+        throw new ProductionSafetyError(`${spec.field}[${index}].decision is missing.`)
       }
+      const finding = rec.finding as Record<string, unknown>
+      const decision = rec.decision as Record<string, unknown>
+      validateResolvedFindingRecord(spec.field, index, finding, spec)
+      validateResolvingDecisionRecord(spec.field, index, decision, finding)
+      resolvedFindingsByField[spec.field].push({ finding, decision })
     })
+  }
+  // Discovered/unresolved/resolved reconciliation — orphans are the only
+  // finding type with an explicit discovered-total count field
+  // (`missingCompanies`/`missingUsers`; conflicts/ownerAnomalies/
+  // unknownUsers/malformedClaims only ever expose an unresolved-only
+  // count — see report.ts's `ReportCounts` doc comments — so there is no
+  // discovered total to reconcile those against).
+  const resolvedMissingCompanies = resolvedFindingsByField.resolvedOrphans.filter(r => r.finding.reason === 'missing_company').length
+  const resolvedMissingUsers = resolvedFindingsByField.resolvedOrphans.filter(r => r.finding.reason === 'missing_user').length
+  if (counts.missingCompanies !== (counts.unresolvedMissingCompanies as number) + resolvedMissingCompanies) {
+    throw new ProductionSafetyError(`counts.missingCompanies (${counts.missingCompanies}) does not equal unresolvedMissingCompanies (${counts.unresolvedMissingCompanies}) + resolved missing_company orphans in resolvedOrphans (${resolvedMissingCompanies}) — discovered/unresolved/resolved orphan counts are internally inconsistent.`)
+  }
+  if (counts.missingUsers !== (counts.unresolvedMissingUsers as number) + resolvedMissingUsers) {
+    throw new ProductionSafetyError(`counts.missingUsers (${counts.missingUsers}) does not equal unresolvedMissingUsers (${counts.unresolvedMissingUsers}) + resolved missing_user orphans in resolvedOrphans (${resolvedMissingUsers}) — discovered/unresolved/resolved orphan counts are internally inconsistent.`)
   }
   const plannedCreatesRaw = report.plannedCreates
   if (!Array.isArray(plannedCreatesRaw)) {

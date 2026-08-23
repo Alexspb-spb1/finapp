@@ -301,6 +301,30 @@ describe('verifyStrictDryRunReport', () => {
     resolvedConflicts: [], resolvedOrphans: [], resolvedOwnerAnomalies: [], resolvedUnknownUsers: [], resolvedMalformedClaims: [],
   }
 
+  /** A genuinely well-formed `{finding, decision}` pair for a resolved
+   * `missing_company` orphan — identity, findingType, and
+   * evidenceFingerprint all match, and the resolution (`exclude`) is
+   * compatible with `missing_company` per `COMPATIBLE_RESOLUTIONS`. Used
+   * to prove the deep resolvedX validator ACCEPTS a real, consistent
+   * audit-trail entry, not just structurally-present objects. */
+  function resolvedMissingCompanyOrphan(overrides: { findingOverrides?: Record<string, unknown>; decisionOverrides?: Record<string, unknown> } = {}) {
+    const fingerprint = HEX64_A
+    return {
+      finding: {
+        companyId: 'co_ghost', uid: 'u_ghost', reason: 'missing_company',
+        sourceKinds: ['users.home'], observedRoles: ['admin'], hasInvalidRole: false, proposedRole: 'admin',
+        evidenceFingerprint: fingerprint,
+        ...overrides.findingOverrides,
+      },
+      decision: {
+        uid: 'u_ghost', companyId: 'co_ghost', findingType: 'missing_company',
+        evidenceFingerprint: fingerprint, resolution: 'exclude', reason: 'confirmed dead account',
+        reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z',
+        ...overrides.decisionOverrides,
+      },
+    }
+  }
+
   it('accepts a genuine, fully-resolved dry-run report', () => {
     const path = tempFile('dry-run.json', validDryRun)
     const result = verifyStrictDryRunReport(path, PROJECT_ID, 'production')
@@ -387,14 +411,131 @@ describe('verifyStrictDryRunReport', () => {
   // "inconsistent". The 4th round's version of this check wrongly summed
   // the discovered total (`missingCompanies`) into the unresolved-sum
   // check, so this exact real-world SEC-005 scenario was rejected. ──
-  it('accepts 1 missing_company (discovered) + 0 unresolvedMissingCompanies (correctly excluded) — unresolved: 0', () => {
-    const path = tempFile('dry-run.json', { ...validDryRun, counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }) })
+  it('accepts 1 missing_company (discovered) + 0 unresolvedMissingCompanies (correctly excluded) — WHEN backed by a genuine resolvedOrphans entry', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan()
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
     expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
   })
 
   it('still rejects when unresolvedMissingCompanies itself is nonzero while unresolved claims 0', () => {
     const path = tempFile('dry-run.json', { ...validDryRun, counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 1, unresolved: 0 }) })
     expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/inconsistent/)
+  })
+
+  // ── Independent audit fixes, 5th round, 2nd follow-up review: the deep
+  // resolvedX validator — the previous shallow version only checked
+  // finding/decision were present, non-array objects. ──────────────────
+  it('REJECTS "1 missing_company discovered, 0 unresolved" when resolvedOrphans is empty (the orphan vanished, unaccounted for either way)', () => {
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/missingCompanies/)
+  })
+
+  it('REJECTS a resolvedOrphans entry that is structurally present but semantically empty ({finding: {}, decision: {}})', () => {
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding: {}, decision: {} }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(ProductionSafetyError)
+  })
+
+  it('ACCEPTS a correctly-resolved missing_company: real finding + real decision, matching identity/findingType/evidenceFingerprint', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan()
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).not.toThrow()
+  })
+
+  it('rejects when decision.evidenceFingerprint does not match finding.evidenceFingerprint (mismatched pair)', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan({ decisionOverrides: { evidenceFingerprint: HEX64_B } })
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/evidenceFingerprint/)
+  })
+
+  it('rejects when decision.findingType does not match finding.reason', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan({ decisionOverrides: { findingType: 'role_mismatch' } })
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/findingType/)
+  })
+
+  it('rejects when decision.uid does not match finding.uid (wrong identity)', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan({ decisionOverrides: { uid: 'someone_else' } })
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/uid/)
+  })
+
+  it('rejects when decision.companyId does not match finding.companyId', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan({ decisionOverrides: { companyId: 'co_other' } })
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/companyId/)
+  })
+
+  it('rejects when decision.resolution is not compatible with finding.reason (e.g. confirm_role for missing_company)', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan({ decisionOverrides: { resolution: 'confirm_role', role: 'admin' } })
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/not compatible/)
+  })
+
+  it('rejects when finding.reason is not a valid reason for resolvedOrphans', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan({ findingOverrides: { reason: 'role_mismatch' }, decisionOverrides: { findingType: 'role_mismatch' } })
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/finding.reason/)
+  })
+
+  it('rejects when decision.reviewedAt is not a valid timestamp', () => {
+    const { finding, decision } = resolvedMissingCompanyOrphan({ decisionOverrides: { reviewedAt: 'not-a-date' } })
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      counts: fullCounts({ plannedCreates: 1, missingCompanies: 1, unresolvedMissingCompanies: 0, unresolved: 0 }),
+      resolvedOrphans: [{ finding, decision }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/reviewedAt/)
+  })
+
+  it('rejects a resolvedUnknownUsers entry whose finding carries a companyId (this finding type is user-level, no company target)', () => {
+    const path = tempFile('dry-run.json', {
+      ...validDryRun,
+      resolvedUnknownUsers: [{
+        finding: { uid: 'u1', companyId: 'co1', reason: 'no_usable_relations', evidenceFingerprint: HEX64_A },
+        decision: { uid: 'u1', findingType: 'no_usable_relations', evidenceFingerprint: HEX64_A, resolution: 'exclude', reason: 'x', reviewedBy: 'alice', reviewedAt: '2026-01-01T00:00:00.000Z' },
+      }],
+    })
+    expect(() => verifyStrictDryRunReport(path, PROJECT_ID, 'production')).toThrow(/companyId/)
   })
 
   it('rejects a missing unresolvedMissingCompanies/unresolvedMissingUsers field', () => {
