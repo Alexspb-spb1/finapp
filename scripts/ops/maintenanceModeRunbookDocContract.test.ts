@@ -117,3 +117,79 @@ describe('MEMBERSHIP_BACKFILL.md — set-maintenance-mode.ts examples match the 
     }
   })
 })
+
+/** Extracts the body of a `### <headingText>` markdown section — every
+ * line from that heading (exclusive) up to (but not including) the next
+ * `##`/`###` heading, or end of file. Returns `undefined` if the heading
+ * itself is never found, so a caller can assert "section exists" as its
+ * own check rather than silently asserting properties of an empty
+ * string. */
+function extractSection(markdown: string, headingText: string): string | undefined {
+  const lines = markdown.split('\n')
+  const headingIndex = lines.findIndex(l => l.trim() === headingText)
+  if (headingIndex === -1) return undefined
+
+  const bodyLines: string[] = []
+  for (let i = headingIndex + 1; i < lines.length; i++) {
+    if (/^#{2,3}\s/.test(lines[i]!)) break
+    bodyLines.push(lines[i]!)
+  }
+  return bodyLines.join('\n')
+}
+
+// Independent audit — production execution gate re-review, Step 2 finding:
+// the runbook used to say "proceed to Step 3 regardless of whether this
+// step reports changed: true ..." — unsafe, because changed: true means
+// Step 2 found and disabled an ALREADY-ENABLED SEC-005 maintenance
+// record, which can only mean a previous production cycle left it
+// enabled (stopped after enable/apply but before verify/disable). This
+// regression test locks in the corrected semantic contract of Step 2's
+// prose — not the exact wording, so future copy-edits don't spuriously
+// break it, but the essential safety markers a human operator depends on.
+describe('MEMBERSHIP_BACKFILL.md — Step 2 requires STOP-and-investigate on changed: true', () => {
+  const markdown = readFileSync(RUNBOOK_PATH, 'utf-8')
+  const step2 = extractSection(
+    markdown,
+    '### Step 2 — confirm `system/maintenance` is in a known, disabled state (read-only precheck)',
+  )
+
+  test('the Step 2 section is found and non-empty (this test cannot be silently checking an empty string)', () => {
+    expect(step2).toBeDefined()
+    expect(step2!.trim().length).toBeGreaterThan(0)
+  })
+
+  test('a non-zero exit code is explicitly required to STOP before Step 3', () => {
+    const idx = step2!.indexOf('Non-zero exit code')
+    expect(idx).toBeGreaterThanOrEqual(0)
+    expect(step2!.slice(idx, idx + 40)).toMatch(/STOP/)
+  })
+
+  test('changed: true is explicitly required to STOP, not merely noted', () => {
+    const idx = step2!.indexOf('`changed: true`')
+    expect(idx).toBeGreaterThanOrEqual(0)
+    // The STOP instruction must appear tied to this specific outcome, not
+    // just somewhere else in the section — checked by proximity to the
+    // "changed: true" mention rather than requiring exact wording.
+    expect(step2!.slice(idx, idx + 40)).toMatch(/STOP/)
+  })
+
+  test('the old "proceed to Step 3 regardless" instruction (or an equivalent "regardless" escape hatch) is gone', () => {
+    expect(step2).not.toMatch(/regardless/i)
+  })
+
+  test('a safe, no-investigation-needed transition to Step 3 is tied specifically to changed: false', () => {
+    // lastIndexOf, not indexOf: `changed: false` is also mentioned
+    // earlier in this section (describing the plain --disable-on-a-
+    // -missing-document no-op) — the safety-relevant mention is the
+    // final one, in the STOP/proceed decision list.
+    const idx = step2!.lastIndexOf('`changed: false`')
+    expect(idx).toBeGreaterThanOrEqual(0)
+    expect(step2!.slice(idx, idx + 60)).toMatch(/Step 3/)
+  })
+
+  test('an unexplained prior cycle must be investigated before a new one starts (the operator is told what to check, not just told to stop)', () => {
+    expect(step2).toMatch(/SEC-005\.md/)
+    expect(step2).toMatch(/apply/i)
+    expect(step2).toMatch(/verify/i)
+  })
+})

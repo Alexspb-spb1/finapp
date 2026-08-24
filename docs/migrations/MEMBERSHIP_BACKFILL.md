@@ -772,13 +772,40 @@ node scripts/ops/set-maintenance-mode.ts \
 create `{enabled: false}` or any other document (see
 "Maintenance/read-only mode" below, and
 `scripts/ops/maintenanceModeTransaction.ts`'s `transactionalDisable()`).
-Running this command tells you the document's CURRENT state (missing, or
-disabled for SEC-005) without writing anything in the missing case, and
-transactionally flips an existing SEC-005 record to disabled if it was
-somehow left enabled from a previous, incomplete cycle. It does not by
-itself establish any particular document state — proceed to Step 3
-regardless of whether this step reports `changed: true` or a
-"nothing to disable" no-op.
+
+**Read this step's result before doing anything else. It is a decision
+point, not a formality:**
+
+- **Non-zero exit code → STOP.** Do not proceed to Step 3. Something
+  other than a clean no-op or a clean disable happened (e.g. the record
+  belongs to a different task — see `scripts/ops/maintenanceModeCli.ts`'s
+  exit codes) and must be understood before touching production further.
+- **`changed: true` → STOP, even though the exit code is 0.** This means
+  the command found an ALREADY-ENABLED `system/maintenance` record for
+  `taskId: SEC-005` and just transactionally disabled it. An enabled
+  SEC-005 maintenance record at the START of a new cycle — before this
+  cycle's own Step 3 has run — can only mean a PREVIOUS SEC-005
+  production cycle left it enabled: that cycle may have stopped after
+  `enable` or after `apply` but before `verify`/`disable` (Step 7/Step 8
+  never ran). **Do not start a new cycle on top of an unexplained
+  previous one.** Before doing anything else:
+  1. Check `docs/remediation/reports/SEC-005.md`'s production-actions log
+     for the most recent production cycle and its recorded outcome.
+  2. Check whether a prior `apply` report, `verify` report, or rollback
+     record exists for that cycle (absolute paths outside this
+     repository, per "Production execution" above) and inspect them.
+  3. Establish, and record in `docs/remediation/reports/SEC-005.md`,
+     whether that prior cycle's `apply` ran, whether `verify` confirmed
+     the migrated state, and whether it was left mid-cycle or genuinely
+     abandoned.
+  4. Only once that prior cycle's outcome is established and recorded may
+     a new cycle begin — and only under its own fresh authorization from
+     the repository owner, the same as any other production action.
+- **`changed: false` → safe to proceed to Step 3.** This is the only
+  outcome that requires no further investigation: either the document
+  never existed, or it already existed disabled for `taskId: SEC-005` —
+  both mean no unexplained prior cycle is currently holding maintenance
+  mode active.
 
 ### Step 3 — enable maintenance mode (BEFORE backup — see "Maintenance/read-only mode" below)
 
