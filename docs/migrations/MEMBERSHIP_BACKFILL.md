@@ -758,7 +758,7 @@ deployed Rules/Functions are ever suspected to be stale or reverted,
 STOP and request a separate deploy authorization rather than assuming
 Steps 2 onward are safe to proceed with.
 
-### Step 2 — confirm `system/maintenance` is in a known, disabled state (read-only precheck)
+### Step 2 — confirm `system/maintenance` is in a known, disabled state (state precheck; may disable an active SEC-005 record)
 
 ```bash
 node scripts/ops/set-maintenance-mode.ts \

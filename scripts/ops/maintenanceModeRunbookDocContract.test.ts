@@ -150,7 +150,7 @@ describe('MEMBERSHIP_BACKFILL.md — Step 2 requires STOP-and-investigate on cha
   const markdown = readFileSync(RUNBOOK_PATH, 'utf-8')
   const step2 = extractSection(
     markdown,
-    '### Step 2 — confirm `system/maintenance` is in a known, disabled state (read-only precheck)',
+    '### Step 2 — confirm `system/maintenance` is in a known, disabled state (state precheck; may disable an active SEC-005 record)',
   )
 
   test('the Step 2 section is found and non-empty (this test cannot be silently checking an empty string)', () => {
@@ -191,5 +191,44 @@ describe('MEMBERSHIP_BACKFILL.md — Step 2 requires STOP-and-investigate on cha
     expect(step2).toMatch(/SEC-005\.md/)
     expect(step2).toMatch(/apply/i)
     expect(step2).toMatch(/verify/i)
+  })
+})
+
+// Independent audit — final re-review, Step 2 heading finding: the heading
+// called this step a "(read-only precheck)" while the section body below
+// it correctly documented that `--disable` performs a transactional write
+// when it finds an ALREADY-ENABLED SEC-005 record (`changed: true`). The
+// heading contradicted the body and is the part an operator skims first,
+// so it is the part that could send them into production believing the
+// command cannot write. The doc-contract test above also pinned the wrong
+// heading verbatim, which locked the false claim in place.
+//
+// This test deliberately locates the heading STRUCTURALLY (the line that
+// starts a "### Step 2 —" section) rather than by its new text: pinning
+// the new wording would repeat the original mistake, and a test that
+// cannot find the heading at all must fail loudly rather than pass
+// vacuously.
+describe('MEMBERSHIP_BACKFILL.md — the Step 2 heading does not claim to be read-only', () => {
+  const markdown = readFileSync(RUNBOOK_PATH, 'utf-8')
+  const headings = markdown
+    .split('\n')
+    .filter(line => /^### Step 2\s+[—-]/.test(line))
+
+  test('exactly one Step 2 heading exists (a missing heading must fail, not pass silently)', () => {
+    expect(headings).toHaveLength(1)
+  })
+
+  test('the heading does not assert or imply that the step is read-only', () => {
+    // `--disable` is read-only ONLY when it finds nothing to change. When
+    // it finds an enabled SEC-005 record it transactionally disables it —
+    // see transactionalDisable() in scripts/ops/maintenanceModeTransaction.ts
+    // and this section's own `changed: true` STOP rule.
+    expect(headings[0]).not.toMatch(/read-only/i)
+    expect(headings[0]).not.toMatch(/\bno[- ]?op only\b/i)
+  })
+
+  test('the heading still says what the step is FOR, so it is not merely stripped of the false claim', () => {
+    expect(headings[0]).toMatch(/system\/maintenance/)
+    expect(headings[0]).toMatch(/disabled state/i)
   })
 })
