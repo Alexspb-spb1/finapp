@@ -4,20 +4,41 @@
 // (system/maintenance), reusing the SAME environment/project/cycle-
 // execution guards as scripts/backfill-memberships.ts.
 //
-// Production remains UNCONDITIONALLY refused via
-// assertCycleExecutionAllowed() — this script does not, and structurally
-// cannot, weaken that gate; it exists so the maintenance-mode mechanism
-// itself is real, exercised by tests, and ready for the day a genuine
-// PRODUCTION_ACTION_APPROVED grant removes that block. Until then this
-// only actually writes against --environment emulator|staging.
+// Production execution gate round: `maintenance-enable`/`maintenance-disable`
+// are now explicit, typed actions passed to assertCycleExecutionAllowed()
+// (see scripts/lib/firebaseAdmin.ts) — production is authorized for both
+// under the PRODUCTION_ACTION_APPROVED: SEC-005 grant covering the full
+// controlled cycle. This script does not, and structurally cannot, widen
+// that grant itself — it only ever asks the gate whether the SPECIFIC
+// action it is about to attempt is authorized, exactly like
+// backfill-memberships.ts does for its own modes.
+//
+// Hardened for production admission (this round): every write to
+// system/maintenance happens inside a Firestore transaction (atomic
+// read-modify-write — a concurrent modification aborts and retries rather
+// than silently racing); `--enable` refuses (does not overwrite) an
+// already-enabled record, so a second accidental `--enable` can never
+// reset `enabledAt` or discard the existing reason/taskId/enabledBy audit
+// trail; `--disable` refuses to touch a maintenance record belonging to a
+// DIFFERENT `--task-id` than the one supplied, and disabling an
+// already-disabled SEC-005 record is a safe, idempotent no-op. For
+// `--environment production`, `--task-id` must be exactly `SEC-005` — the
+// only task currently granted a production maintenance-mode authorization.
 //
 // See docs/migrations/MEMBERSHIP_BACKFILL.md, "Maintenance/read-only mode"
-// and "Future production execution" — this is Step 2/Step 6 of that
-// runbook (create maintenance doc / enable BEFORE backup, disable only
-// AFTER verify).
+// and "Production execution" — this is Step 2/Step 6 of that runbook
+// (enable BEFORE backup, disable only AFTER verify).
+//
+// Audit-fix round, item 1: this file is now a PURE CLI entrypoint — it
+// parses argv and calls main() unconditionally at import time (see the
+// bottom of this file), which is exactly the behavior that made it unsafe
+// to import from a test runner. The actual transaction logic
+// (transactionalEnable/transactionalDisable/MaintenanceModeStateError) now
+// lives in the side-effect-free ./maintenanceModeTransaction.ts, which
+// tests import directly instead of importing this file.
 import process from 'node:process'
-import { FieldValue } from 'firebase-admin/firestore'
 import { parseMaintenanceModeCliArgs, MaintenanceModeCliArgError } from './maintenanceModeCli.ts'
+import { transactionalEnable, transactionalDisable, MaintenanceModeStateError, type MaintenanceTransitionResult } from './maintenanceModeTransaction.ts'
 import { assertEnvironmentGuard, assertCycleExecutionAllowed, initFirestore, EnvironmentGuardError, CycleExecutionError } from '../lib/firebaseAdmin.ts'
 
 async function main(): Promise<number> {
@@ -43,43 +64,39 @@ async function main(): Promise<number> {
     throw err
   }
 
-  // Same unconditional production refusal as the main migration tool —
+  // The SAME cycle-execution gate scripts/backfill-memberships.ts uses —
   // deliberately reused, not reimplemented, so there is exactly ONE place
-  // in this codebase that decides whether production is authorized this
-  // cycle.
+  // in this codebase that decides whether a given (environment, action)
+  // pair is authorized this cycle. Checked BEFORE initFirestore() (any
+  // credential acquisition) and BEFORE any Firestore I/O, same as every
+  // other cycle-execution check in this tool.
   try {
-    assertCycleExecutionAllowed(opts.environment)
+    assertCycleExecutionAllowed(opts.environment, opts.action === 'enable' ? 'maintenance-enable' : 'maintenance-disable')
   } catch (err) {
     if (err instanceof CycleExecutionError) { console.error(`Refusing to run against --environment ${opts.environment}: ${err.message}`); return 4 }
     throw err
   }
 
   const db = initFirestore(expectedProjectId)
-  const ref = db.collection('system').doc('maintenance')
 
-  if (opts.action === 'enable') {
-    // Full overwrite (not merge) — a fresh --enable must never inherit
-    // stale reason/taskId/enabledBy fields from a previous maintenance
-    // cycle on the same document.
-    await ref.set({
-      enabled: true,
-      enabledAt: FieldValue.serverTimestamp(),
-      enabledBy: opts.operator,
-      reason: opts.reason,
-      taskId: opts.taskId,
-    })
-  } else {
-    // merge:true deliberately PRESERVES the historical enabledAt/enabledBy/
-    // reason/taskId fields for audit — only `enabled` flips, plus a
-    // disabledAt/disabledBy pair is added.
-    await ref.set({
-      enabled: false,
-      disabledAt: FieldValue.serverTimestamp(),
-      disabledBy: opts.operator,
-    }, { merge: true })
+  let result: MaintenanceTransitionResult
+  try {
+    result = opts.action === 'enable'
+      ? await transactionalEnable(db, { reason: opts.reason!, taskId: opts.taskId!, operator: opts.operator! })
+      : await transactionalDisable(db, { taskId: opts.taskId!, operator: opts.operator! })
+  } catch (err) {
+    if (err instanceof MaintenanceModeStateError) { console.error(`Maintenance mode: ${err.message}`); return 1 }
+    throw err
   }
 
-  console.log(JSON.stringify({ action: opts.action, environment: opts.environment, projectId: expectedProjectId, enabled: opts.action === 'enable' }, null, 2))
+  console.log(JSON.stringify({
+    action: opts.action,
+    environment: opts.environment,
+    projectId: expectedProjectId,
+    enabled: opts.action === 'enable',
+    changed: result.changed,
+    ...(result.noopReason ? { noopReason: result.noopReason } : {}),
+  }, null, 2))
   return 0
 }
 
