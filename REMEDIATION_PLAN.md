@@ -601,7 +601,7 @@ src/pages/Register.tsx
 
 ---
 
-## [-] SEC-005 — Создать и выполнить backfill membership-документов
+## [x] SEC-005 — Создать и выполнить backfill membership-документов
 
 **Ветка:** `remediation/SEC-005-membership-backfill`
 
