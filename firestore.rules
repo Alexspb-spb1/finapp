@@ -303,6 +303,34 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ── invitations/{inviteId}, invitationLocks/{lockId} — SEC-006 ───────
+    //
+    // Полностью server-only. Приглашение и его lock-документ (не более
+    // одного pending-приглашения на пару companyId+email, см.
+    // docs/adr/001-company-membership-and-roles.md и план SEC-006) создаются,
+    // читаются и изменяются ИСКЛЮЧИТЕЛЬНО доверенными Cloud Functions через
+    // Admin SDK (Admin SDK не подчиняется этим Rules вообще). Ни один
+    // клиент — включая admin своей же компании — не получает прямого
+    // доступа ни при каких обстоятельствах: безопасная модель для клиентской
+    // проверки "это приглашение адресовано мне и не истекло" недоказуема без
+    // атомарной серверной сверки tokenHash/status/expiresAt (тот же принцип,
+    // что уже применён к management других участников — см. блок
+    // `users/{userId}` выше, "Управление ДРУГИМИ пользователями").
+    //
+    // Эти явные deny-all блоки размещены здесь, ДО общего catch-all ниже,
+    // намеренно — чтобы более общий match не мог случайно предоставить
+    // доступ при будущих правках (даже притом что сам catch-all тоже
+    // deny-all, явный блок для этих двух коллекций не оставляет
+    // двусмысленности при чтении Rules).
+
+    match /invitations/{inviteId} {
+      allow read, write: if false;
+    }
+
+    match /invitationLocks/{lockId} {
+      allow read, write: if false;
+    }
+
     // ── Всё остальное — deny-by-default ──────────────────────────────────
 
     match /{document=**} {

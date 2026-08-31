@@ -968,3 +968,121 @@ describe('SEC-005 production preflight: maintenance mode blocks client writes', 
     await assertFails(setDoc(doc(db, 'system', 'maintenance'), { enabled: false }))
   })
 })
+
+// ── 22. SEC-006 Stage 1: invitations/invitationLocks are fully server-only ──
+//
+// Both collections are written/read exclusively by trusted Cloud Functions
+// via the Admin SDK (which is not subject to these Rules at all) — see
+// firestore.rules' own comment above these two match blocks, and
+// docs/adr/001-company-membership-and-roles.md. No client, including an
+// admin of the invitation's own company, may read or write either
+// collection directly. This describe block exists purely to prove the
+// deny-all Rules — no callable exists yet (Stage 1 is model/schema/Rules
+// only), so these tests seed synthetic documents directly (bypassing
+// Rules) and assert every client access path is denied.
+describe('22. invitations/invitationLocks are fully server-only (SEC-006 Stage 1)', () => {
+  const INVITE_ID = 'invite_synthetic_01'
+  const LOCK_ID = 'lock_synthetic_01'
+
+  const SYNTHETIC_INVITATION = {
+    companyId: COMPANY_A,
+    emailNormalized: 'invitee@example.test',
+    role: 'viewer',
+    tokenHash: '0'.repeat(64),
+    status: 'pending',
+    expiresAt: '2026-06-08T00:00:00.000Z',
+    createdBy: ADMIN_A,
+    createdAt: '2026-06-01T00:00:00.000Z',
+    updatedAt: '2026-06-01T00:00:00.000Z',
+    acceptedAt: null,
+    acceptedByUid: null,
+    revokedAt: null,
+    revokedBy: null,
+    resendCount: 0,
+    lastSentAt: null,
+  }
+
+  const SYNTHETIC_LOCK = { currentInviteId: INVITE_ID }
+
+  async function seedInvitationAndLock(): Promise<void> {
+    await testEnv.withSecurityRulesDisabled(async ctx => {
+      const db = ctx.firestore()
+      await Promise.all([
+        setDoc(doc(db, 'invitations', INVITE_ID), SYNTHETIC_INVITATION),
+        setDoc(doc(db, 'invitationLocks', LOCK_ID), SYNTHETIC_LOCK),
+      ])
+    })
+  }
+
+  // (actor label, context factory) — covers all four required actor rows:
+  // unauthenticated, authenticated non-admin (of the invitation's own
+  // company), admin of a DIFFERENT company, admin of the SAME company.
+  const ACTORS: Array<[string, () => ReturnType<typeof testEnv.authenticatedContext> | ReturnType<typeof testEnv.unauthenticatedContext>]> = [
+    ['unauthenticated', () => testEnv.unauthenticatedContext()],
+    ['authenticated non-admin (viewer of the same company)', () => testEnv.authenticatedContext(VIEWER_A)],
+    ['admin of a different company', () => testEnv.authenticatedContext(ADMIN_B)],
+    ['admin of the same company as the invitation', () => testEnv.authenticatedContext(ADMIN_A)],
+  ]
+
+  describe('invitations/{inviteId}', () => {
+    beforeEach(seedInvitationAndLock)
+
+    for (const [label, ctx] of ACTORS) {
+      it(`${label}: get denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(getDoc(doc(db, 'invitations', INVITE_ID)))
+      })
+
+      it(`${label}: list/query denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(getDocs(query(collection(db, 'invitations'), where('companyId', '==', COMPANY_A))))
+      })
+
+      it(`${label}: create denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(setDoc(doc(db, 'invitations', 'invite_attacker_created'), SYNTHETIC_INVITATION))
+      })
+
+      it(`${label}: update denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(updateDoc(doc(db, 'invitations', INVITE_ID), { status: 'revoked' }))
+      })
+
+      it(`${label}: delete denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(deleteDoc(doc(db, 'invitations', INVITE_ID)))
+      })
+    }
+  })
+
+  describe('invitationLocks/{lockId}', () => {
+    beforeEach(seedInvitationAndLock)
+
+    for (const [label, ctx] of ACTORS) {
+      it(`${label}: get denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(getDoc(doc(db, 'invitationLocks', LOCK_ID)))
+      })
+
+      it(`${label}: list/query denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(getDocs(query(collection(db, 'invitationLocks'), limit(10))))
+      })
+
+      it(`${label}: create denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(setDoc(doc(db, 'invitationLocks', 'lock_attacker_created'), SYNTHETIC_LOCK))
+      })
+
+      it(`${label}: update denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(updateDoc(doc(db, 'invitationLocks', LOCK_ID), { currentInviteId: 'invite_attacker_swap' }))
+      })
+
+      it(`${label}: delete denied`, async () => {
+        const db = ctx().firestore()
+        await assertFails(deleteDoc(doc(db, 'invitationLocks', LOCK_ID)))
+      })
+    }
+  })
+})
