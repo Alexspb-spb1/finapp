@@ -994,10 +994,14 @@ describe('22. invitations/invitationLocks are fully server-only (SEC-006 Stage 1
     createdBy: ADMIN_A,
     createdAt: '2026-06-01T00:00:00.000Z',
     updatedAt: '2026-06-01T00:00:00.000Z',
-    acceptedAt: null,
-    acceptedByUid: null,
-    revokedAt: null,
-    revokedBy: null,
+    // No acceptedAt/acceptedByUid/revokedAt/revokedBy here — per
+    // InvitationDocumentSchema's discriminated union
+    // (functions/src/schemas/invitation.ts), a 'pending' invitation does
+    // not carry these fields AT ALL, not even as null. This fixture exists
+    // only to prove the Rules deny-all (it is written directly via
+    // withSecurityRulesDisabled, bypassing schema validation entirely), but
+    // its shape should still match what a real pending document actually
+    // looks like — independent audit finding, SEC-006 Stage 1.
     resendCount: 0,
     lastSentAt: null,
   }

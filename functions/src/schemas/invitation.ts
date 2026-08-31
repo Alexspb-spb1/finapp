@@ -4,12 +4,16 @@
 // full staged plan this file is Stage 1 of).
 //
 // Same hard rules as functions/src/schemas/auth.ts and company.ts: strict
-// objects, no `.default()`/`.catch()`/coerce for role/status/other
-// authorization-relevant fields, no `.passthrough()`. Unknown fields are
-// always rejected — this is what stops a payload-smuggled `role`/
-// `companyId`/`uid`/timestamp field from ever being read by a future
-// callable; no field is EVER read from `request.data` for anything not
-// listed in the relevant request schema below.
+// objects, no `.passthrough()`, and — for authorization-relevant fields
+// ONLY (role, status, companyId, uid, timestamps) — no `.default()`/
+// `.catch()`/coerce of any kind. Unknown fields are always rejected — this
+// is what stops a payload-smuggled `role`/`companyId`/`uid`/timestamp field
+// from ever being read by a future callable; no field is EVER read from
+// `request.data` for anything not listed in the relevant request schema
+// below. This restriction does NOT extend to non-privileged fields: e.g.
+// `ListInvitationsRequestSchema`'s `pageSize` below deliberately uses
+// `.default(20)` — bounded pagination has no bearing on authorization, so
+// defaulting it is safe and intentional, not an exception to this rule.
 //
 // Role reuse: RoleSchema is imported from ./auth.ts (already the canonical
 // source within this package — see docs/adr/001-company-membership-and-roles.md)
