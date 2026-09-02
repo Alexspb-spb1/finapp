@@ -165,10 +165,15 @@ export type InviteMemberRequest = z.infer<typeof InviteMemberRequestSchema>
 // paths) is ever included. `.strict()` makes this structurally provable in
 // a unit test: a response object carrying a stray `tokenHash` field fails
 // validation outright.
+// z.iso.datetime() (not a bare z.string()) enforces the exact shape
+// `Date.prototype.toISOString()` produces: millisecond precision, 'Z'
+// suffix, no other offset — matching independent review finding #1 on
+// SEC-006 Stage 2, which asked for strict UTC ISO validation rather than
+// "any non-empty string".
 export const InviteMemberResponseSchema = z.object({
   inviteId: idLikeString,
   token: RawInvitationTokenSchema,
-  expiresAtUtc: z.string().min(1),
+  expiresAtUtc: z.iso.datetime(),
 }).strict()
 export type InviteMemberResponse = z.infer<typeof InviteMemberResponseSchema>
 

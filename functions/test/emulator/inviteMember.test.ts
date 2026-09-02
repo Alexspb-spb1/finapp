@@ -12,9 +12,18 @@ import {
   createTestUser, signOutClient, signInAsExistingUser, seedCompany, seedMembership,
   callInviteMember,
   getInvitationDoc, seedInvitationDoc, getInvitationLockDoc, seedInvitationLockDoc,
-  countInvitationsFor, countAllInvitationLocks, countAuditEvents, authUserExistsWithEmail,
+  countInvitationsFor, countAuditEvents, getAuditEvents, authUserExistsWithEmail,
   setMaintenanceMode, clearMaintenanceMode,
 } from './helpers'
+
+/** Asserts the negative-path invariant required by independent review
+ * finding #3: a denied call must leave behind not just zero invitations,
+ * but zero locks and zero audit events too. */
+async function expectNoWritesAtAllFor(companyId: string, email: string): Promise<void> {
+  expect(await countInvitationsFor(companyId, email)).toBe(0)
+  expect(await getInvitationLockDoc(companyId, email)).toBeUndefined()
+  expect(await countAuditEvents(companyId)).toBe(0)
+}
 
 function appCodeOf(err: unknown): string | undefined {
   if (err instanceof FunctionsError) {
@@ -72,16 +81,36 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
     expect(invite).not.toHaveProperty('acceptedAt')
     expect(invite).not.toHaveProperty('revokedAt')
 
+    // Independent review finding #1: expiresAtUtc must be the EXACT same
+    // instant as the stored Timestamp, not merely "some non-empty string".
+    expect((invite?.expiresAt as Timestamp).toMillis()).toBe(Date.parse(result.expiresAtUtc))
+
     const lock = await getInvitationLockDoc(companyId, email)
     expect(lock).toEqual({ currentInviteId: result.inviteId })
 
-    expect(await countAuditEvents(companyId)).toBe(1)
+    // Independent review finding #2: read the actual audit event, not just
+    // its count — the exact safe field set, the action, and the absence of
+    // token/tokenHash/email/role.
+    const auditEvents = await getAuditEvents(companyId)
+    expect(auditEvents).toHaveLength(1)
+    const auditEvent = auditEvents[0]!
+    expect(Object.keys(auditEvent).sort()).toEqual(['action', 'actorUid', 'createdAt', 'targetUid'])
+    expect(auditEvent.action).toBe('member_invited')
+    expect(auditEvent.targetUid).toBeNull() // no invitee uid exists yet at invite time
+    expect(auditEvent).not.toHaveProperty('token')
+    expect(auditEvent).not.toHaveProperty('tokenHash')
+    expect(auditEvent).not.toHaveProperty('email')
+    expect(auditEvent).not.toHaveProperty('role')
+
     expect(await countInvitationsFor(companyId, email)).toBe(1)
 
     // Raw token absent from every persisted structure: the invitation doc,
     // the lock doc, and the audit event.
-    const serializedDocs = JSON.stringify({ invite, lock })
+    const serializedDocs = JSON.stringify({ invite, lock, auditEvent })
     expect(serializedDocs).not.toContain(result.token)
+    // The email is legitimately stored on the invitation doc itself
+    // (emailNormalized) — it must NOT also leak into the audit event.
+    expect(JSON.stringify(auditEvent)).not.toContain(email)
   })
 
   // ── 4: unverified admin — denied, 0 writes ───────────────────────────────
@@ -95,7 +124,7 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
     await expect(
       callInviteMember({ companyId, email, role: 'viewer' }),
     ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'email_unverified')
-    expect(await countInvitationsFor(companyId, email)).toBe(0)
+    await expectNoWritesAtAllFor(companyId, email)
   })
 
   // ── 5: viewer/accountant — denied, 0 writes ──────────────────────────────
@@ -109,7 +138,7 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
     await expect(
       callInviteMember({ companyId, email, role: 'viewer' }),
     ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'insufficient_role')
-    expect(await countInvitationsFor(companyId, email)).toBe(0)
+    await expectNoWritesAtAllFor(companyId, email)
   })
 
   // ── 6: unauthenticated — denied, 0 writes ────────────────────────────────
@@ -120,7 +149,7 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
     await expect(
       callInviteMember({ companyId, email, role: 'viewer' }),
     ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'auth_required')
-    expect(await countInvitationsFor(companyId, email)).toBe(0)
+    await expectNoWritesAtAllFor(companyId, email)
   })
 
   // ── 7: non-member / admin of a different company — denied, 0 writes ─────
@@ -133,7 +162,7 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
     await expect(
       callInviteMember({ companyId: companyA, email, role: 'viewer' }),
     ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'membership_not_found')
-    expect(await countInvitationsFor(companyA, email)).toBe(0)
+    await expectNoWritesAtAllFor(companyA, email)
   })
 
   // ── 8: extra payload fields / forged uid/status/timestamps — denied, 0 writes ──
@@ -150,7 +179,7 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
         callInviteMember({ companyId, email, role: 'viewer', ...forged }),
       ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
     }
-    expect(await countInvitationsFor(companyId, email)).toBe(0)
+    await expectNoWritesAtAllFor(companyId, email)
   })
 
   // ── 9: maintenance enabled — denied, 0 writes ────────────────────────────
@@ -161,7 +190,7 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
     await expect(
       callInviteMember({ companyId, email, role: 'viewer' }),
     ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'maintenance_mode')
-    expect(await countInvitationsFor(companyId, email)).toBe(0)
+    await expectNoWritesAtAllFor(companyId, email)
   })
 
   // ── 10: repeat call while a pending invite is alive ──────────────────────
@@ -304,6 +333,7 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
       ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
       expect(await getInvitationLockDoc(companyId, email)).toEqual(corruptLock)
       expect(await countInvitationsFor(companyId, email)).toBe(0)
+      expect(await countAuditEvents(companyId)).toBe(0)
     })
 
     it('a lock pointing at a MISSING invitation is refused with a generic internal_error, and the lock is left untouched', async () => {
@@ -316,6 +346,7 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
       ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
       expect(await getInvitationLockDoc(companyId, email)).toEqual({ currentInviteId: 'invite_ghost_does_not_exist' })
       expect(await countInvitationsFor(companyId, email)).toBe(0)
+      expect(await countAuditEvents(companyId)).toBe(0)
     })
 
     it('a lock pointing at an invitation whose companyId/emailNormalized do NOT match the lock scope is refused with a generic internal_error', async () => {
@@ -335,23 +366,25 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
         callInviteMember({ companyId, email, role: 'viewer' }),
       ).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
       expect(await countInvitationsFor(companyId, email)).toBe(0)
+      expect(await countAuditEvents(companyId)).toBe(0)
     })
   })
 
   // ── 17: a forced transaction retry does not regenerate/duplicate the token/inviteId ──
-  // The token/tokenHash/inviteId/expiresAt are generated ONCE, before
-  // db.runTransaction() is ever called (functions/src/index.ts), and
-  // captured in the transaction closure — any internal Firestore retry of
-  // that closure structurally cannot regenerate them (there is no
-  // generation code left inside the closure to re-run). This is also
-  // empirically covered by the concurrency test above (#14): if the
-  // winning transaction there had internally retried due to contention
-  // with the loser, the returned token would still have to hash to the
-  // stored tokenHash for that test's assertions to pass. This test adds a
-  // second, independent line of evidence by forcing contention on a
-  // document inviteMember's OWN transaction reads (the caller's membership
-  // doc) via repeated concurrent writes during the call, then checking the
-  // same internal-consistency property.
+  // The AUTHORITATIVE proof for this requirement is
+  // functions/test/unit/inviteMemberTransaction.test.ts: it uses an
+  // injectable transaction runner to invoke the transaction body TWICE
+  // against fake Transactions and asserts the token generator/hasher were
+  // each called exactly once (independent review finding #4, round 1 —
+  // this emulator test alone could not prove a retry actually happened,
+  // since concurrent writes might land before the read or after commit).
+  // This emulator test is a supplementary, best-effort empirical check on
+  // top of that: it forces real contention on inviteMember's OWN
+  // transaction read-set (the caller's membership doc) via repeated
+  // concurrent writes during a real call, and confirms the result stays
+  // internally consistent (returned token hashes to the stored tokenHash,
+  // no duplicate invitations) — consistent with, but not proof of, an
+  // actual internal retry having occurred.
   it('forcing contention on the transaction read-set (concurrent writes to the admin membership doc) still yields one internally-consistent invitation', async () => {
     const { companyId, adminUid } = await setUpAdmin('forced-retry')
     const email = freshInviteeEmail('forced-retry')
@@ -376,15 +409,5 @@ describe('inviteMember — real callable pipeline through the Functions Emulator
     expect(await authUserExistsWithEmail(email)).toBe(false)
     await callInviteMember({ companyId, email, role: 'viewer' })
     expect(await authUserExistsWithEmail(email)).toBe(false)
-  })
-
-  // ── Sanity: no orphan locks accumulate across this whole suite's companies ──
-  it('every lock created in this suite has a matching invitation (no structurally orphaned locks from this suite\'s own calls)', async () => {
-    // countAllInvitationLocks() spans the whole emulator DB (shared across
-    // this file's tests) — used only as a smoke check that lock count is
-    // never negative/absurd, not as a precise assertion (other tests seed
-    // synthetic locks deliberately). This just proves the helper itself
-    // works end-to-end.
-    expect(await countAllInvitationLocks()).toBeGreaterThan(0)
   })
 })

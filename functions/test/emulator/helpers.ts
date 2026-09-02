@@ -187,6 +187,12 @@ export async function countAuditEvents(companyId: string): Promise<number> {
   return snap.size
 }
 
+/** Reads all companies/{companyId}/audit_events documents directly via the Admin SDK — used to assert the exact field set/content of an audit event (e.g. no email/role/token/tokenHash ever reaches it). */
+export async function getAuditEvents(companyId: string): Promise<Record<string, unknown>[]> {
+  const snap = await db.collection('companies').doc(companyId).collection('audit_events').get()
+  return snap.docs.map(doc => doc.data() as Record<string, unknown>)
+}
+
 /** Sets (or clears) system/maintenance directly via the Admin SDK — SEC-005
  * production preflight. Firestore Rules never apply to this write since it
  * goes through the Admin SDK, matching how an operator following the

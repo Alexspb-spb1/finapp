@@ -489,4 +489,18 @@ describe('InviteMemberResponseSchema — strict, no tokenHash/email/companyId ev
     const { expiresAtUtc: _drop, ...withoutExpiry } = valid
     expect(InviteMemberResponseSchema.safeParse(withoutExpiry).success).toBe(false)
   })
+
+  // ── Independent review finding #1 (Stage 2 round 1): strict UTC ISO, not "any string" ──
+  it('accepts the exact shape produced by Date.prototype.toISOString()', () => {
+    expect(InviteMemberResponseSchema.safeParse({ ...valid, expiresAtUtc: new Date().toISOString() }).success).toBe(true)
+  })
+  it('rejects a non-UTC offset (e.g. +02:00) even if otherwise well-formed', () => {
+    expect(InviteMemberResponseSchema.safeParse({ ...valid, expiresAtUtc: '2030-01-01T00:00:00+02:00' }).success).toBe(false)
+  })
+  it('rejects a date-only string (no time component)', () => {
+    expect(InviteMemberResponseSchema.safeParse({ ...valid, expiresAtUtc: '2030-01-01' }).success).toBe(false)
+  })
+  it('rejects a completely non-date string', () => {
+    expect(InviteMemberResponseSchema.safeParse({ ...valid, expiresAtUtc: 'not-a-date' }).success).toBe(false)
+  })
 })
