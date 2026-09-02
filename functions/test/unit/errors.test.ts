@@ -13,6 +13,8 @@ describe('AppError -> HttpsError mapping', () => {
     ['insufficient_role', 'permission-denied'],
     ['last_admin', 'failed-precondition'],
     ['idempotency_conflict', 'aborted'],
+    ['maintenance_mode', 'failed-precondition'],
+    ['invitation_already_pending', 'already-exists'],
     ['internal_error', 'internal'],
   ] as const)('%s maps to HttpsError code %s', (appCode, httpsCode) => {
     const httpsError = new AppError(appCode).toHttpsError()
@@ -70,6 +72,12 @@ describe('toSafeHttpsError', () => {
   it('converts an AppError to its mapped HttpsError', () => {
     const result = toSafeHttpsError(new AppError('last_admin'))
     expect(result.code).toBe('failed-precondition')
+  })
+
+  it('converts the SEC-006 invitation_already_pending AppError safely (already-exists, appCode preserved)', () => {
+    const result = toSafeHttpsError(new AppError('invitation_already_pending'))
+    expect(result.code).toBe('already-exists')
+    expect((result.details as { appCode: string }).appCode).toBe('invitation_already_pending')
   })
 
   it('collapses an unrecognized error into a generic internal_error — never forwards its message', () => {

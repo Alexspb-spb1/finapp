@@ -157,6 +157,21 @@ export const InviteMemberRequestSchema = z.object({
 }).strict()
 export type InviteMemberRequest = z.infer<typeof InviteMemberRequestSchema>
 
+// inviteMember's response — SEC-006 Stage 2. Deliberately minimal: the raw
+// token is returned here ONLY (this is the one and only moment it ever
+// exists outside a local handler variable — see
+// functions/src/lib/invitationToken.ts) and nothing else about the
+// invitation (tokenHash, emailNormalized, companyId, internal document
+// paths) is ever included. `.strict()` makes this structurally provable in
+// a unit test: a response object carrying a stray `tokenHash` field fails
+// validation outright.
+export const InviteMemberResponseSchema = z.object({
+  inviteId: idLikeString,
+  token: RawInvitationTokenSchema,
+  expiresAtUtc: z.string().min(1),
+}).strict()
+export type InviteMemberResponse = z.infer<typeof InviteMemberResponseSchema>
+
 export const ListInvitationsRequestSchema = z.object({
   companyId: idLikeString,
   cursor: nonEmptyString.max(500).optional(),

@@ -11,6 +11,7 @@ import { getAuth, connectAuthEmulator, signInWithCustomToken, signOut, type Auth
 import { getFunctions, connectFunctionsEmulator, httpsCallable, type Functions } from 'firebase/functions'
 import { Timestamp } from 'firebase-admin/firestore'
 import { adminAuth, db } from '../../src/lib/admin'
+import { computeInvitationLockId } from '../../src/schemas/invitation'
 
 const PROJECT_ID = 'demo-finapp'
 const AUTH_EMULATOR_ORIGIN = 'http://127.0.0.1:9099'
@@ -70,6 +71,12 @@ export async function createTestUser(emailVerified: boolean, label = 'user'): Pr
 
 export async function signOutClient(): Promise<void> {
   await signOut(getClientAuth())
+}
+
+/** Re-signs-in as an already-created uid on the shared client auth singleton — needed whenever a test needs to switch back to an earlier user (e.g. alternating between two admins of two different companies). Same shared-singleton caveat as createTestUser: call immediately before the callable call meant to use it. */
+export async function signInAsExistingUser(uid: string): Promise<void> {
+  const customToken = await adminAuth.createCustomToken(uid)
+  await signInWithCustomToken(getClientAuth(), customToken)
 }
 
 export async function seedCompany(companyId: string, ownerId = 'uid_owner_synthetic'): Promise<void> {
@@ -191,4 +198,66 @@ export async function setMaintenanceMode(enabled: boolean, extra: Record<string,
 /** Removes system/maintenance entirely — restores the default (pre-runbook) state. */
 export async function clearMaintenanceMode(): Promise<void> {
   await db.collection('system').doc('maintenance').delete()
+}
+
+// ── SEC-006 Stage 2 (inviteMember) ───────────────────────────────────────
+
+/** Calls the real `inviteMember` callable through the Functions Emulator, using whichever user is currently signed in on the client auth instance. */
+export async function callInviteMember(payload: unknown): Promise<unknown> {
+  const callable = httpsCallable(getClientFunctions(), 'inviteMember')
+  const result = await callable(payload)
+  return result.data
+}
+
+/** Reads invitations/{inviteId} directly via the Admin SDK. */
+export async function getInvitationDoc(inviteId: string): Promise<Record<string, unknown> | undefined> {
+  const snap = await db.collection('invitations').doc(inviteId).get()
+  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined
+}
+
+/** Writes an arbitrary (possibly schema-invalid) raw invitations/{inviteId} document — for corrupted/pre-existing-state scenarios. */
+export async function seedInvitationDoc(inviteId: string, raw: Record<string, unknown>): Promise<void> {
+  await db.collection('invitations').doc(inviteId).set(raw)
+}
+
+/** Reads invitationLocks/{lockId} directly via the Admin SDK, deriving lockId the same way the callable does. */
+export async function getInvitationLockDoc(companyId: string, emailNormalized: string): Promise<Record<string, unknown> | undefined> {
+  const lockId = computeInvitationLockId(companyId, emailNormalized)
+  const snap = await db.collection('invitationLocks').doc(lockId).get()
+  return snap.exists ? (snap.data() as Record<string, unknown>) : undefined
+}
+
+/** Writes an arbitrary (possibly schema-invalid) raw invitationLocks/{lockId} document directly, deriving lockId the same way the callable does. */
+export async function seedInvitationLockDoc(
+  companyId: string,
+  emailNormalized: string,
+  raw: Record<string, unknown>,
+): Promise<void> {
+  const lockId = computeInvitationLockId(companyId, emailNormalized)
+  await db.collection('invitationLocks').doc(lockId).set(raw)
+}
+
+/** Counts invitations/{inviteId} documents for a given (companyId, emailNormalized) pair — used to assert "exactly one invitation" across concurrency/retries, and to catch orphans. */
+export async function countInvitationsFor(companyId: string, emailNormalized: string): Promise<number> {
+  const snap = await db.collection('invitations')
+    .where('companyId', '==', companyId)
+    .where('emailNormalized', '==', emailNormalized)
+    .get()
+  return snap.size
+}
+
+/** Counts invitationLocks documents in total — used to assert no orphan/duplicate locks were created. */
+export async function countAllInvitationLocks(): Promise<number> {
+  const snap = await db.collection('invitationLocks').get()
+  return snap.size
+}
+
+/** True if a Firebase Auth user already exists for this email — used to assert inviteMember never creates one. */
+export async function authUserExistsWithEmail(email: string): Promise<boolean> {
+  try {
+    await adminAuth.getUserByEmail(email)
+    return true
+  } catch {
+    return false
+  }
 }

@@ -21,6 +21,7 @@ import {
   ResendInviteRequestSchema,
   PreviewInviteRequestSchema,
   AcceptInviteRequestSchema,
+  InviteMemberResponseSchema,
 } from '../../src/schemas/invitation'
 
 const VALID_RAW_TOKEN = 'a'.repeat(43) // base64url charset, 43 chars
@@ -464,5 +465,28 @@ describe('validateRequest error contract (sanity, matches existing convention)',
     } catch (err) {
       expect(err).toBeInstanceOf(AppError)
     }
+  })
+})
+
+// ── InviteMemberResponseSchema (SEC-006 Stage 2) ─────────────────────────
+describe('InviteMemberResponseSchema — strict, no tokenHash/email/companyId ever', () => {
+  const valid = { inviteId: 'invite_synthetic', token: VALID_RAW_TOKEN, expiresAtUtc: new Date().toISOString() }
+
+  it('accepts the exact { inviteId, token, expiresAtUtc } shape', () => {
+    expect(InviteMemberResponseSchema.safeParse(valid).success).toBe(true)
+  })
+  it('rejects a stray tokenHash field — proves the response contract structurally cannot leak it', () => {
+    expect(InviteMemberResponseSchema.safeParse({ ...valid, tokenHash: VALID_TOKEN_HASH }).success).toBe(false)
+  })
+  it('rejects a stray email/companyId field', () => {
+    expect(InviteMemberResponseSchema.safeParse({ ...valid, email: 'attacker@example.test' }).success).toBe(false)
+    expect(InviteMemberResponseSchema.safeParse({ ...valid, companyId: 'company_synthetic' }).success).toBe(false)
+  })
+  it('rejects a malformed (wrong-length) token', () => {
+    expect(InviteMemberResponseSchema.safeParse({ ...valid, token: 'short' }).success).toBe(false)
+  })
+  it('rejects a missing expiresAtUtc', () => {
+    const { expiresAtUtc: _drop, ...withoutExpiry } = valid
+    expect(InviteMemberResponseSchema.safeParse(withoutExpiry).success).toBe(false)
   })
 })
