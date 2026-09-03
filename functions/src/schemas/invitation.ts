@@ -184,6 +184,53 @@ export const ListInvitationsRequestSchema = z.object({
 }).strict()
 export type ListInvitationsRequest = z.infer<typeof ListInvitationsRequestSchema>
 
+// ── listInvitations pagination cursor — SEC-006 Stage 2b ────────────────
+// Opaque to the client (base64url-encoded JSON), but with a strict,
+// versioned internal schema on the server side — never a bare Firestore
+// Timestamp-to-milliseconds conversion (that loses nanosecond precision
+// and can cause skips/duplicates across pages), and never containing
+// anything privileged (no email, tokenHash, or raw token — only what is
+// needed to resume a `.orderBy(createdAt desc).orderBy(__name__ desc)`
+// query: the exact (seconds, nanoseconds) pair and the document id).
+// `.strict()` rejects any extra field a forged/tampered cursor might add.
+export const INVITATIONS_CURSOR_VERSION = 1 as const
+
+export const InvitationsCursorPayloadSchema = z.object({
+  version: z.literal(INVITATIONS_CURSOR_VERSION),
+  companyId: idLikeString,
+  createdAtSeconds: z.number().int(),
+  createdAtNanoseconds: z.number().int().min(0).max(999_999_999),
+  inviteId: idLikeString,
+}).strict()
+export type InvitationsCursorPayload = z.infer<typeof InvitationsCursorPayloadSchema>
+
+// ── listInvitations response — SEC-006 Stage 2b ──────────────────────────
+// Every field below is an explicit allowlist entry, never a spread of the
+// raw Firestore document — this is what makes it structurally provable
+// (via `.strict()`) that tokenHash/lockId/acceptedByUid/revokedBy/any
+// other internal field can never leak through this response, no matter
+// what the stored document happens to contain.
+export const InvitationListItemSchema = z.object({
+  inviteId: idLikeString,
+  emailNormalized: NormalizedEmailSchema,
+  role: RoleSchema,
+  status: InvitationStatusSchema,
+  createdAtUtc: z.iso.datetime(),
+  expiresAtUtc: z.iso.datetime(),
+  resendCount: z.number().int().min(0).max(INVITATION_RESEND_LIMIT),
+  lastSentAtUtc: z.iso.datetime().nullable(),
+  createdBy: idLikeString,
+}).strict()
+export type InvitationListItem = z.infer<typeof InvitationListItemSchema>
+
+const OPAQUE_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/
+
+export const ListInvitationsResponseSchema = z.object({
+  items: z.array(InvitationListItemSchema),
+  nextCursor: z.string().regex(OPAQUE_CURSOR_PATTERN).nullable(),
+}).strict()
+export type ListInvitationsResponse = z.infer<typeof ListInvitationsResponseSchema>
+
 // cancelInvite/resendInvite deliberately accept ONLY companyId (the
 // requireActiveMember lookup key) + inviteId (the target) — no status,
 // email, role, or actor uid; the server re-derives everything else from

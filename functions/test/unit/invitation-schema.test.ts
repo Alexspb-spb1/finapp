@@ -22,6 +22,10 @@ import {
   PreviewInviteRequestSchema,
   AcceptInviteRequestSchema,
   InviteMemberResponseSchema,
+  InvitationListItemSchema,
+  ListInvitationsResponseSchema,
+  InvitationsCursorPayloadSchema,
+  INVITATIONS_CURSOR_VERSION,
 } from '../../src/schemas/invitation'
 
 const VALID_RAW_TOKEN = 'a'.repeat(43) // base64url charset, 43 chars
@@ -388,6 +392,89 @@ describe('ListInvitationsRequestSchema', () => {
 
   it('rejects an overlong cursor', () => {
     expect(() => validateRequest(ListInvitationsRequestSchema, { companyId: 'company_synthetic', cursor: 'a'.repeat(501) })).toThrowError(invalidRequestExpectation())
+  })
+})
+
+// ── InvitationsCursorPayloadSchema (SEC-006 Stage 2b) ────────────────────
+describe('InvitationsCursorPayloadSchema', () => {
+  const valid = {
+    version: INVITATIONS_CURSOR_VERSION,
+    companyId: 'company_synthetic',
+    createdAtSeconds: 1_700_000_000,
+    createdAtNanoseconds: 123_456_789,
+    inviteId: 'invite_synthetic',
+  }
+
+  it('accepts a well-formed payload', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse(valid).success).toBe(true)
+  })
+  it('rejects an unsupported version', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, version: 2 }).success).toBe(false)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, version: 0 }).success).toBe(false)
+  })
+  it('rejects out-of-range nanoseconds', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, createdAtNanoseconds: -1 }).success).toBe(false)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, createdAtNanoseconds: 1_000_000_000 }).success).toBe(false)
+  })
+  it('rejects a non-integer createdAtSeconds/createdAtNanoseconds', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, createdAtSeconds: 1.5 }).success).toBe(false)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, createdAtNanoseconds: 1.5 }).success).toBe(false)
+  })
+  it('rejects an unknown/extra field (e.g. a smuggled email or tokenHash)', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, email: 'attacker@example.test' }).success).toBe(false)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, tokenHash: VALID_TOKEN_HASH }).success).toBe(false)
+  })
+  it('rejects a missing required field', () => {
+    const { companyId: _drop, ...withoutCompanyId } = valid
+    expect(InvitationsCursorPayloadSchema.safeParse(withoutCompanyId).success).toBe(false)
+  })
+})
+
+// ── InvitationListItemSchema / ListInvitationsResponseSchema (SEC-006 Stage 2b) ──
+describe('InvitationListItemSchema / ListInvitationsResponseSchema — strict, whitelist-only', () => {
+  const validItem = {
+    inviteId: 'invite_synthetic',
+    emailNormalized: 'invitee@example.test',
+    role: 'accountant' as const,
+    status: 'pending' as const,
+    createdAtUtc: new Date().toISOString(),
+    expiresAtUtc: new Date().toISOString(),
+    resendCount: 0,
+    lastSentAtUtc: new Date().toISOString(),
+    createdBy: 'uid_admin_synthetic',
+  }
+
+  it('accepts the exact expected item shape', () => {
+    expect(InvitationListItemSchema.safeParse(validItem).success).toBe(true)
+  })
+  it('accepts a null lastSentAtUtc', () => {
+    expect(InvitationListItemSchema.safeParse({ ...validItem, lastSentAtUtc: null }).success).toBe(true)
+  })
+  it('rejects a stray tokenHash/lockId/acceptedByUid/revokedBy field — proves the item contract cannot carry them', () => {
+    expect(InvitationListItemSchema.safeParse({ ...validItem, tokenHash: VALID_TOKEN_HASH }).success).toBe(false)
+    expect(InvitationListItemSchema.safeParse({ ...validItem, lockId: 'lock_synthetic' }).success).toBe(false)
+    expect(InvitationListItemSchema.safeParse({ ...validItem, acceptedByUid: 'uid_x' }).success).toBe(false)
+    expect(InvitationListItemSchema.safeParse({ ...validItem, revokedBy: 'uid_y' }).success).toBe(false)
+  })
+  it('rejects a non-UTC-ISO createdAtUtc/expiresAtUtc', () => {
+    expect(InvitationListItemSchema.safeParse({ ...validItem, createdAtUtc: 'not-a-date' }).success).toBe(false)
+    expect(InvitationListItemSchema.safeParse({ ...validItem, expiresAtUtc: '2030-01-01' }).success).toBe(false)
+  })
+  it('rejects an unknown status', () => {
+    expect(InvitationListItemSchema.safeParse({ ...validItem, status: 'expired' }).success).toBe(false)
+  })
+
+  it('ListInvitationsResponseSchema accepts an empty items array with nextCursor null', () => {
+    expect(ListInvitationsResponseSchema.safeParse({ items: [], nextCursor: null }).success).toBe(true)
+  })
+  it('ListInvitationsResponseSchema accepts items + an opaque base64url nextCursor', () => {
+    expect(ListInvitationsResponseSchema.safeParse({ items: [validItem], nextCursor: 'YWJjMTIz' }).success).toBe(true)
+  })
+  it('ListInvitationsResponseSchema rejects a non-base64url nextCursor', () => {
+    expect(ListInvitationsResponseSchema.safeParse({ items: [], nextCursor: 'not base64url!!' }).success).toBe(false)
+  })
+  it('ListInvitationsResponseSchema rejects an unknown top-level field', () => {
+    expect(ListInvitationsResponseSchema.safeParse({ items: [], nextCursor: null, totalCount: 5 }).success).toBe(false)
   })
 })
 
