@@ -428,6 +428,23 @@ describe('InvitationsCursorPayloadSchema', () => {
     const { companyId: _drop, ...withoutCompanyId } = valid
     expect(InvitationsCursorPayloadSchema.safeParse(withoutCompanyId).success).toBe(false)
   })
+
+  // ── Independent review finding #1 (Stage 2b round 1) ─────────────────────
+  it('rejects createdAtSeconds outside Firestore\'s documented Timestamp range (-62135596800..253402300799)', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, createdAtSeconds: -62_135_596_801 }).success).toBe(false)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, createdAtSeconds: 253_402_300_800 }).success).toBe(false)
+  })
+  it('accepts createdAtSeconds exactly at the documented min/max bounds', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, createdAtSeconds: -62_135_596_800 }).success).toBe(true)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, createdAtSeconds: 253_402_300_799 }).success).toBe(true)
+  })
+  it('rejects an inviteId containing a "/" (not usable as a single FieldPath.documentId() segment)', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: 'foo/bar' }).success).toBe(false)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: '/leading-slash' }).success).toBe(false)
+  })
+  it('accepts a normal inviteId with no slash', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: 'invite_abc-123' }).success).toBe(true)
+  })
 })
 
 // ── InvitationListItemSchema / ListInvitationsResponseSchema (SEC-006 Stage 2b) ──

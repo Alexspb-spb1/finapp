@@ -26,7 +26,7 @@ import { writeAuditEvent } from './lib/audit'
 import { runBootstrapIdempotent } from './lib/bootstrapIdempotency'
 import { generateRawInvitationToken, hashInvitationToken } from './lib/invitationToken'
 import { runInviteMemberTransaction } from './lib/inviteMemberTransaction'
-import { decodeInvitationsCursor, buildInvitationsCursor, mapInvitationDocumentToListItem } from './lib/invitationListing'
+import { decodeInvitationsCursor, buildInvitationsCursor, timestampFromCursorPayload, mapInvitationDocumentToListItem } from './lib/invitationListing'
 import { AuthzProbeRequestSchema, type AuthzProbeResponse } from './schemas/auth'
 import { CreateCompanyRequestSchema, type CreateCompanyResponse } from './schemas/company'
 import {
@@ -37,6 +37,7 @@ import {
   type InviteMemberResponse,
   type ListInvitationsResponse,
   type InvitationListItem,
+  type InvitationDocument,
 } from './schemas/invitation'
 
 export const authzProbe = onCall(async request => {
@@ -293,7 +294,7 @@ export async function performListInvitations(request: CallableRequest<unknown>):
     // A cursor minted for a different company can never be used to page
     // through THIS company's results, even if every other field is valid.
     if (cursorPayload.companyId !== input.companyId) throw new AppError('invalid_request')
-    startAfterCreatedAt = new Timestamp(cursorPayload.createdAtSeconds, cursorPayload.createdAtNanoseconds)
+    startAfterCreatedAt = timestampFromCursorPayload(cursorPayload)
     startAfterInviteId = cursorPayload.inviteId
   }
 
@@ -314,24 +315,30 @@ export async function performListInvitations(request: CallableRequest<unknown>):
     throw new AppError('internal_error')
   }
 
-  const hasNextPage = snap.docs.length > input.pageSize
-  const pageDocs = hasNextPage ? snap.docs.slice(0, input.pageSize) : snap.docs
-
-  const items: InvitationListItem[] = []
-  let lastOnPage: { inviteId: string; createdAt: Timestamp } | undefined
-  for (const doc of pageDocs) {
-    // Every document is validated against the SAME schema the writer
-    // (runInviteMemberTransaction) uses before anything is read from it —
-    // a corrupted document fails the whole call closed, never producing a
-    // partial response or leaking its raw content.
+  // Every returned document — including the pageSize+1'th "lookahead" doc
+  // used only to detect a next page — is validated against the SAME
+  // schema the writer (runInviteMemberTransaction) uses, BEFORE any
+  // slicing happens. Validating only the sliced page (independent review
+  // finding #2 on SEC-006 Stage 2b round 1) would let a corrupted
+  // lookahead document slip through undetected: the current page would
+  // return successfully with a nextCursor, instead of the whole call
+  // failing closed the same way a corrupted document ANYWHERE in the
+  // result set must.
+  const validatedDocs: Array<{ inviteId: string; data: InvitationDocument }> = []
+  for (const doc of snap.docs) {
     const parsed = InvitationDocumentSchema.safeParse(doc.data())
     if (!parsed.success) throw new AppError('internal_error')
-    items.push(mapInvitationDocumentToListItem(doc.id, parsed.data))
-    lastOnPage = { inviteId: doc.id, createdAt: parsed.data.createdAt }
+    validatedDocs.push({ inviteId: doc.id, data: parsed.data })
   }
 
+  const hasNextPage = validatedDocs.length > input.pageSize
+  const pageDocs = hasNextPage ? validatedDocs.slice(0, input.pageSize) : validatedDocs
+
+  const items: InvitationListItem[] = pageDocs.map(d => mapInvitationDocumentToListItem(d.inviteId, d.data))
+  const lastOnPage = pageDocs[pageDocs.length - 1]
+
   const nextCursor = hasNextPage && lastOnPage
-    ? buildInvitationsCursor(input.companyId, lastOnPage.createdAt, lastOnPage.inviteId)
+    ? buildInvitationsCursor(input.companyId, lastOnPage.data.createdAt, lastOnPage.inviteId)
     : null
 
   return { items, nextCursor }

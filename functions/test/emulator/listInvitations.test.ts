@@ -12,7 +12,7 @@ import { encodeInvitationsCursor } from '../../src/lib/invitationListing'
 import { INVITATIONS_CURSOR_VERSION } from '../../src/schemas/invitation'
 import {
   createTestUser, signOutClient, signInAsExistingUser, seedCompany, seedMembership,
-  callListInvitations, seedInvitationDoc,
+  callListInvitations, seedInvitationDoc, seedInvitationLockDoc, getInvitationLockDoc,
   getInvitationsSnapshotForCompany, getMembershipsSnapshot, getAuditEvents,
   authUserExistsWithEmail,
 } from './helpers'
@@ -240,6 +240,33 @@ describe('listInvitations — real callable pipeline through the Functions Emula
       .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
   })
 
+  // ── Independent review finding #1 (Stage 2b round 1): out-of-range/slash cursor via the REAL callable ──
+  it('a cursor with createdAtSeconds outside Firestore\'s valid Timestamp range is rejected with invalid_request, never internal_error', async () => {
+    const { companyId } = await setUpAdmin('cursor-out-of-range')
+    const outOfRangeCursor = encodeInvitationsCursor({
+      version: INVITATIONS_CURSOR_VERSION,
+      companyId,
+      createdAtSeconds: Number.MAX_SAFE_INTEGER,
+      createdAtNanoseconds: 0,
+      inviteId: 'invite_synthetic',
+    })
+    await expect(callListInvitations({ companyId, cursor: outOfRangeCursor }))
+      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
+  })
+
+  it('a cursor with an inviteId containing a "/" is rejected with invalid_request', async () => {
+    const { companyId } = await setUpAdmin('cursor-slash-invite-id')
+    const slashCursor = encodeInvitationsCursor({
+      version: INVITATIONS_CURSOR_VERSION,
+      companyId,
+      createdAtSeconds: Math.floor(Date.now() / 1000),
+      createdAtNanoseconds: 0,
+      inviteId: 'invitations/some_other_id',
+    })
+    await expect(callListInvitations({ companyId, cursor: slashCursor }))
+      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
+  })
+
   // ── 14: pending/accepted/revoked all display correctly ───────────────────
   it('pending, accepted, and revoked invitations are all listed with the correct status and fields', async () => {
     const { companyId } = await setUpAdmin('statuses')
@@ -287,23 +314,69 @@ describe('listInvitations — real callable pipeline through the Functions Emula
     await expect(callListInvitations({ companyId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
   })
 
-  // ── 16: invitations/memberships/audit are byte-for-byte unchanged around the call ──
-  it('leaves invitations, memberships, and audit events completely unchanged before vs. after a successful call', async () => {
+  // ── Independent review finding #2 (Stage 2b round 1): the pageSize+1'th lookahead doc must be validated too ──
+  it('a corrupted document that lands ONLY in the pageSize+1 lookahead slot still fails the whole call closed with internal_error', async () => {
+    const { companyId } = await setUpAdmin('corrupted-lookahead')
+    const t0 = Timestamp.now()
+    const pageSize = 2
+    // pageSize valid documents, newest-first...
+    for (let i = 0; i < pageSize; i++) {
+      await seedInvitationDoc(
+        `invite_lookahead_valid_${i}`,
+        buildRawPendingInvitation(companyId, freshEmail(`lookahead-valid-${i}`), Timestamp.fromMillis(t0.toMillis() - i * 1000)),
+      )
+    }
+    // ...then ONE corrupted document strictly older than all of them, so
+    // it sorts into the (pageSize+1)'th position — the lookahead slot that
+    // gets discarded by a naive "validate only the sliced page"
+    // implementation. It still has valid companyId/createdAt (so it's
+    // included in the query result set at all) but an invalid role and no
+    // tokenHash.
+    await seedInvitationDoc(`invite_lookahead_corrupted`, {
+      companyId,
+      emailNormalized: freshEmail('lookahead-corrupted'),
+      role: 'not-a-real-role',
+      status: 'pending',
+      expiresAt: Timestamp.fromMillis(t0.toMillis() + 1000 * 3600),
+      createdBy: 'uid_seed_synthetic',
+      createdAt: Timestamp.fromMillis(t0.toMillis() - pageSize * 1000),
+      updatedAt: t0,
+      resendCount: 0,
+      lastSentAt: null,
+    })
+
+    await expect(callListInvitations({ companyId, pageSize }))
+      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
+  })
+
+  // ── 16: invitations/locks/memberships/audit are byte-for-byte unchanged around the call ──
+  it('leaves invitations, invitationLocks, memberships, and audit events completely unchanged before vs. after a successful call', async () => {
     const { companyId } = await setUpAdmin('no-side-effects')
     const t0 = Timestamp.now()
-    await seedInvitationDoc('invite_no_side_effects', buildRawPendingInvitation(companyId, freshEmail('no-side-effects'), t0))
+    const email = freshEmail('no-side-effects')
+    await seedInvitationDoc('invite_no_side_effects', buildRawPendingInvitation(companyId, email, t0))
+    // A lock is unrelated to reads, but listInvitations must never touch
+    // invitationLocks either — seed one explicitly so there is something
+    // concrete to prove stays untouched (independent review finding #3 on
+    // SEC-006 Stage 2b round 1: the prior version of this test never
+    // checked locks at all).
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: 'invite_no_side_effects' })
 
     const invitationsBefore = await getInvitationsSnapshotForCompany(companyId)
+    const lockBefore = await getInvitationLockDoc(companyId, email)
     const membershipsBefore = await getMembershipsSnapshot(companyId)
     const auditBefore = await getAuditEvents(companyId)
 
     await callListInvitations({ companyId })
 
     const invitationsAfter = await getInvitationsSnapshotForCompany(companyId)
+    const lockAfter = await getInvitationLockDoc(companyId, email)
     const membershipsAfter = await getMembershipsSnapshot(companyId)
     const auditAfter = await getAuditEvents(companyId)
 
     expect(invitationsAfter).toEqual(invitationsBefore)
+    expect(lockAfter).toEqual(lockBefore)
+    expect(lockAfter).toEqual({ currentInviteId: 'invite_no_side_effects' })
     expect(membershipsAfter).toEqual(membershipsBefore)
     expect(auditAfter).toEqual(auditBefore)
     expect(auditAfter).toHaveLength(0) // listInvitations itself never writes an audit event

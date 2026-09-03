@@ -195,12 +195,33 @@ export type ListInvitationsRequest = z.infer<typeof ListInvitationsRequestSchema
 // `.strict()` rejects any extra field a forged/tampered cursor might add.
 export const INVITATIONS_CURSOR_VERSION = 1 as const
 
+// Firestore's own documented `Timestamp` bounds — 0001-01-01T00:00:00Z to
+// 9999-12-31T23:59:59.999999999Z inclusive
+// (https://cloud.google.com/nodejs/docs/reference/firestore/latest/firestore/timestamp).
+// A cursor claiming `createdAtSeconds` outside this range would otherwise
+// reach `new Timestamp(...)` in the callable and throw a raw RangeError
+// there — independent review finding #1 on SEC-006 Stage 2b round 1:
+// that must fail as a stable `invalid_request` here, at validation time,
+// never surface as an uncaught construction error mapped to
+// `internal_error`.
+const FIRESTORE_TIMESTAMP_MIN_SECONDS = -62_135_596_800
+const FIRESTORE_TIMESTAMP_MAX_SECONDS = 253_402_300_799
+
+// A cursor's `inviteId` is used directly as a Firestore document ID via
+// `FieldPath.documentId()` — unlike the general-purpose `idLikeString`
+// (a lookup key elsewhere in this file, never a literal path segment),
+// this rejects any `/` character, which would otherwise let a forged
+// cursor smuggle a multi-segment path into a query that expects a single
+// document ID segment (independent review finding #1 on SEC-006 Stage 2b
+// round 1).
+const cursorDocumentIdString = nonEmptyString.max(200).regex(/^[^/]+$/)
+
 export const InvitationsCursorPayloadSchema = z.object({
   version: z.literal(INVITATIONS_CURSOR_VERSION),
   companyId: idLikeString,
-  createdAtSeconds: z.number().int(),
+  createdAtSeconds: z.number().int().min(FIRESTORE_TIMESTAMP_MIN_SECONDS).max(FIRESTORE_TIMESTAMP_MAX_SECONDS),
   createdAtNanoseconds: z.number().int().min(0).max(999_999_999),
-  inviteId: idLikeString,
+  inviteId: cursorDocumentIdString,
 }).strict()
 export type InvitationsCursorPayload = z.infer<typeof InvitationsCursorPayloadSchema>
 

@@ -4,6 +4,7 @@ import {
   encodeInvitationsCursor,
   decodeInvitationsCursor,
   buildInvitationsCursor,
+  timestampFromCursorPayload,
   mapInvitationDocumentToListItem,
 } from '../../src/lib/invitationListing'
 import { AppError } from '../../src/lib/errors'
@@ -101,6 +102,55 @@ describe('invitations cursor codec — encode/decode round-trip', () => {
     // SyntaxError/RangeError/TypeError escape — expectInvalidRequest()
     // already asserts this per-case, this test just documents the intent.
     expect(() => decodeInvitationsCursor('!!!')).toThrow(AppError)
+  })
+
+  // ── Independent review finding #1 (Stage 2b round 1): Firestore Timestamp range ──
+  it('rejects createdAtSeconds just beyond Firestore\'s documented valid range (min/max), as invalid_request — never reaching the Timestamp constructor', () => {
+    const justBelowMin = Buffer.from(JSON.stringify({ ...payload, createdAtSeconds: -62_135_596_801 }), 'utf8').toString('base64url')
+    expectInvalidRequest(() => decodeInvitationsCursor(justBelowMin))
+    const justAboveMax = Buffer.from(JSON.stringify({ ...payload, createdAtSeconds: 253_402_300_800 }), 'utf8').toString('base64url')
+    expectInvalidRequest(() => decodeInvitationsCursor(justAboveMax))
+  })
+
+  it('accepts createdAtSeconds exactly AT Firestore\'s documented min/max bounds', () => {
+    const atMin = Buffer.from(JSON.stringify({ ...payload, createdAtSeconds: -62_135_596_800 }), 'utf8').toString('base64url')
+    expect(() => decodeInvitationsCursor(atMin)).not.toThrow()
+    const atMax = Buffer.from(JSON.stringify({ ...payload, createdAtSeconds: 253_402_300_799 }), 'utf8').toString('base64url')
+    expect(() => decodeInvitationsCursor(atMax)).not.toThrow()
+  })
+
+  it('rejects a wildly out-of-range createdAtSeconds (e.g. Number.MAX_SAFE_INTEGER) as invalid_request', () => {
+    const huge = Buffer.from(JSON.stringify({ ...payload, createdAtSeconds: Number.MAX_SAFE_INTEGER }), 'utf8').toString('base64url')
+    expectInvalidRequest(() => decodeInvitationsCursor(huge))
+  })
+
+  // ── Independent review finding #1 (Stage 2b round 1): inviteId must be a bare document ID, no '/' ──
+  it('rejects an inviteId containing a "/" — unusable as a single FieldPath.documentId() segment', () => {
+    const withSlash = Buffer.from(JSON.stringify({ ...payload, inviteId: 'company_x/invitations/invite_y' }), 'utf8').toString('base64url')
+    expectInvalidRequest(() => decodeInvitationsCursor(withSlash))
+  })
+
+  it('accepts a normal single-segment inviteId with no slash', () => {
+    expect(() => decodeInvitationsCursor(encodeInvitationsCursor({ ...payload, inviteId: 'invite_normal_id-123' }))).not.toThrow()
+  })
+})
+
+describe('timestampFromCursorPayload — defense-in-depth around the Timestamp constructor', () => {
+  it('converts a valid (seconds, nanoseconds) pair to the exact same Firestore Timestamp', () => {
+    const ts = timestampFromCursorPayload({
+      version: INVITATIONS_CURSOR_VERSION, companyId: 'company_synthetic',
+      createdAtSeconds: 1_700_000_000, createdAtNanoseconds: 500, inviteId: 'invite_synthetic',
+    })
+    expect(ts).toBeInstanceOf(Timestamp)
+    expect(ts.seconds).toBe(1_700_000_000)
+    expect(ts.nanoseconds).toBe(500)
+  })
+
+  it('fails closed as AppError(invalid_request) — never a raw RangeError — even if given a value outside Firestore\'s range (defense-in-depth, independent of the schema-level range check)', () => {
+    expectInvalidRequest(() => timestampFromCursorPayload({
+      version: INVITATIONS_CURSOR_VERSION, companyId: 'company_synthetic',
+      createdAtSeconds: Number.MAX_SAFE_INTEGER, createdAtNanoseconds: 0, inviteId: 'invite_synthetic',
+    }))
   })
 })
 

@@ -9,7 +9,7 @@
 //     field-by-field allowlist, never `{...doc}`, so tokenHash/lockId/
 //     acceptedByUid/revokedBy/etc. cannot leak through this response no
 //     matter what the schema evolves to include later.
-import type { Timestamp } from 'firebase-admin/firestore'
+import { Timestamp } from 'firebase-admin/firestore'
 import { AppError } from './errors'
 import {
   InvitationsCursorPayloadSchema,
@@ -67,6 +67,23 @@ export function decodeInvitationsCursor(raw: string): InvitationsCursorPayload {
   const result = InvitationsCursorPayloadSchema.safeParse(parsed)
   if (!result.success) throw new AppError('invalid_request')
   return result.data
+}
+
+/** Converts a decoded cursor payload's (seconds, nanoseconds) pair into a
+ * real Firestore `Timestamp` for `startAfter(...)`. `InvitationsCursorPayloadSchema`
+ * already restricts `createdAtSeconds` to Firestore's documented valid
+ * range, so the `Timestamp` constructor should never throw here — this
+ * try/catch is deliberate defense-in-depth (independent review finding #1
+ * on SEC-006 Stage 2b round 1): even if that range check were ever
+ * loosened or Firestore's own bounds changed, a construction failure
+ * still fails closed as `invalid_request`, never an uncaught exception
+ * that would otherwise map to a generic `internal_error`. */
+export function timestampFromCursorPayload(payload: InvitationsCursorPayload): Timestamp {
+  try {
+    return new Timestamp(payload.createdAtSeconds, payload.createdAtNanoseconds)
+  } catch {
+    throw new AppError('invalid_request')
+  }
 }
 
 /** The ONLY function permitted to read fields off a validated
