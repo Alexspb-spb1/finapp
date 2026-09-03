@@ -18,7 +18,7 @@
 // verified-email enforcement is SEC-013. The verification email itself is
 // still sent by the client right after Auth user creation (src/store/authStore.ts).
 import { onCall, type CallableRequest } from 'firebase-functions/v2/https'
-import { FieldValue, Timestamp, type Transaction } from 'firebase-admin/firestore'
+import { FieldValue, FieldPath, Timestamp, type Transaction } from 'firebase-admin/firestore'
 import { db, adminAuth } from './lib/admin'
 import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, requireNotInMaintenanceMode, validateRequest } from './lib/authz'
 import { AppError, toSafeHttpsError } from './lib/errors'
@@ -26,12 +26,18 @@ import { writeAuditEvent } from './lib/audit'
 import { runBootstrapIdempotent } from './lib/bootstrapIdempotency'
 import { generateRawInvitationToken, hashInvitationToken } from './lib/invitationToken'
 import { runInviteMemberTransaction } from './lib/inviteMemberTransaction'
+import { decodeInvitationsCursor, buildInvitationsCursor, timestampFromCursorPayload, mapInvitationDocumentToListItem } from './lib/invitationListing'
 import { AuthzProbeRequestSchema, type AuthzProbeResponse } from './schemas/auth'
 import { CreateCompanyRequestSchema, type CreateCompanyResponse } from './schemas/company'
 import {
   InviteMemberRequestSchema,
   INVITATION_TTL_MS,
+  ListInvitationsRequestSchema,
+  InvitationDocumentSchema,
   type InviteMemberResponse,
+  type ListInvitationsResponse,
+  type InvitationListItem,
+  type InvitationDocument,
 } from './schemas/invitation'
 
 export const authzProbe = onCall(async request => {
@@ -249,6 +255,98 @@ export async function performInviteMember(
 export const inviteMember = onCall(async request => {
   try {
     return await performInviteMember(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+// listInvitations (SEC-006 Stage 2b) — the first READ-ONLY callable over
+// invitations/{inviteId}. Deliberately does nothing else: no write to
+// invitations/invitationLocks/memberships/users/companies, no audit event,
+// no Auth user, no maintenance-mode check (this reads nothing that
+// maintenance mode protects, and the spec for this callable does not
+// require one — see docs/remediation/reports/SEC-006.md).
+//
+// `companyId` is a lookup key ONLY — never proof of authorization by
+// itself. The actual authorization decision is entirely
+// requireActiveMember(db, input.companyId, auth.uid) + requireRole(...,
+// ['admin']): an admin of a DIFFERENT company passing a foreign
+// `companyId` has no membership document there and is rejected before any
+// invitations query ever runs — the same pipeline every other privileged
+// callable in this package uses.
+//
+// Pagination is a deterministic `orderBy(createdAt desc, __name__ desc)`
+// keyset (never `offset()`), so two documents that happen to share the
+// exact same `createdAt` are still ordered consistently by document ID —
+// see lib/invitationListing.ts for the opaque, versioned cursor codec and
+// the explicit response-field allowlist (never a raw document spread).
+export async function performListInvitations(request: CallableRequest<unknown>): Promise<ListInvitationsResponse> {
+  const auth = requireAuth(request)
+  requireVerifiedEmail(auth)
+  const input = validateRequest(ListInvitationsRequestSchema, request.data)
+  const membership = await requireActiveMember(db, input.companyId, auth.uid)
+  requireRole(membership, ['admin'])
+
+  let startAfterCreatedAt: Timestamp | undefined
+  let startAfterInviteId: string | undefined
+  if (input.cursor !== undefined) {
+    const cursorPayload = decodeInvitationsCursor(input.cursor)
+    // A cursor minted for a different company can never be used to page
+    // through THIS company's results, even if every other field is valid.
+    if (cursorPayload.companyId !== input.companyId) throw new AppError('invalid_request')
+    startAfterCreatedAt = timestampFromCursorPayload(cursorPayload)
+    startAfterInviteId = cursorPayload.inviteId
+  }
+
+  let query = db.collection('invitations')
+    .where('companyId', '==', input.companyId)
+    .orderBy('createdAt', 'desc')
+    .orderBy(FieldPath.documentId(), 'desc')
+    .limit(input.pageSize + 1) // one extra doc, used only to detect a next page — never returned in items
+
+  if (startAfterCreatedAt !== undefined && startAfterInviteId !== undefined) {
+    query = query.startAfter(startAfterCreatedAt, startAfterInviteId)
+  }
+
+  let snap
+  try {
+    snap = await query.get()
+  } catch {
+    throw new AppError('internal_error')
+  }
+
+  // Every returned document — including the pageSize+1'th "lookahead" doc
+  // used only to detect a next page — is validated against the SAME
+  // schema the writer (runInviteMemberTransaction) uses, BEFORE any
+  // slicing happens. Validating only the sliced page (independent review
+  // finding #2 on SEC-006 Stage 2b round 1) would let a corrupted
+  // lookahead document slip through undetected: the current page would
+  // return successfully with a nextCursor, instead of the whole call
+  // failing closed the same way a corrupted document ANYWHERE in the
+  // result set must.
+  const validatedDocs: Array<{ inviteId: string; data: InvitationDocument }> = []
+  for (const doc of snap.docs) {
+    const parsed = InvitationDocumentSchema.safeParse(doc.data())
+    if (!parsed.success) throw new AppError('internal_error')
+    validatedDocs.push({ inviteId: doc.id, data: parsed.data })
+  }
+
+  const hasNextPage = validatedDocs.length > input.pageSize
+  const pageDocs = hasNextPage ? validatedDocs.slice(0, input.pageSize) : validatedDocs
+
+  const items: InvitationListItem[] = pageDocs.map(d => mapInvitationDocumentToListItem(d.inviteId, d.data))
+  const lastOnPage = pageDocs[pageDocs.length - 1]
+
+  const nextCursor = hasNextPage && lastOnPage
+    ? buildInvitationsCursor(input.companyId, lastOnPage.data.createdAt, lastOnPage.inviteId)
+    : null
+
+  return { items, nextCursor }
+}
+
+export const listInvitations = onCall(async request => {
+  try {
+    return await performListInvitations(request)
   } catch (err) {
     throw toSafeHttpsError(err)
   }

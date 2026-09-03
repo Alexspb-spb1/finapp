@@ -267,3 +267,28 @@ export async function authUserExistsWithEmail(email: string): Promise<boolean> {
     return false
   }
 }
+
+// ── SEC-006 Stage 2b (listInvitations) ───────────────────────────────────
+
+/** Calls the real `listInvitations` callable through the Functions Emulator, using whichever user is currently signed in on the client auth instance. */
+export async function callListInvitations(payload: unknown): Promise<unknown> {
+  const callable = httpsCallable(getClientFunctions(), 'listInvitations')
+  const result = await callable(payload)
+  return result.data
+}
+
+/** All invitations/{inviteId} documents for a given companyId, directly via the Admin SDK, sorted by document id for a stable diff — used for "before vs. after" no-write-side-effects assertions around listInvitations. */
+export async function getInvitationsSnapshotForCompany(companyId: string): Promise<Array<{ id: string; data: Record<string, unknown> }>> {
+  const snap = await db.collection('invitations').where('companyId', '==', companyId).get()
+  return snap.docs
+    .map(doc => ({ id: doc.id, data: doc.data() as Record<string, unknown> }))
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/** All companies/{companyId}/members documents, directly via the Admin SDK, sorted by document id — same "before vs. after" purpose as getInvitationsSnapshotForCompany. */
+export async function getMembershipsSnapshot(companyId: string): Promise<Array<{ id: string; data: Record<string, unknown> }>> {
+  const snap = await db.collection('companies').doc(companyId).collection('members').get()
+  return snap.docs
+    .map(doc => ({ id: doc.id, data: doc.data() as Record<string, unknown> }))
+    .sort((a, b) => a.id.localeCompare(b.id))
+}

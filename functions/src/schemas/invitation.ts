@@ -184,6 +184,88 @@ export const ListInvitationsRequestSchema = z.object({
 }).strict()
 export type ListInvitationsRequest = z.infer<typeof ListInvitationsRequestSchema>
 
+// ── listInvitations pagination cursor — SEC-006 Stage 2b ────────────────
+// Opaque to the client (base64url-encoded JSON), but with a strict,
+// versioned internal schema on the server side — never a bare Firestore
+// Timestamp-to-milliseconds conversion (that loses nanosecond precision
+// and can cause skips/duplicates across pages), and never containing
+// anything privileged (no email, tokenHash, or raw token — only what is
+// needed to resume a `.orderBy(createdAt desc).orderBy(__name__ desc)`
+// query: the exact (seconds, nanoseconds) pair and the document id).
+// `.strict()` rejects any extra field a forged/tampered cursor might add.
+export const INVITATIONS_CURSOR_VERSION = 1 as const
+
+// Firestore's own documented `Timestamp` bounds — 0001-01-01T00:00:00Z to
+// 9999-12-31T23:59:59.999999999Z inclusive
+// (https://cloud.google.com/nodejs/docs/reference/firestore/latest/firestore/timestamp).
+// A cursor claiming `createdAtSeconds` outside this range would otherwise
+// reach `new Timestamp(...)` in the callable and throw a raw RangeError
+// there — independent review finding #1 on SEC-006 Stage 2b round 1:
+// that must fail as a stable `invalid_request` here, at validation time,
+// never surface as an uncaught construction error mapped to
+// `internal_error`.
+const FIRESTORE_TIMESTAMP_MIN_SECONDS = -62_135_596_800
+const FIRESTORE_TIMESTAMP_MAX_SECONDS = 253_402_300_799
+
+// A cursor's `inviteId` is used directly as a Firestore document ID via
+// `FieldPath.documentId()` — unlike the general-purpose `idLikeString`
+// (a lookup key elsewhere in this file, never a literal path segment),
+// this enforces Firestore's actual documented document-ID constraints
+// (https://firebase.google.com/docs/firestore/quotas): no `/` (which
+// would otherwise let a forged cursor smuggle a multi-segment path into
+// a query that expects a single document ID segment — independent review
+// finding #1 on SEC-006 Stage 2b round 1), and not exactly `.` or `..`,
+// and not matching `__.*__` (Firestore reserves that pattern for its own
+// internal use and rejects it outright) — independent review finding #1
+// on SEC-006 Stage 2b round 2: a forged cursor using any of these would
+// otherwise pass this schema and only fail later, inside Firestore's own
+// query execution, surfacing as a generic `internal_error` instead of the
+// stable `invalid_request` a malformed cursor must always produce.
+const RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN = /^__.*__$/
+const cursorDocumentIdString = nonEmptyString
+  .max(200)
+  .regex(/^[^/]+$/)
+  .refine(
+    value => value !== '.' && value !== '..' && !RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN.test(value),
+    { message: 'not a valid Firestore document ID' },
+  )
+
+export const InvitationsCursorPayloadSchema = z.object({
+  version: z.literal(INVITATIONS_CURSOR_VERSION),
+  companyId: idLikeString,
+  createdAtSeconds: z.number().int().min(FIRESTORE_TIMESTAMP_MIN_SECONDS).max(FIRESTORE_TIMESTAMP_MAX_SECONDS),
+  createdAtNanoseconds: z.number().int().min(0).max(999_999_999),
+  inviteId: cursorDocumentIdString,
+}).strict()
+export type InvitationsCursorPayload = z.infer<typeof InvitationsCursorPayloadSchema>
+
+// ── listInvitations response — SEC-006 Stage 2b ──────────────────────────
+// Every field below is an explicit allowlist entry, never a spread of the
+// raw Firestore document — this is what makes it structurally provable
+// (via `.strict()`) that tokenHash/lockId/acceptedByUid/revokedBy/any
+// other internal field can never leak through this response, no matter
+// what the stored document happens to contain.
+export const InvitationListItemSchema = z.object({
+  inviteId: idLikeString,
+  emailNormalized: NormalizedEmailSchema,
+  role: RoleSchema,
+  status: InvitationStatusSchema,
+  createdAtUtc: z.iso.datetime(),
+  expiresAtUtc: z.iso.datetime(),
+  resendCount: z.number().int().min(0).max(INVITATION_RESEND_LIMIT),
+  lastSentAtUtc: z.iso.datetime().nullable(),
+  createdBy: idLikeString,
+}).strict()
+export type InvitationListItem = z.infer<typeof InvitationListItemSchema>
+
+const OPAQUE_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/
+
+export const ListInvitationsResponseSchema = z.object({
+  items: z.array(InvitationListItemSchema),
+  nextCursor: z.string().regex(OPAQUE_CURSOR_PATTERN).nullable(),
+}).strict()
+export type ListInvitationsResponse = z.infer<typeof ListInvitationsResponseSchema>
+
 // cancelInvite/resendInvite deliberately accept ONLY companyId (the
 // requireActiveMember lookup key) + inviteId (the target) — no status,
 // email, role, or actor uid; the server re-derives everything else from
