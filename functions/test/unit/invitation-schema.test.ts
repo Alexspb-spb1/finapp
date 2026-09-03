@@ -445,6 +445,20 @@ describe('InvitationsCursorPayloadSchema', () => {
   it('accepts a normal inviteId with no slash', () => {
     expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: 'invite_abc-123' }).success).toBe(true)
   })
+
+  // ── Independent review finding #1 (Stage 2b round 2): '.', '..', and '__reserved__' are also invalid Firestore document IDs ──
+  it('rejects an inviteId of exactly "." or ".."', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: '.' }).success).toBe(false)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: '..' }).success).toBe(false)
+  })
+  it('rejects an inviteId matching the reserved __.*__ pattern', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: '__reserved__' }).success).toBe(false)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: '__x__' }).success).toBe(false)
+  })
+  it('still accepts an inviteId that merely CONTAINS dots or underscores without matching the reserved forms', () => {
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: 'invite.with.dots' }).success).toBe(true)
+    expect(InvitationsCursorPayloadSchema.safeParse({ ...valid, inviteId: '_single_underscore_' }).success).toBe(true)
+  })
 })
 
 // ── InvitationListItemSchema / ListInvitationsResponseSchema (SEC-006 Stage 2b) ──

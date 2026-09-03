@@ -267,6 +267,37 @@ describe('listInvitations — real callable pipeline through the Functions Emula
       .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
   })
 
+  // ── Independent review finding #2 (Stage 2b round 2): exact Firestore Timestamp boundary values via the REAL callable ──
+  it.each([
+    ['one second below the documented minimum', -62_135_596_801],
+    ['one second above the documented maximum', 253_402_300_800],
+  ])('a cursor with createdAtSeconds exactly %s (%i) is rejected with invalid_request', async (_label, createdAtSeconds) => {
+    const { companyId } = await setUpAdmin('cursor-exact-boundary')
+    const cursor = encodeInvitationsCursor({
+      version: INVITATIONS_CURSOR_VERSION,
+      companyId,
+      createdAtSeconds,
+      createdAtNanoseconds: 0,
+      inviteId: 'invite_synthetic',
+    })
+    await expect(callListInvitations({ companyId, cursor }))
+      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
+  })
+
+  // ── Independent review finding #1 (Stage 2b round 2): '.', '..', and '__reserved__' inviteId via the REAL callable ──
+  it.each(['.', '..', '__reserved__'])('a cursor with inviteId %j (an invalid Firestore document ID) is rejected with invalid_request', async inviteId => {
+    const { companyId } = await setUpAdmin('cursor-reserved-invite-id')
+    const cursor = encodeInvitationsCursor({
+      version: INVITATIONS_CURSOR_VERSION,
+      companyId,
+      createdAtSeconds: Math.floor(Date.now() / 1000),
+      createdAtNanoseconds: 0,
+      inviteId,
+    })
+    await expect(callListInvitations({ companyId, cursor }))
+      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
+  })
+
   // ── 14: pending/accepted/revoked all display correctly ───────────────────
   it('pending, accepted, and revoked invitations are all listed with the correct status and fields', async () => {
     const { companyId } = await setUpAdmin('statuses')

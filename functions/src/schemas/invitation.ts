@@ -210,11 +210,25 @@ const FIRESTORE_TIMESTAMP_MAX_SECONDS = 253_402_300_799
 // A cursor's `inviteId` is used directly as a Firestore document ID via
 // `FieldPath.documentId()` — unlike the general-purpose `idLikeString`
 // (a lookup key elsewhere in this file, never a literal path segment),
-// this rejects any `/` character, which would otherwise let a forged
-// cursor smuggle a multi-segment path into a query that expects a single
-// document ID segment (independent review finding #1 on SEC-006 Stage 2b
-// round 1).
-const cursorDocumentIdString = nonEmptyString.max(200).regex(/^[^/]+$/)
+// this enforces Firestore's actual documented document-ID constraints
+// (https://firebase.google.com/docs/firestore/quotas): no `/` (which
+// would otherwise let a forged cursor smuggle a multi-segment path into
+// a query that expects a single document ID segment — independent review
+// finding #1 on SEC-006 Stage 2b round 1), and not exactly `.` or `..`,
+// and not matching `__.*__` (Firestore reserves that pattern for its own
+// internal use and rejects it outright) — independent review finding #1
+// on SEC-006 Stage 2b round 2: a forged cursor using any of these would
+// otherwise pass this schema and only fail later, inside Firestore's own
+// query execution, surfacing as a generic `internal_error` instead of the
+// stable `invalid_request` a malformed cursor must always produce.
+const RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN = /^__.*__$/
+const cursorDocumentIdString = nonEmptyString
+  .max(200)
+  .regex(/^[^/]+$/)
+  .refine(
+    value => value !== '.' && value !== '..' && !RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN.test(value),
+    { message: 'not a valid Firestore document ID' },
+  )
 
 export const InvitationsCursorPayloadSchema = z.object({
   version: z.literal(INVITATIONS_CURSOR_VERSION),

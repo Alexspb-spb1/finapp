@@ -133,6 +133,16 @@ describe('invitations cursor codec — encode/decode round-trip', () => {
   it('accepts a normal single-segment inviteId with no slash', () => {
     expect(() => decodeInvitationsCursor(encodeInvitationsCursor({ ...payload, inviteId: 'invite_normal_id-123' }))).not.toThrow()
   })
+
+  // ── Independent review finding #1 (Stage 2b round 2): '.', '..', and '__reserved__' are also invalid Firestore document IDs ──
+  it('rejects an inviteId of "." or ".." via the real decode path', () => {
+    expectInvalidRequest(() => decodeInvitationsCursor(Buffer.from(JSON.stringify({ ...payload, inviteId: '.' }), 'utf8').toString('base64url')))
+    expectInvalidRequest(() => decodeInvitationsCursor(Buffer.from(JSON.stringify({ ...payload, inviteId: '..' }), 'utf8').toString('base64url')))
+  })
+
+  it('rejects an inviteId matching the reserved __.*__ pattern via the real decode path', () => {
+    expectInvalidRequest(() => decodeInvitationsCursor(Buffer.from(JSON.stringify({ ...payload, inviteId: '__reserved__' }), 'utf8').toString('base64url')))
+  })
 })
 
 describe('timestampFromCursorPayload — defense-in-depth around the Timestamp constructor', () => {
