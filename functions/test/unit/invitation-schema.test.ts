@@ -26,6 +26,7 @@ import {
   ListInvitationsResponseSchema,
   InvitationsCursorPayloadSchema,
   INVITATIONS_CURSOR_VERSION,
+  CancelInviteResponseSchema,
 } from '../../src/schemas/invitation'
 
 const VALID_RAW_TOKEN = 'a'.repeat(43) // base64url charset, 43 chars
@@ -620,5 +621,28 @@ describe('InviteMemberResponseSchema — strict, no tokenHash/email/companyId ev
   })
   it('rejects a completely non-date string', () => {
     expect(InviteMemberResponseSchema.safeParse({ ...valid, expiresAtUtc: 'not-a-date' }).success).toBe(false)
+  })
+})
+
+// ── CancelInviteResponseSchema (SEC-006 Stage 3) ─────────────────────────
+describe('CancelInviteResponseSchema — strict, minimal, no email/role/tokenHash', () => {
+  const valid = { inviteId: 'invite_synthetic', revokedAtUtc: new Date().toISOString() }
+
+  it('accepts the exact { inviteId, revokedAtUtc } shape', () => {
+    expect(CancelInviteResponseSchema.safeParse(valid).success).toBe(true)
+  })
+  it('rejects a stray email/role/tokenHash/companyId field', () => {
+    expect(CancelInviteResponseSchema.safeParse({ ...valid, email: 'attacker@example.test' }).success).toBe(false)
+    expect(CancelInviteResponseSchema.safeParse({ ...valid, role: 'admin' }).success).toBe(false)
+    expect(CancelInviteResponseSchema.safeParse({ ...valid, tokenHash: VALID_TOKEN_HASH }).success).toBe(false)
+    expect(CancelInviteResponseSchema.safeParse({ ...valid, companyId: 'company_synthetic' }).success).toBe(false)
+  })
+  it('rejects a missing revokedAtUtc', () => {
+    const { revokedAtUtc: _drop, ...withoutRevokedAt } = valid
+    expect(CancelInviteResponseSchema.safeParse(withoutRevokedAt).success).toBe(false)
+  })
+  it('rejects a non-UTC-ISO revokedAtUtc', () => {
+    expect(CancelInviteResponseSchema.safeParse({ ...valid, revokedAtUtc: '2030-01-01T00:00:00+02:00' }).success).toBe(false)
+    expect(CancelInviteResponseSchema.safeParse({ ...valid, revokedAtUtc: 'not-a-date' }).success).toBe(false)
   })
 })

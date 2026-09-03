@@ -29,6 +29,8 @@ export const APP_ERROR_CODES = [
   'idempotency_conflict',
   'maintenance_mode',
   'invitation_already_pending',
+  'invitation_not_found',
+  'invitation_not_pending',
   'internal_error',
 ] as const
 
@@ -58,6 +60,16 @@ const HTTPS_CODE_FOR: Record<AppErrorCode, HttpsErrorCode> = {
   idempotency_conflict: 'aborted',
   maintenance_mode: 'failed-precondition',
   invitation_already_pending: 'already-exists',
+  // SEC-006 Stage 3 (cancelInvite): mirrors membership_not_found's own
+  // mapping exactly — "not found" is deliberately NOT surfaced as the
+  // gRPC `not-found` code (which this file's HttpsErrorCode union doesn't
+  // even declare). A caller who is a legitimate admin of company B but
+  // supplies an inviteId belonging to company A gets the SAME
+  // invitation_not_found result as a genuinely nonexistent ID — no oracle
+  // ever distinguishes "this ID doesn't exist" from "it exists, but in a
+  // company you can't see".
+  invitation_not_found: 'permission-denied',
+  invitation_not_pending: 'failed-precondition',
   internal_error: 'internal',
 }
 

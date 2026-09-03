@@ -15,6 +15,8 @@ describe('AppError -> HttpsError mapping', () => {
     ['idempotency_conflict', 'aborted'],
     ['maintenance_mode', 'failed-precondition'],
     ['invitation_already_pending', 'already-exists'],
+    ['invitation_not_found', 'permission-denied'],
+    ['invitation_not_pending', 'failed-precondition'],
     ['internal_error', 'internal'],
   ] as const)('%s maps to HttpsError code %s', (appCode, httpsCode) => {
     const httpsError = new AppError(appCode).toHttpsError()
@@ -78,6 +80,16 @@ describe('toSafeHttpsError', () => {
     const result = toSafeHttpsError(new AppError('invitation_already_pending'))
     expect(result.code).toBe('already-exists')
     expect((result.details as { appCode: string }).appCode).toBe('invitation_already_pending')
+  })
+
+  it('converts the SEC-006 Stage 3 invitation_not_found/invitation_not_pending AppErrors safely', () => {
+    const notFound = toSafeHttpsError(new AppError('invitation_not_found'))
+    expect(notFound.code).toBe('permission-denied')
+    expect((notFound.details as { appCode: string }).appCode).toBe('invitation_not_found')
+
+    const notPending = toSafeHttpsError(new AppError('invitation_not_pending'))
+    expect(notPending.code).toBe('failed-precondition')
+    expect((notPending.details as { appCode: string }).appCode).toBe('invitation_not_pending')
   })
 
   it('collapses an unrecognized error into a generic internal_error — never forwards its message', () => {

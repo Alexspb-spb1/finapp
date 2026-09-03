@@ -276,6 +276,16 @@ export const CancelInviteRequestSchema = z.object({
 }).strict()
 export type CancelInviteRequest = z.infer<typeof CancelInviteRequestSchema>
 
+// cancelInvite's response — SEC-006 Stage 3. Deliberately minimal, the
+// same allowlist discipline as InviteMemberResponseSchema/
+// InvitationListItemSchema: no emailNormalized/role/tokenHash/token, only
+// confirmation of which invitation was cancelled and when.
+export const CancelInviteResponseSchema = z.object({
+  inviteId: idLikeString,
+  revokedAtUtc: z.iso.datetime(),
+}).strict()
+export type CancelInviteResponse = z.infer<typeof CancelInviteResponseSchema>
+
 export const ResendInviteRequestSchema = z.object({
   companyId: idLikeString,
   inviteId: idLikeString,

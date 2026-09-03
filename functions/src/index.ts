@@ -26,6 +26,7 @@ import { writeAuditEvent } from './lib/audit'
 import { runBootstrapIdempotent } from './lib/bootstrapIdempotency'
 import { generateRawInvitationToken, hashInvitationToken } from './lib/invitationToken'
 import { runInviteMemberTransaction } from './lib/inviteMemberTransaction'
+import { runCancelInviteTransaction } from './lib/cancelInviteTransaction'
 import { decodeInvitationsCursor, buildInvitationsCursor, timestampFromCursorPayload, mapInvitationDocumentToListItem } from './lib/invitationListing'
 import { AuthzProbeRequestSchema, type AuthzProbeResponse } from './schemas/auth'
 import { CreateCompanyRequestSchema, type CreateCompanyResponse } from './schemas/company'
@@ -33,11 +34,13 @@ import {
   InviteMemberRequestSchema,
   INVITATION_TTL_MS,
   ListInvitationsRequestSchema,
+  CancelInviteRequestSchema,
   InvitationDocumentSchema,
   type InviteMemberResponse,
   type ListInvitationsResponse,
   type InvitationListItem,
   type InvitationDocument,
+  type CancelInviteResponse,
 } from './schemas/invitation'
 
 export const authzProbe = onCall(async request => {
@@ -347,6 +350,55 @@ export async function performListInvitations(request: CallableRequest<unknown>):
 export const listInvitations = onCall(async request => {
   try {
     return await performListInvitations(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+// cancelInvite (SEC-006 Stage 3) — the first MUTATING callable over
+// invitations/{inviteId} besides inviteMember itself. Scope is
+// deliberately narrow: revoke a single still-pending invitation and
+// nothing else. resendInvite/previewInvite/acceptInvite are separate,
+// later stages.
+//
+// `inviteId` is a bare lookup key here, same as `companyId` — neither is
+// proof of authorization by itself. The invitation document's OWN
+// `companyId` field is re-checked against `input.companyId` inside the
+// transaction (see runCancelInviteTransaction); an admin of company B can
+// never cancel an invitation belonging to company A even by guessing its
+// inviteId, and gets the exact same `invitation_not_found` whether that
+// ID belongs to another company or doesn't exist at all — no oracle.
+//
+// `revokedAtTimestamp` is computed exactly once, BEFORE the transaction,
+// from this handler's own server clock (never `FieldValue.serverTimestamp()`,
+// which cannot be read back synchronously for the response) — mirroring
+// `performInviteMember`'s `expiresAtDate` precedent exactly, including the
+// injectable `runTransactionImpl` for the same internal-retry-safety proof
+// (see test/unit/cancelInviteTransaction.test.ts).
+export async function performCancelInvite(
+  request: CallableRequest<unknown>,
+  runTransactionImpl: <T>(updateFn: (txn: Transaction) => Promise<T>) => Promise<T> = fn => db.runTransaction(fn),
+): Promise<CancelInviteResponse> {
+  const auth = requireAuth(request)
+  requireVerifiedEmail(auth)
+  const input = validateRequest(CancelInviteRequestSchema, request.data)
+
+  const revokedAtDate = new Date()
+  const revokedAtTimestamp = Timestamp.fromDate(revokedAtDate)
+
+  await runTransactionImpl(txn =>
+    runCancelInviteTransaction({ db, txn, request, auth, input, generated: { revokedAtTimestamp } }),
+  )
+
+  return {
+    inviteId: input.inviteId,
+    revokedAtUtc: revokedAtDate.toISOString(),
+  }
+}
+
+export const cancelInvite = onCall(async request => {
+  try {
+    return await performCancelInvite(request)
   } catch (err) {
     throw toSafeHttpsError(err)
   }
