@@ -292,3 +292,12 @@ export async function getMembershipsSnapshot(companyId: string): Promise<Array<{
     .map(doc => ({ id: doc.id, data: doc.data() as Record<string, unknown> }))
     .sort((a, b) => a.id.localeCompare(b.id))
 }
+
+// ── SEC-006 Stage 3 (cancelInvite) ───────────────────────────────────────
+
+/** Calls the real `cancelInvite` callable through the Functions Emulator, using whichever user is currently signed in on the client auth instance. */
+export async function callCancelInvite(payload: unknown): Promise<unknown> {
+  const callable = httpsCallable(getClientFunctions(), 'cancelInvite')
+  const result = await callable(payload)
+  return result.data
+}
