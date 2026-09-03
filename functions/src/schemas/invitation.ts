@@ -43,12 +43,22 @@ const idLikeString = nonEmptyString.max(200)
 // introduced as `cursorDocumentIdString` for the listInvitations cursor
 // (independent review findings on SEC-006 Stage 2b rounds 1-2) and
 // generalized here (independent review finding #2 on SEC-006 Stage 3
-// round 1) so every field that is genuinely used as a document ID segment
-// — not just the cursor's — gets the same protection: an unvalidated
+// round 1) so a value genuinely used as a document ID segment gets this
+// protection instead of the bare-length `idLikeString`: an unvalidated
 // value here would otherwise pass request validation and only fail later
 // inside Firestore's own path resolution, surfacing as a generic
 // `membership_data_error`/`internal_error` instead of the stable
 // `invalid_request` a malformed ID must always produce.
+//
+// NOT yet applied everywhere it arguably should be (independent review,
+// SEC-006 Stage 3 round 2 PASS, non-blocking documentation note): as of
+// this writing, `InviteMemberRequestSchema.companyId` and
+// `ListInvitationsRequestSchema.companyId` — both also used as a literal
+// `companies/{companyId}` path segment via `requireActiveMember` — still
+// use the plain `idLikeString`. Widening those was out of scope for
+// SEC-006 Stage 3 (which only required fixing `CancelInviteRequestSchema`);
+// tracked as a candidate for a future, separate cleanup task rather than
+// folded into this one.
 const RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN = /^__.*__$/
 export const FirestoreDocumentIdSchema = nonEmptyString
   .max(200)
