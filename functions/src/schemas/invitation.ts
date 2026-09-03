@@ -30,6 +30,34 @@ import { RoleSchema, FirestoreTimestampSchema } from './auth'
 const nonEmptyString = z.string().min(1)
 const idLikeString = nonEmptyString.max(200)
 
+// A value that is actually used as a literal Firestore document ID
+// segment (via `.doc(value)` or `FieldPath.documentId()`) — unlike the
+// general-purpose `idLikeString` above, which is only ever a lookup key
+// passed to a `.where(...)` equality filter, this enforces Firestore's
+// actual documented document-ID constraints
+// (https://firebase.google.com/docs/firestore/quotas): no `/` (which
+// would otherwise let a forged value smuggle a multi-segment path into a
+// query/reference that expects a single document ID segment), and not
+// exactly `.` or `..`, and not matching `__.*__` (Firestore reserves that
+// pattern for its own internal use and rejects it outright). Originally
+// introduced as `cursorDocumentIdString` for the listInvitations cursor
+// (independent review findings on SEC-006 Stage 2b rounds 1-2) and
+// generalized here (independent review finding #2 on SEC-006 Stage 3
+// round 1) so every field that is genuinely used as a document ID segment
+// — not just the cursor's — gets the same protection: an unvalidated
+// value here would otherwise pass request validation and only fail later
+// inside Firestore's own path resolution, surfacing as a generic
+// `membership_data_error`/`internal_error` instead of the stable
+// `invalid_request` a malformed ID must always produce.
+const RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN = /^__.*__$/
+export const FirestoreDocumentIdSchema = nonEmptyString
+  .max(200)
+  .regex(/^[^/]+$/)
+  .refine(
+    value => value !== '.' && value !== '..' && !RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN.test(value),
+    { message: 'not a valid Firestore document ID' },
+  )
+
 // ── Canonical constants ──────────────────────────────────────────────────
 // Approved owner defaults (SEC_006_RECOMMENDED_DEFAULTS) — not re-derived
 // or duplicated anywhere else; every future callable that needs these
@@ -208,34 +236,15 @@ const FIRESTORE_TIMESTAMP_MIN_SECONDS = -62_135_596_800
 const FIRESTORE_TIMESTAMP_MAX_SECONDS = 253_402_300_799
 
 // A cursor's `inviteId` is used directly as a Firestore document ID via
-// `FieldPath.documentId()` — unlike the general-purpose `idLikeString`
-// (a lookup key elsewhere in this file, never a literal path segment),
-// this enforces Firestore's actual documented document-ID constraints
-// (https://firebase.google.com/docs/firestore/quotas): no `/` (which
-// would otherwise let a forged cursor smuggle a multi-segment path into
-// a query that expects a single document ID segment — independent review
-// finding #1 on SEC-006 Stage 2b round 1), and not exactly `.` or `..`,
-// and not matching `__.*__` (Firestore reserves that pattern for its own
-// internal use and rejects it outright) — independent review finding #1
-// on SEC-006 Stage 2b round 2: a forged cursor using any of these would
-// otherwise pass this schema and only fail later, inside Firestore's own
-// query execution, surfacing as a generic `internal_error` instead of the
-// stable `invalid_request` a malformed cursor must always produce.
-const RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN = /^__.*__$/
-const cursorDocumentIdString = nonEmptyString
-  .max(200)
-  .regex(/^[^/]+$/)
-  .refine(
-    value => value !== '.' && value !== '..' && !RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN.test(value),
-    { message: 'not a valid Firestore document ID' },
-  )
-
+// `FieldPath.documentId()` — see `FirestoreDocumentIdSchema`'s own
+// top-of-file comment for the full rationale (this field is where that
+// protection originated, on SEC-006 Stage 2b rounds 1-2).
 export const InvitationsCursorPayloadSchema = z.object({
   version: z.literal(INVITATIONS_CURSOR_VERSION),
   companyId: idLikeString,
   createdAtSeconds: z.number().int().min(FIRESTORE_TIMESTAMP_MIN_SECONDS).max(FIRESTORE_TIMESTAMP_MAX_SECONDS),
   createdAtNanoseconds: z.number().int().min(0).max(999_999_999),
-  inviteId: cursorDocumentIdString,
+  inviteId: FirestoreDocumentIdSchema,
 }).strict()
 export type InvitationsCursorPayload = z.infer<typeof InvitationsCursorPayloadSchema>
 
@@ -269,10 +278,19 @@ export type ListInvitationsResponse = z.infer<typeof ListInvitationsResponseSche
 // cancelInvite/resendInvite deliberately accept ONLY companyId (the
 // requireActiveMember lookup key) + inviteId (the target) — no status,
 // email, role, or actor uid; the server re-derives everything else from
-// the stored invitation document and requireAuth(request).
+// the stored invitation document and requireAuth(request). Both fields
+// use `FirestoreDocumentIdSchema` (not the general-purpose `idLikeString`)
+// because cancelInvite's handler passes each of them directly into a
+// Firestore path segment (`companies/{companyId}/members/{uid}` via
+// requireActiveMember, `invitations/{inviteId}` directly) — independent
+// review finding #2 on SEC-006 Stage 3 round 1: an unvalidated `/`, `.`,
+// `..`, or `__reserved__` value would otherwise pass request validation
+// and only fail later inside Firestore's own path resolution
+// (`membership_data_error`/`internal_error`), instead of the stable
+// `invalid_request` a malformed request must always produce.
 export const CancelInviteRequestSchema = z.object({
-  companyId: idLikeString,
-  inviteId: idLikeString,
+  companyId: FirestoreDocumentIdSchema,
+  inviteId: FirestoreDocumentIdSchema,
 }).strict()
 export type CancelInviteRequest = z.infer<typeof CancelInviteRequestSchema>
 

@@ -9,7 +9,7 @@ import { FunctionsError } from 'firebase/functions'
 import { Timestamp } from 'firebase-admin/firestore'
 import {
   createTestUser, signOutClient, signInAsExistingUser, seedCompany, seedMembership,
-  callCancelInvite, seedInvitationDoc, getInvitationDoc,
+  callCancelInvite, callInviteMember, seedInvitationDoc, getInvitationDoc,
   getInvitationLockDoc, seedInvitationLockDoc,
   getInvitationsSnapshotForCompany, getMembershipsSnapshot, getAuditEvents, countAuditEvents,
   authUserExistsWithEmail, setMaintenanceMode, clearMaintenanceMode,
@@ -59,6 +59,22 @@ function buildRawPendingInvitation(companyId: string, email: string, createdAt: 
   }
 }
 
+function buildCorruptedInvitation(companyId: string, email: string) {
+  return {
+    companyId,
+    emailNormalized: email,
+    role: 'not-a-real-role',
+    status: 'pending',
+    expiresAt: Timestamp.now(),
+    createdBy: 'uid_seed_synthetic',
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+    resendCount: 0,
+    lastSentAt: null,
+    // tokenHash deliberately omitted — fails InvitationDocumentSchema.
+  }
+}
+
 interface CancelInviteResult {
   inviteId: string
   revokedAtUtc: string
@@ -73,6 +89,40 @@ async function snapshotCompanyState(companyId: string) {
   }
 }
 
+// ── Independent review finding #3 (Stage 3 round 1): a denial must be
+// proven to leave EVERYTHING untouched — the target invitation doc, its
+// lock, this company's memberships, and the audit log — not just the
+// invitation's `status` field. ──
+interface DenialSnapshot {
+  invite: Record<string, unknown> | undefined
+  lock: Record<string, unknown> | undefined
+  memberships: Array<{ id: string; data: Record<string, unknown> }>
+  auditCount: number
+}
+
+async function snapshotForDenial(companyId: string, inviteId: string, email?: string): Promise<DenialSnapshot> {
+  return {
+    invite: await getInvitationDoc(inviteId),
+    lock: email !== undefined ? await getInvitationLockDoc(companyId, email) : undefined,
+    memberships: await getMembershipsSnapshot(companyId),
+    auditCount: await countAuditEvents(companyId),
+  }
+}
+
+/** Calls cancelInvite with `payload`, asserts it rejects with `expectedAppCode`, and asserts the invitation/lock/memberships/audit-count snapshot for `companyId`+`inviteId`(+`email`, if a lock is relevant) is BYTE-IDENTICAL before and after — not merely that `invite.status` didn't change. */
+async function expectDenial(
+  payload: unknown,
+  expectedAppCode: string,
+  companyId: string,
+  inviteId: string,
+  email?: string,
+): Promise<void> {
+  const before = await snapshotForDenial(companyId, inviteId, email)
+  await expect(callCancelInvite(payload)).rejects.toSatisfy((err: unknown) => appCodeOf(err) === expectedAppCode)
+  const after = await snapshotForDenial(companyId, inviteId, email)
+  expect(after).toEqual(before)
+}
+
 describe('cancelInvite — real callable pipeline through the Functions Emulator', () => {
   afterEach(async () => {
     await clearMaintenanceMode()
@@ -84,6 +134,7 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     const email = freshEmail('happy')
     const inviteId = 'invite_happy_cancel'
     await seedInvitationDoc(inviteId, buildRawPendingInvitation(companyId, email, Timestamp.now()))
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
 
     const before = Date.now()
     const result = (await callCancelInvite({ companyId, inviteId })) as CancelInviteResult
@@ -102,6 +153,8 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     expect(invite?.emailNormalized).toBe(email)
     expect(invite?.role).toBe('viewer')
     expect(invite?.tokenHash).toBe('0'.repeat(64))
+    // The lock is left completely untouched by a successful cancel too.
+    expect(await getInvitationLockDoc(companyId, email)).toEqual({ currentInviteId: inviteId })
   })
 
   // ── 3: response never leaks token/tokenHash/email/role ──────────────────
@@ -124,10 +177,10 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     const email = freshEmail('unauth')
     const inviteId = 'invite_unauth'
     await seedInvitationDoc(inviteId, buildRawPendingInvitation(companyId, email, Timestamp.now()))
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
     await signOutClient()
 
-    await expect(callCancelInvite({ companyId, inviteId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'auth_required')
-    expect((await getInvitationDoc(inviteId))?.status).toBe('pending')
+    await expectDenial({ companyId, inviteId }, 'auth_required', companyId, inviteId, email)
   })
 
   // ── 5: unverified ─────────────────────────────────────────────────────────
@@ -139,9 +192,9 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     const email = freshEmail('unverified')
     const inviteId = 'invite_unverified'
     await seedInvitationDoc(inviteId, buildRawPendingInvitation(companyId, email, Timestamp.now()))
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
 
-    await expect(callCancelInvite({ companyId, inviteId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'email_unverified')
-    expect((await getInvitationDoc(inviteId))?.status).toBe('pending')
+    await expectDenial({ companyId, inviteId }, 'email_unverified', companyId, inviteId, email)
   })
 
   // ── 6: viewer/accountant ──────────────────────────────────────────────────
@@ -153,9 +206,9 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     const email = freshEmail(`role-${role}`)
     const inviteId = `invite_role_${role}`
     await seedInvitationDoc(inviteId, buildRawPendingInvitation(companyId, email, Timestamp.now()))
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
 
-    await expect(callCancelInvite({ companyId, inviteId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'insufficient_role')
-    expect((await getInvitationDoc(inviteId))?.status).toBe('pending')
+    await expectDenial({ companyId, inviteId }, 'insufficient_role', companyId, inviteId, email)
   })
 
   // ── 7: cross-company — oracle-safe (not found vs. wrong company look identical) ──
@@ -165,23 +218,50 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     const email = freshEmail('cross')
     const inviteId = 'invite_cross_company'
     await seedInvitationDoc(inviteId, buildRawPendingInvitation(companyA, email, Timestamp.now()))
+    await seedInvitationLockDoc(companyA, email, { currentInviteId: inviteId })
 
     await signInAsExistingUser(adminB)
-    await expect(callCancelInvite({ companyId: companyB, inviteId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invitation_not_found')
-    expect((await getInvitationDoc(inviteId))?.status).toBe('pending')
+    await expectDenial({ companyId: companyB, inviteId }, 'invitation_not_found', companyA, inviteId, email)
   })
 
   it('a missing inviteId gives the SAME invitation_not_found as a cross-company one (no existence oracle)', async () => {
     const { companyId } = await setUpAdmin('missing-invite')
-    await expect(callCancelInvite({ companyId, inviteId: 'invite_does_not_exist_at_all' }))
-      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invitation_not_found')
+    await expectDenial({ companyId, inviteId: 'invite_does_not_exist_at_all' }, 'invitation_not_found', companyId, 'invite_does_not_exist_at_all')
   })
 
   it('an admin acting as a DIFFERENT company they are not a member of gets membership_not_found', async () => {
     const { companyId: companyA } = await setUpAdmin('membership-cross-a')
     await setUpAdmin('membership-cross-b') // adminB stays signed in, has no membership in companyA
-    await expect(callCancelInvite({ companyId: companyA, inviteId: 'invite_irrelevant' }))
-      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'membership_not_found')
+    await expectDenial({ companyId: companyA, inviteId: 'invite_irrelevant' }, 'membership_not_found', companyA, 'invite_irrelevant')
+  })
+
+  // ── Independent review finding #1 (Stage 3 round 1): a CORRUPTED foreign
+  // invite must give the exact same code as a MISSING one — never
+  // internal_error — or the corruption itself becomes a "something exists
+  // here" oracle. ──
+  it('a corrupted invitation belonging to a DIFFERENT company gives the SAME invitation_not_found as a missing one, never internal_error', async () => {
+    const { companyId: companyA } = await setUpAdmin('oracle-corrupted-a')
+    const { companyId: companyB, adminUid: adminB } = await setUpAdmin('oracle-corrupted-b')
+    const corruptedInviteId = 'invite_oracle_corrupted_foreign'
+    const corruptedFixture = buildCorruptedInvitation(companyA, freshEmail('oracle-corrupted'))
+    await seedInvitationDoc(corruptedInviteId, corruptedFixture)
+    const missingInviteId = 'invite_oracle_truly_missing'
+
+    await signInAsExistingUser(adminB)
+    const [corruptedResult, missingResult] = await Promise.allSettled([
+      callCancelInvite({ companyId: companyB, inviteId: corruptedInviteId }),
+      callCancelInvite({ companyId: companyB, inviteId: missingInviteId }),
+    ])
+    expect(corruptedResult.status).toBe('rejected')
+    expect(missingResult.status).toBe('rejected')
+    const corruptedCode = appCodeOf((corruptedResult as PromiseRejectedResult).reason)
+    const missingCode = appCodeOf((missingResult as PromiseRejectedResult).reason)
+    expect(corruptedCode).toBe('invitation_not_found')
+    expect(missingCode).toBe('invitation_not_found')
+    // The corrupted document itself is completely untouched — cancelInvite
+    // never even attempts to interpret/repair it once the company check
+    // fails.
+    expect(await getInvitationDoc(corruptedInviteId)).toEqual(corruptedFixture)
   })
 
   // ── 8: maintenance mode ───────────────────────────────────────────────────
@@ -190,14 +270,14 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     const email = freshEmail('maintenance')
     const inviteId = 'invite_maintenance'
     await seedInvitationDoc(inviteId, buildRawPendingInvitation(companyId, email, Timestamp.now()))
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
     await setMaintenanceMode(true)
 
-    await expect(callCancelInvite({ companyId, inviteId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'maintenance_mode')
-    expect((await getInvitationDoc(inviteId))?.status).toBe('pending')
+    await expectDenial({ companyId, inviteId }, 'maintenance_mode', companyId, inviteId, email)
   })
 
   // ── 9: already accepted / already revoked ────────────────────────────────
-  it('an already-ACCEPTED invitation cannot be cancelled — invitation_not_pending, document unchanged', async () => {
+  it('an already-ACCEPTED invitation cannot be cancelled — invitation_not_pending, nothing changes', async () => {
     const { companyId } = await setUpAdmin('already-accepted')
     const email = freshEmail('already-accepted')
     const inviteId = 'invite_already_accepted'
@@ -208,13 +288,12 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
       acceptedAt: now,
       acceptedByUid: 'uid_who_accepted_synthetic',
     })
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
 
-    const before = await getInvitationDoc(inviteId)
-    await expect(callCancelInvite({ companyId, inviteId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invitation_not_pending')
-    expect(await getInvitationDoc(inviteId)).toEqual(before)
+    await expectDenial({ companyId, inviteId }, 'invitation_not_pending', companyId, inviteId, email)
   })
 
-  it('an already-REVOKED invitation cannot be cancelled again — invitation_not_pending, document unchanged', async () => {
+  it('an already-REVOKED invitation cannot be cancelled again — invitation_not_pending, nothing changes', async () => {
     const { companyId } = await setUpAdmin('already-revoked')
     const email = freshEmail('already-revoked')
     const inviteId = 'invite_already_revoked'
@@ -225,33 +304,18 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
       revokedAt: now,
       revokedBy: 'uid_other_admin_synthetic',
     })
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
 
-    const before = await getInvitationDoc(inviteId)
-    await expect(callCancelInvite({ companyId, inviteId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invitation_not_pending')
-    expect(await getInvitationDoc(inviteId)).toEqual(before)
+    await expectDenial({ companyId, inviteId }, 'invitation_not_pending', companyId, inviteId, email)
   })
 
-  // ── 10: corrupted document ────────────────────────────────────────────────
-  it('a corrupted invitation document (fails InvitationDocumentSchema) causes a safe internal_error, document left untouched', async () => {
+  // ── 10: corrupted OWN-company document ────────────────────────────────────
+  it('a corrupted invitation document belonging to the caller\'s OWN company causes a safe internal_error, nothing changes', async () => {
     const { companyId } = await setUpAdmin('corrupted')
     const inviteId = 'invite_corrupted'
-    await seedInvitationDoc(inviteId, {
-      companyId,
-      emailNormalized: freshEmail('corrupted'),
-      role: 'not-a-real-role',
-      status: 'pending',
-      expiresAt: Timestamp.now(),
-      createdBy: 'uid_seed_synthetic',
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
-      resendCount: 0,
-      lastSentAt: null,
-      // tokenHash deliberately omitted.
-    })
-    const before = await getInvitationDoc(inviteId)
+    await seedInvitationDoc(inviteId, buildCorruptedInvitation(companyId, freshEmail('corrupted')))
 
-    await expect(callCancelInvite({ companyId, inviteId })).rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
-    expect(await getInvitationDoc(inviteId)).toEqual(before)
+    await expectDenial({ companyId, inviteId }, 'internal_error', companyId, inviteId)
   })
 
   // ── 11: extra/forged payload fields ───────────────────────────────────────
@@ -260,6 +324,7 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     const email = freshEmail('forged-payload')
     const inviteId = 'invite_forged_payload'
     await seedInvitationDoc(inviteId, buildRawPendingInvitation(companyId, email, Timestamp.now()))
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
 
     for (const forged of [
       { uid: 'uid_attacker' },
@@ -267,10 +332,24 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
       { revokedBy: 'uid_attacker' },
       { revokedAt: new Date().toISOString() },
     ]) {
-      await expect(callCancelInvite({ companyId, inviteId, ...forged }))
-        .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
+      await expectDenial({ companyId, inviteId, ...forged }, 'invalid_request', companyId, inviteId, email)
     }
-    expect((await getInvitationDoc(inviteId))?.status).toBe('pending')
+  })
+
+  // ── Independent review finding #2 (Stage 3 round 1): forbidden Firestore
+  // document IDs via the REAL callable ──
+  describe('companyId/inviteId reject values that are not valid Firestore document IDs', () => {
+    it.each(['company/with-slash', '.', '..', '__reserved__'])('rejects companyId %j with invalid_request', async companyId => {
+      await setUpAdmin('forbidden-company-id') // ensures an authenticated, verified caller exists
+      await expect(callCancelInvite({ companyId, inviteId: 'invite_synthetic' }))
+        .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
+    })
+
+    it.each(['invite/with-slash', '.', '..', '__reserved__'])('rejects inviteId %j with invalid_request', async inviteId => {
+      const { companyId } = await setUpAdmin('forbidden-invite-id')
+      await expect(callCancelInvite({ companyId, inviteId }))
+        .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'invalid_request')
+    })
   })
 
   // ── 12: audit event — exact safe field set, correct action, no PII ────────
@@ -401,5 +480,51 @@ describe('cancelInvite — real callable pipeline through the Functions Emulator
     const otherAfter = await snapshotCompanyState(otherCompanyId)
 
     expect(otherAfter).toEqual(otherBefore)
+  })
+
+  // ── Independent review finding #4 (Stage 3 round 1): full real-callable
+  // life-cycle — inviteMember -> cancelInvite -> inviteMember for the SAME
+  // email — proves the lock is atomically repointed at the new invite and
+  // the old one stays revoked, entirely through real (not seeded)
+  // callable invocations. ──
+  it('full life cycle: inviteMember -> cancelInvite -> inviteMember for the same email atomically repoints the lock, keeps the old invite revoked, and never persists a raw token', async () => {
+    const { companyId } = await setUpAdmin('full-flow')
+    const email = freshEmail('full-flow')
+
+    const first = (await callInviteMember({ companyId, email, role: 'viewer' })) as { inviteId: string; token: string }
+    await callCancelInvite({ companyId, inviteId: first.inviteId })
+    const second = (await callInviteMember({ companyId, email, role: 'accountant' })) as { inviteId: string; token: string }
+
+    expect(second.inviteId).not.toBe(first.inviteId)
+
+    const firstInvite = await getInvitationDoc(first.inviteId)
+    expect(firstInvite?.status).toBe('revoked')
+
+    const secondInvite = await getInvitationDoc(second.inviteId)
+    expect(secondInvite?.status).toBe('pending')
+    expect(secondInvite?.role).toBe('accountant')
+
+    const lock = await getInvitationLockDoc(companyId, email)
+    expect(lock).toEqual({ currentInviteId: second.inviteId })
+
+    // NOTE on audit count: this flow makes THREE real callable calls
+    // (inviteMember, cancelInvite, inviteMember again), and each one —
+    // per the already-approved Stage 2 pattern (writeAuditEvent inside
+    // the same transaction as the mutation) — writes exactly one audit
+    // event. That is 3 total, not 2. The independent review's stated
+    // expectation of "ровно два" appears to assume only 2 audit-writing
+    // operations in this named 3-call scenario; asserting a literal count
+    // of 2 here would require either skipping a real audit write (wrong)
+    // or seeding the first invitation directly instead of through a real
+    // inviteMember call (which would defeat the point of a full-life-cycle
+    // test through real callables). Flagged explicitly for the next
+    // review round rather than silently forcing either number.
+    const auditEvents = await getAuditEvents(companyId)
+    expect(auditEvents).toHaveLength(3)
+    expect(auditEvents.map(e => e.action).sort()).toEqual(['invitation_cancelled', 'member_invited', 'member_invited'])
+
+    const serialized = JSON.stringify({ firstInvite, secondInvite, lock, auditEvents })
+    expect(serialized).not.toContain(first.token)
+    expect(serialized).not.toContain(second.token)
   })
 })

@@ -51,18 +51,28 @@ export async function runCancelInviteTransaction(params: RunCancelInviteTransact
   // OTHER companies purely from the error shape.
   if (!inviteSnap.exists) throw new AppError('invitation_not_found')
 
-  const parsed = InvitationDocumentSchema.safeParse(inviteSnap.data())
-  // A corrupted document is a distinct, genuine data-integrity problem —
-  // never attacker-reachable through ordinary input (Rules deny all
-  // client writes to this collection), so giving it its own generic
-  // internal_error rather than folding it into invitation_not_found does
-  // not create a guessable-ID oracle; it matches how every other
-  // corrupted-document case in this package is already handled
-  // (runInviteMemberTransaction, performListInvitations).
+  // The company check happens on the RAW, pre-validation field —
+  // deliberately BEFORE full schema validation (independent review
+  // finding #1 on SEC-006 Stage 3 round 1). Validating first would mean a
+  // CORRUPTED document belonging to a foreign company resolves as
+  // `internal_error` while a genuinely missing one resolves as
+  // `invitation_not_found` — two different outcomes that let a caller
+  // learn "something (possibly broken) exists at this ID in a company I
+  // can't see" vs. "nothing exists here at all". Checking the raw
+  // `companyId` first collapses both into the exact same
+  // `invitation_not_found`, before this document's validity is ever
+  // considered. Only once the raw company match succeeds — i.e. the
+  // document is claimed to belong to the caller's OWN company — does
+  // corruption become a genuine, non-oracle-relevant `internal_error`.
+  const rawData = inviteSnap.data()
+  if (!rawData || typeof rawData.companyId !== 'string' || rawData.companyId !== input.companyId) {
+    throw new AppError('invitation_not_found')
+  }
+
+  const parsed = InvitationDocumentSchema.safeParse(rawData)
   if (!parsed.success) throw new AppError('internal_error')
 
   const invite = parsed.data
-  if (invite.companyId !== input.companyId) throw new AppError('invitation_not_found')
   if (invite.status !== 'pending') throw new AppError('invitation_not_pending')
 
   // The invitationLocks/{lockId} entry for this invitation's

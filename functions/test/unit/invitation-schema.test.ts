@@ -27,6 +27,7 @@ import {
   InvitationsCursorPayloadSchema,
   INVITATIONS_CURSOR_VERSION,
   CancelInviteResponseSchema,
+  FirestoreDocumentIdSchema,
 } from '../../src/schemas/invitation'
 
 const VALID_RAW_TOKEN = 'a'.repeat(43) // base64url charset, 43 chars
@@ -534,6 +535,42 @@ describe('CancelInviteRequestSchema / ResendInviteRequestSchema — no status/em
       expect(() => validateRequest(schema, { ...valid, uid: 'uid_attacker' })).toThrowError(invalidRequestExpectation())
     })
   }
+})
+
+// ── Independent review finding #2 (Stage 3 round 1): CancelInviteRequestSchema
+// fields are literal Firestore document ID segments, not bare lookup keys ──
+describe('CancelInviteRequestSchema — companyId/inviteId use FirestoreDocumentIdSchema', () => {
+  const valid = { companyId: 'company_synthetic', inviteId: 'invite_synthetic' }
+
+  it.each(['companyId', 'inviteId'] as const)('rejects a %s containing a "/"', field => {
+    expect(() => validateRequest(CancelInviteRequestSchema, { ...valid, [field]: 'foo/bar' })).toThrowError(invalidRequestExpectation())
+  })
+  it.each(['companyId', 'inviteId'] as const)('rejects a %s of exactly "." or ".."', field => {
+    expect(() => validateRequest(CancelInviteRequestSchema, { ...valid, [field]: '.' })).toThrowError(invalidRequestExpectation())
+    expect(() => validateRequest(CancelInviteRequestSchema, { ...valid, [field]: '..' })).toThrowError(invalidRequestExpectation())
+  })
+  it.each(['companyId', 'inviteId'] as const)('rejects a %s matching the reserved __.*__ pattern', field => {
+    expect(() => validateRequest(CancelInviteRequestSchema, { ...valid, [field]: '__reserved__' })).toThrowError(invalidRequestExpectation())
+  })
+  it('still accepts normal companyId/inviteId values (with dots/underscores that do not match the reserved forms)', () => {
+    expect(() => validateRequest(CancelInviteRequestSchema, { companyId: 'co.with.dots', inviteId: '_single_underscore_' })).not.toThrow()
+  })
+})
+
+describe('FirestoreDocumentIdSchema — the shared document-ID validator', () => {
+  it('accepts a normal id', () => {
+    expect(FirestoreDocumentIdSchema.safeParse('invite_abc-123').success).toBe(true)
+  })
+  it('rejects "/"; ".";  ".."; and __reserved__', () => {
+    expect(FirestoreDocumentIdSchema.safeParse('a/b').success).toBe(false)
+    expect(FirestoreDocumentIdSchema.safeParse('.').success).toBe(false)
+    expect(FirestoreDocumentIdSchema.safeParse('..').success).toBe(false)
+    expect(FirestoreDocumentIdSchema.safeParse('__reserved__').success).toBe(false)
+  })
+  it('rejects an empty string and an overlong value', () => {
+    expect(FirestoreDocumentIdSchema.safeParse('').success).toBe(false)
+    expect(FirestoreDocumentIdSchema.safeParse('a'.repeat(201)).success).toBe(false)
+  })
 })
 
 describe('PreviewInviteRequestSchema — pre-auth, minimal surface', () => {
