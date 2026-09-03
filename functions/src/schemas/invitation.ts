@@ -157,6 +157,26 @@ export const InviteMemberRequestSchema = z.object({
 }).strict()
 export type InviteMemberRequest = z.infer<typeof InviteMemberRequestSchema>
 
+// inviteMember's response — SEC-006 Stage 2. Deliberately minimal: the raw
+// token is returned here ONLY (this is the one and only moment it ever
+// exists outside a local handler variable — see
+// functions/src/lib/invitationToken.ts) and nothing else about the
+// invitation (tokenHash, emailNormalized, companyId, internal document
+// paths) is ever included. `.strict()` makes this structurally provable in
+// a unit test: a response object carrying a stray `tokenHash` field fails
+// validation outright.
+// z.iso.datetime() (not a bare z.string()) enforces the exact shape
+// `Date.prototype.toISOString()` produces: millisecond precision, 'Z'
+// suffix, no other offset — matching independent review finding #1 on
+// SEC-006 Stage 2, which asked for strict UTC ISO validation rather than
+// "any non-empty string".
+export const InviteMemberResponseSchema = z.object({
+  inviteId: idLikeString,
+  token: RawInvitationTokenSchema,
+  expiresAtUtc: z.iso.datetime(),
+}).strict()
+export type InviteMemberResponse = z.infer<typeof InviteMemberResponseSchema>
+
 export const ListInvitationsRequestSchema = z.object({
   companyId: idLikeString,
   cursor: nonEmptyString.max(500).optional(),

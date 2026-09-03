@@ -28,6 +28,7 @@ export const APP_ERROR_CODES = [
   'last_admin',
   'idempotency_conflict',
   'maintenance_mode',
+  'invitation_already_pending',
   'internal_error',
 ] as const
 
@@ -42,6 +43,7 @@ type HttpsErrorCode =
   | 'invalid-argument'
   | 'failed-precondition'
   | 'aborted'
+  | 'already-exists'
   | 'internal'
 
 const HTTPS_CODE_FOR: Record<AppErrorCode, HttpsErrorCode> = {
@@ -55,6 +57,7 @@ const HTTPS_CODE_FOR: Record<AppErrorCode, HttpsErrorCode> = {
   last_admin: 'failed-precondition',
   idempotency_conflict: 'aborted',
   maintenance_mode: 'failed-precondition',
+  invitation_already_pending: 'already-exists',
   internal_error: 'internal',
 }
 

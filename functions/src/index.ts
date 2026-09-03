@@ -17,15 +17,22 @@
 // Auth user who cannot have verified their email yet; mandatory
 // verified-email enforcement is SEC-013. The verification email itself is
 // still sent by the client right after Auth user creation (src/store/authStore.ts).
-import { onCall } from 'firebase-functions/v2/https'
-import { FieldValue, type Transaction } from 'firebase-admin/firestore'
+import { onCall, type CallableRequest } from 'firebase-functions/v2/https'
+import { FieldValue, Timestamp, type Transaction } from 'firebase-admin/firestore'
 import { db, adminAuth } from './lib/admin'
 import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, requireNotInMaintenanceMode, validateRequest } from './lib/authz'
 import { AppError, toSafeHttpsError } from './lib/errors'
 import { writeAuditEvent } from './lib/audit'
 import { runBootstrapIdempotent } from './lib/bootstrapIdempotency'
+import { generateRawInvitationToken, hashInvitationToken } from './lib/invitationToken'
+import { runInviteMemberTransaction } from './lib/inviteMemberTransaction'
 import { AuthzProbeRequestSchema, type AuthzProbeResponse } from './schemas/auth'
 import { CreateCompanyRequestSchema, type CreateCompanyResponse } from './schemas/company'
+import {
+  InviteMemberRequestSchema,
+  INVITATION_TTL_MS,
+  type InviteMemberResponse,
+} from './schemas/invitation'
 
 export const authzProbe = onCall(async request => {
   try {
@@ -172,6 +179,76 @@ export const createCompany = onCall(async request => {
 
     const response: CreateCompanyResponse = { companyId: result.companyId }
     return response
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+// inviteMember (SEC-006 Stage 2) — the first callable to write to
+// invitations/{inviteId} and invitationLocks/{lockId} (both deny-all in
+// Firestore Rules since SEC-006 Stage 1 — writable only via this Admin SDK
+// path). Scope is deliberately narrow: this creates a pending invitation
+// and nothing else. listInvitations/cancelInvite/resendInvite/
+// previewInvite/acceptInvite are separate, later stages.
+//
+// Token handling: the raw token is generated exactly once, BEFORE the
+// transaction, and reused verbatim across any internal Firestore retry —
+// never regenerated inside the transaction body. It exists only in this
+// local closure and in the single successful response; only its SHA-256
+// hash is ever persisted (see lib/invitationToken.ts). The transaction
+// body itself (runInviteMemberTransaction, lib/inviteMemberTransaction.ts)
+// imports neither the token generator nor the hasher at all, so it is
+// structurally incapable of regenerating them no matter how many times
+// Firestore invokes it on retry — see that module's own comment and
+// test/unit/inviteMemberTransaction.test.ts for the accompanying proof
+// (an injected transaction runner that invokes it twice).
+//
+// Duplicate-invite protection: `invitationLocks/{lockId}` (lockId derived
+// deterministically from (companyId, emailNormalized) — see
+// computeInvitationLockId in schemas/invitation.ts) points at the current
+// invitation for that pair. A still-pending, unexpired invitation behind
+// the lock blocks a new one with the stable `invitation_already_pending`
+// error; an expired/accepted/revoked invitation behind the lock is safe to
+// atomically replace. Any corrupted or mismatched lock/invitation state
+// fails closed with a generic `internal_error` — never disclosing document
+// content, IDs, or which specific invariant broke. All of that lives in
+// runInviteMemberTransaction; see that file for the exact logic.
+//
+// `runTransactionImpl` defaults to the real `db.runTransaction`, but is
+// injectable so a unit test can simulate Firestore invoking the update
+// function more than once (an internal retry) against a fake Transaction —
+// no Functions/Firestore Emulator involved.
+export async function performInviteMember(
+  request: CallableRequest<unknown>,
+  runTransactionImpl: <T>(updateFn: (txn: Transaction) => Promise<T>) => Promise<T> = fn => db.runTransaction(fn),
+): Promise<InviteMemberResponse> {
+  const auth = requireAuth(request)
+  requireVerifiedEmail(auth)
+  const input = validateRequest(InviteMemberRequestSchema, request.data)
+
+  const rawToken = generateRawInvitationToken()
+  const tokenHash = hashInvitationToken(rawToken)
+  const inviteId = db.collection('invitations').doc().id
+  const expiresAtDate = new Date(Date.now() + INVITATION_TTL_MS)
+  const expiresAtTimestamp = Timestamp.fromDate(expiresAtDate)
+
+  await runTransactionImpl(txn =>
+    runInviteMemberTransaction({
+      db, txn, request, auth, input,
+      generated: { tokenHash, inviteId, expiresAtTimestamp },
+    }),
+  )
+
+  return {
+    inviteId,
+    token: rawToken,
+    expiresAtUtc: expiresAtDate.toISOString(),
+  }
+}
+
+export const inviteMember = onCall(async request => {
+  try {
+    return await performInviteMember(request)
   } catch (err) {
     throw toSafeHttpsError(err)
   }
