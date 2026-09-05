@@ -301,3 +301,12 @@ export async function callCancelInvite(payload: unknown): Promise<unknown> {
   const result = await callable(payload)
   return result.data
 }
+
+// ── SEC-006 Stage 4 (resendInvite) ───────────────────────────────────────
+
+/** Calls the real `resendInvite` callable through the Functions Emulator, using whichever user is currently signed in on the client auth instance. */
+export async function callResendInvite(payload: unknown): Promise<unknown> {
+  const callable = httpsCallable(getClientFunctions(), 'resendInvite')
+  const result = await callable(payload)
+  return result.data
+}

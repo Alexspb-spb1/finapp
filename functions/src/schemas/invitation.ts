@@ -314,11 +314,25 @@ export const CancelInviteResponseSchema = z.object({
 }).strict()
 export type CancelInviteResponse = z.infer<typeof CancelInviteResponseSchema>
 
+// Both fields use `FirestoreDocumentIdSchema` for the same reason as
+// `CancelInviteRequestSchema` (SEC-006 Stage 3): resendInvite's handler
+// passes each directly into a Firestore path segment
+// (`companies/{companyId}/members/{uid}` via requireActiveMember,
+// `invitations/{inviteId}` directly) — SEC-006 Stage 4 applies the same
+// fix proactively rather than waiting for a review round to point it out.
 export const ResendInviteRequestSchema = z.object({
-  companyId: idLikeString,
-  inviteId: idLikeString,
+  companyId: FirestoreDocumentIdSchema,
+  inviteId: FirestoreDocumentIdSchema,
 }).strict()
 export type ResendInviteRequest = z.infer<typeof ResendInviteRequestSchema>
+
+// resendInvite's response has the EXACT same shape as inviteMember's
+// ({ inviteId, token, expiresAtUtc }, `.strict()`, raw token returned only
+// here, only once) — reused directly (SEC-006 Stage 4) rather than
+// duplicated, per the same allowlist discipline as every other response
+// schema in this file.
+export const ResendInviteResponseSchema = InviteMemberResponseSchema
+export type ResendInviteResponse = InviteMemberResponse
 
 // previewInvite is the only PRE-AUTH callable in this set (see
 // docs/remediation/reports/SEC-006.md plan v2 §4) — it accepts only what an

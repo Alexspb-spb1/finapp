@@ -28,6 +28,7 @@ import {
   INVITATIONS_CURSOR_VERSION,
   CancelInviteResponseSchema,
   FirestoreDocumentIdSchema,
+  ResendInviteResponseSchema,
 } from '../../src/schemas/invitation'
 
 const VALID_RAW_TOKEN = 'a'.repeat(43) // base64url charset, 43 chars
@@ -554,6 +555,38 @@ describe('CancelInviteRequestSchema — companyId/inviteId use FirestoreDocument
   })
   it('still accepts normal companyId/inviteId values (with dots/underscores that do not match the reserved forms)', () => {
     expect(() => validateRequest(CancelInviteRequestSchema, { companyId: 'co.with.dots', inviteId: '_single_underscore_' })).not.toThrow()
+  })
+})
+
+// ── SEC-006 Stage 4: ResendInviteRequestSchema gets the same protection proactively ──
+describe('ResendInviteRequestSchema — companyId/inviteId use FirestoreDocumentIdSchema', () => {
+  const valid = { companyId: 'company_synthetic', inviteId: 'invite_synthetic' }
+
+  it.each(['companyId', 'inviteId'] as const)('rejects a %s containing a "/"', field => {
+    expect(() => validateRequest(ResendInviteRequestSchema, { ...valid, [field]: 'foo/bar' })).toThrowError(invalidRequestExpectation())
+  })
+  it.each(['companyId', 'inviteId'] as const)('rejects a %s of exactly "." or ".."', field => {
+    expect(() => validateRequest(ResendInviteRequestSchema, { ...valid, [field]: '.' })).toThrowError(invalidRequestExpectation())
+    expect(() => validateRequest(ResendInviteRequestSchema, { ...valid, [field]: '..' })).toThrowError(invalidRequestExpectation())
+  })
+  it.each(['companyId', 'inviteId'] as const)('rejects a %s matching the reserved __.*__ pattern', field => {
+    expect(() => validateRequest(ResendInviteRequestSchema, { ...valid, [field]: '__reserved__' })).toThrowError(invalidRequestExpectation())
+  })
+  it('still accepts normal companyId/inviteId values', () => {
+    expect(() => validateRequest(ResendInviteRequestSchema, valid)).not.toThrow()
+  })
+})
+
+describe('ResendInviteResponseSchema — reuses InviteMemberResponseSchema exactly', () => {
+  it('is the exact same schema object as InviteMemberResponseSchema (no duplication)', () => {
+    expect(ResendInviteResponseSchema).toBe(InviteMemberResponseSchema)
+  })
+  it('accepts the { inviteId, token, expiresAtUtc } shape and rejects a stray tokenHash/email/role', () => {
+    const valid = { inviteId: 'invite_synthetic', token: VALID_RAW_TOKEN, expiresAtUtc: new Date().toISOString() }
+    expect(ResendInviteResponseSchema.safeParse(valid).success).toBe(true)
+    expect(ResendInviteResponseSchema.safeParse({ ...valid, tokenHash: VALID_TOKEN_HASH }).success).toBe(false)
+    expect(ResendInviteResponseSchema.safeParse({ ...valid, email: 'attacker@example.test' }).success).toBe(false)
+    expect(ResendInviteResponseSchema.safeParse({ ...valid, role: 'admin' }).success).toBe(false)
   })
 })
 
