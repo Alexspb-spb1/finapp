@@ -110,6 +110,26 @@ export async function runResendInviteTransaction(params: RunResendInviteTransact
   // be read/cancelled, just never resent again.
   if (invite.resendCount >= INVITATION_RESEND_LIMIT) throw new AppError('invitation_resend_limit_reached')
 
+  // Contradictory chronology (independent review, Stage 4 round 1, finding
+  // #1): a non-null `lastSentAt` earlier than `createdAt` is impossible on
+  // any legitimate write path — the document itself only ever sets
+  // `lastSentAt` to a value >= `createdAt` (either `serverTimestamp()` at
+  // creation, or this very transaction's own `nowTimestamp`, which is
+  // itself checked against `createdAt` nowhere else). Without this check,
+  // a corrupted document with e.g. `createdAt = now - 30s`,
+  // `lastSentAt = now - 120s` would compute `elapsed = 120s` against
+  // `lastSentAt` and pass the cooldown, even though "resent 120s ago" is
+  // impossible for an invitation created only 30s ago — and the same
+  // holds for any `createdAt` that is itself in the future relative to a
+  // `lastSentAt` that precedes it (e.g. `createdAt = now + 1h`). Fails
+  // closed exactly like every other corrupted-invariant check in this
+  // module: no auto-repair, no write. A `lastSentAt` exactly equal to
+  // `createdAt` (created and resent in the same instant) is legitimate
+  // and NOT rejected here.
+  if (invite.lastSentAt !== null && invite.lastSentAt.toMillis() < invite.createdAt.toMillis()) {
+    throw new AppError('internal_error')
+  }
+
   // Cooldown: measured from the later of `lastSentAt` (if this invitation
   // has ever been resent before) or `createdAt` (the very first send, for
   // which the schema allows `lastSentAt === null`). Exactly 60s elapsed

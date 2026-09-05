@@ -6,6 +6,7 @@
 // no mocked Firestore for these checks (CLAUDE.md §8.6, task instructions).
 import { describe, it, expect, afterEach } from 'vitest'
 import { FunctionsError } from 'firebase/functions'
+import { createHash } from 'node:crypto'
 import { Timestamp } from 'firebase-admin/firestore'
 import { INVITATION_RESEND_COOLDOWN_MS, INVITATION_RESEND_LIMIT } from '../../src/schemas/invitation'
 import {
@@ -15,6 +16,15 @@ import {
   getMembershipsSnapshot, getAuditEvents, countAuditEvents,
   authUserExistsWithEmail, setMaintenanceMode, clearMaintenanceMode,
 } from './helpers'
+
+/** Independently computes SHA-256(rawToken) using node:crypto directly —
+ * deliberately NOT the production `hashInvitationToken` helper, so this
+ * genuinely re-derives the hash rather than tautologically re-checking
+ * production's own function against itself (independent review, Stage 4
+ * round 1, finding #3). */
+function independentSha256Hex(rawToken: string): string {
+  return createHash('sha256').update(rawToken, 'utf8').digest('hex')
+}
 
 function appCodeOf(err: unknown): string | undefined {
   if (err instanceof FunctionsError) {
@@ -146,6 +156,10 @@ describe('resendInvite — real callable pipeline through the Functions Emulator
 
     const invite = await getInvitationDoc(inviteId)
     expect(invite?.tokenHash).not.toBe(seeded.tokenHash) // old hash replaced
+    // Independent review, Stage 4 round 1, finding #3: not just "differs
+    // from the old hash" and "looks like a token" — the persisted hash must
+    // be EXACTLY SHA-256(the token actually returned to the caller).
+    expect(invite?.tokenHash).toBe(independentSha256Hex(result.token))
     expect(invite?.resendCount).toBe(1)
     expect((invite?.expiresAt as Timestamp).toDate().toISOString()).toBe(result.expiresAtUtc)
     const lastSentMillis = (invite?.lastSentAt as Timestamp).toMillis()
@@ -411,43 +425,89 @@ describe('resendInvite — real callable pipeline through the Functions Emulator
     // Still status: 'pending' in Firestore (inviteMember never touches the
     // old document when it replaces it) — this is EXACTLY the scenario
     // Stage 4's lock check exists for.
-    await seedInvitationDoc(oldInviteId, buildResendableInvitation(companyId, email, {
+    const seeded = buildResendableInvitation(companyId, email, {
       expiresAt: Timestamp.fromMillis(Date.now() - 1000),
-    }))
+    })
+    await seedInvitationDoc(oldInviteId, seeded)
     // The lock now points at a DIFFERENT (newer) invite — as if
     // inviteMember had already replaced the old one.
     await seedInvitationLockDoc(companyId, email, { currentInviteId: 'invite_the_new_active_one' })
 
-    await expect(callResendInvite({ companyId, inviteId: oldInviteId }))
-      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
-    // The old (superseded) invitation is left completely untouched.
-    const invite = await getInvitationDoc(oldInviteId)
-    expect(invite?.status).toBe('pending') // unchanged, not resurrected
-    expect(invite?.tokenHash).toBe('0'.repeat(64)) // original hash, not rotated
+    // Independent review, Stage 4 round 1, finding #4: full before/after
+    // snapshot (invitation + the mismatched lock itself + memberships +
+    // audit count), not just the target invitation's own fields.
+    await expectDenial({ companyId, inviteId: oldInviteId }, 'internal_error', companyId, oldInviteId, email)
+    // The old (superseded) invitation is left BYTE-IDENTICAL to what was
+    // seeded — not just "still pending", the entire document is unchanged.
+    expect(await getInvitationDoc(oldInviteId)).toEqual(seeded)
   })
 
-  it('a missing lock document fails closed without a write', async () => {
+  it('a missing lock document fails closed with the exact internal_error code and zero writes anywhere (independent review, Stage 4 round 1, finding #4)', async () => {
     const { companyId } = await setUpAdmin('missing-lock')
     const email = freshEmail('missing-lock')
     const inviteId = 'invite_missing_lock'
-    await seedInvitationDoc(inviteId, buildResendableInvitation(companyId, email))
+    const seeded = buildResendableInvitation(companyId, email)
+    await seedInvitationDoc(inviteId, seeded)
     // No lock seeded at all.
 
-    await expect(callResendInvite({ companyId, inviteId }))
-      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
-    expect((await getInvitationDoc(inviteId))?.resendCount).toBe(0)
+    await expectDenial({ companyId, inviteId }, 'internal_error', companyId, inviteId, email)
+    expect(await getInvitationDoc(inviteId)).toEqual(seeded)
   })
 
-  it('a corrupted lock document fails closed without a write', async () => {
+  it('a corrupted lock document (wrong field name) fails closed with the exact internal_error code and zero writes anywhere (independent review, Stage 4 round 1, finding #4)', async () => {
     const { companyId } = await setUpAdmin('corrupted-lock')
     const email = freshEmail('corrupted-lock')
     const inviteId = 'invite_corrupted_lock'
-    await seedInvitationDoc(inviteId, buildResendableInvitation(companyId, email))
+    const seeded = buildResendableInvitation(companyId, email)
+    await seedInvitationDoc(inviteId, seeded)
     await seedInvitationLockDoc(companyId, email, { notCurrentInviteId: 'wrong-field-name' })
 
-    await expect(callResendInvite({ companyId, inviteId }))
-      .rejects.toSatisfy((err: unknown) => appCodeOf(err) === 'internal_error')
-    expect((await getInvitationDoc(inviteId))?.resendCount).toBe(0)
+    await expectDenial({ companyId, inviteId }, 'internal_error', companyId, inviteId, email)
+    expect(await getInvitationDoc(inviteId)).toEqual(seeded)
+  })
+
+  // ── contradictory chronology on the invitation itself ────────────────────
+  // Independent review, Stage 4 round 1, finding #1 (a real defect): the
+  // naive `lastSentAt ?? createdAt` baseline let a document with
+  // `lastSentAt` earlier than `createdAt` slip through, because elapsed
+  // time measured from `lastSentAt` alone can satisfy the cooldown even
+  // though that chronology is impossible for a legitimately-written
+  // document. Both fixtures below are exactly the ones the independent
+  // review used to reproduce the defect.
+  it('rejects with internal_error (not a successful rotation) when lastSentAt is earlier than createdAt', async () => {
+    const { companyId } = await setUpAdmin('bad-chronology-lastsent')
+    const email = freshEmail('bad-chronology-lastsent')
+    const inviteId = 'invite_bad_chronology_lastsent'
+    const now = Timestamp.now()
+    // createdAt 30s ago, but lastSentAt claims a resend 120s ago — before
+    // the invitation even existed.
+    const corrupted = {
+      ...buildResendableInvitation(companyId, email),
+      createdAt: Timestamp.fromMillis(now.toMillis() - 30_000),
+      lastSentAt: Timestamp.fromMillis(now.toMillis() - 120_000),
+    }
+    await seedInvitationDoc(inviteId, corrupted)
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
+
+    await expectDenial({ companyId, inviteId }, 'internal_error', companyId, inviteId, email)
+    expect(await getInvitationDoc(inviteId)).toEqual(corrupted)
+  })
+
+  it('rejects with internal_error (not a successful rotation) when createdAt is in the future relative to lastSentAt', async () => {
+    const { companyId } = await setUpAdmin('bad-chronology-created')
+    const email = freshEmail('bad-chronology-created')
+    const inviteId = 'invite_bad_chronology_created'
+    const now = Timestamp.now()
+    const corrupted = {
+      ...buildResendableInvitation(companyId, email),
+      createdAt: Timestamp.fromMillis(now.toMillis() + 1000 * 3600),
+      lastSentAt: Timestamp.fromMillis(now.toMillis() - 120_000),
+    }
+    await seedInvitationDoc(inviteId, corrupted)
+    await seedInvitationLockDoc(companyId, email, { currentInviteId: inviteId })
+
+    await expectDenial({ companyId, inviteId }, 'internal_error', companyId, inviteId, email)
+    expect(await getInvitationDoc(inviteId)).toEqual(corrupted)
   })
 
   // ── 11: forged payload / forbidden document IDs ──────────────────────────
@@ -517,13 +577,18 @@ describe('resendInvite — real callable pipeline through the Functions Emulator
 
     const otherInviteId = 'invite_unrelated_untouched'
     const otherEmail = freshEmail('unrelated')
-    await seedInvitationDoc(otherInviteId, buildResendableInvitation(companyId, otherEmail))
+    const otherSeeded = buildResendableInvitation(companyId, otherEmail)
+    await seedInvitationDoc(otherInviteId, otherSeeded)
     const membershipsBefore = await getMembershipsSnapshot(companyId)
 
     await callResendInvite({ companyId, inviteId })
 
     expect(await getInvitationLockDoc(companyId, email)).toEqual(lockBefore)
-    expect((await getInvitationDoc(otherInviteId))?.resendCount).toBe(0) // completely untouched
+    // Independent review, Stage 4 round 1, finding #4: compare the ENTIRE
+    // sibling document, not just resendCount — a bug that mutated some
+    // other field (e.g. tokenHash, status) would not have been caught by a
+    // single-field check.
+    expect(await getInvitationDoc(otherInviteId)).toEqual(otherSeeded)
     expect(await getMembershipsSnapshot(companyId)).toEqual(membershipsBefore)
     expect(await countAuditEvents(companyId)).toBe(1)
   })
@@ -566,6 +631,10 @@ describe('resendInvite — real callable pipeline through the Functions Emulator
     const invite = await getInvitationDoc(inviteId)
     expect(invite?.resendCount).toBe(1) // incremented exactly once, not twice
     expect(invite?.tokenHash).not.toBe(seeded.tokenHash) // rotated exactly once
+    // Independent review, Stage 4 round 1, finding #3: the persisted hash
+    // matches SHA-256 of the WINNER's own returned token specifically.
+    const winnerToken = (fulfilled[0]!.value as ResendInviteResult).token
+    expect(invite?.tokenHash).toBe(independentSha256Hex(winnerToken))
     expect(await countAuditEvents(companyId)).toBe(1)
   })
 
