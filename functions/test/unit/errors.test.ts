@@ -17,6 +17,8 @@ describe('AppError -> HttpsError mapping', () => {
     ['invitation_already_pending', 'already-exists'],
     ['invitation_not_found', 'permission-denied'],
     ['invitation_not_pending', 'failed-precondition'],
+    ['invitation_resend_cooldown', 'failed-precondition'],
+    ['invitation_resend_limit_reached', 'failed-precondition'],
     ['internal_error', 'internal'],
   ] as const)('%s maps to HttpsError code %s', (appCode, httpsCode) => {
     const httpsError = new AppError(appCode).toHttpsError()
@@ -90,6 +92,16 @@ describe('toSafeHttpsError', () => {
     const notPending = toSafeHttpsError(new AppError('invitation_not_pending'))
     expect(notPending.code).toBe('failed-precondition')
     expect((notPending.details as { appCode: string }).appCode).toBe('invitation_not_pending')
+  })
+
+  it('converts the SEC-006 Stage 4 invitation_resend_cooldown/invitation_resend_limit_reached AppErrors safely', () => {
+    const cooldown = toSafeHttpsError(new AppError('invitation_resend_cooldown'))
+    expect(cooldown.code).toBe('failed-precondition')
+    expect((cooldown.details as { appCode: string }).appCode).toBe('invitation_resend_cooldown')
+
+    const limitReached = toSafeHttpsError(new AppError('invitation_resend_limit_reached'))
+    expect(limitReached.code).toBe('failed-precondition')
+    expect((limitReached.details as { appCode: string }).appCode).toBe('invitation_resend_limit_reached')
   })
 
   it('collapses an unrecognized error into a generic internal_error — never forwards its message', () => {

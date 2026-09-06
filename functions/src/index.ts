@@ -27,6 +27,7 @@ import { runBootstrapIdempotent } from './lib/bootstrapIdempotency'
 import { generateRawInvitationToken, hashInvitationToken } from './lib/invitationToken'
 import { runInviteMemberTransaction } from './lib/inviteMemberTransaction'
 import { runCancelInviteTransaction } from './lib/cancelInviteTransaction'
+import { runResendInviteTransaction } from './lib/resendInviteTransaction'
 import { decodeInvitationsCursor, buildInvitationsCursor, timestampFromCursorPayload, mapInvitationDocumentToListItem } from './lib/invitationListing'
 import { AuthzProbeRequestSchema, type AuthzProbeResponse } from './schemas/auth'
 import { CreateCompanyRequestSchema, type CreateCompanyResponse } from './schemas/company'
@@ -35,12 +36,14 @@ import {
   INVITATION_TTL_MS,
   ListInvitationsRequestSchema,
   CancelInviteRequestSchema,
+  ResendInviteRequestSchema,
   InvitationDocumentSchema,
   type InviteMemberResponse,
   type ListInvitationsResponse,
   type InvitationListItem,
   type InvitationDocument,
   type CancelInviteResponse,
+  type ResendInviteResponse,
 } from './schemas/invitation'
 
 export const authzProbe = onCall(async request => {
@@ -399,6 +402,71 @@ export async function performCancelInvite(
 export const cancelInvite = onCall(async request => {
   try {
     return await performCancelInvite(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+// resendInvite (SEC-006 Stage 4) — mints a fresh token for an existing
+// still-pending invitation ("Phase 1": the link is shared manually; no
+// email delivery, provider, or UI in this stage). Scope is deliberately
+// narrow: rotate the token/expiry of a single pending invitation and
+// nothing else. previewInvite/acceptInvite are separate, later stages.
+//
+// `companyId`/`inviteId` are bare lookup keys, same as cancelInvite — the
+// invitation document's own `companyId` is re-checked before it is even
+// fully schema-validated (see runResendInviteTransaction, reusing
+// cancelInvite's Stage 3 oracle-safety fix directly). Only a `pending`
+// invitation can be resent; `accepted`/`revoked` are refused.
+//
+// The key addition over cancelInvite's shape: resendInvite also reads
+// `invitationLocks/{lockId}` inside the SAME transaction and requires it
+// to still point at exactly this `inviteId` — `inviteMember` can already
+// replace an expired-but-still-`pending` invitation with a brand new one
+// without ever touching the old document, so `status === 'pending'` alone
+// is not sufficient to prove this invitation is still the active one for
+// its (companyId, email) pair. See runResendInviteTransaction's own
+// comment for the exact fail-closed behavior (never auto-repaired).
+//
+// `tokenHash`/`expiresAtTimestamp`/`nowTimestamp` are computed exactly
+// once, BEFORE the transaction, from a real crypto source and this
+// handler's own server clock (never `FieldValue.serverTimestamp()`,
+// which cannot be read back synchronously for the response) — mirroring
+// `performInviteMember`'s token-generation and `performCancelInvite`'s
+// timestamp precedent exactly, including the injectable
+// `runTransactionImpl` for the same internal-retry-safety proof (see
+// test/unit/resendInviteTransaction.test.ts).
+export async function performResendInvite(
+  request: CallableRequest<unknown>,
+  runTransactionImpl: <T>(updateFn: (txn: Transaction) => Promise<T>) => Promise<T> = fn => db.runTransaction(fn),
+): Promise<ResendInviteResponse> {
+  const auth = requireAuth(request)
+  requireVerifiedEmail(auth)
+  const input = validateRequest(ResendInviteRequestSchema, request.data)
+
+  const rawToken = generateRawInvitationToken()
+  const tokenHash = hashInvitationToken(rawToken)
+  const expiresAtDate = new Date(Date.now() + INVITATION_TTL_MS)
+  const expiresAtTimestamp = Timestamp.fromDate(expiresAtDate)
+  const nowTimestamp = Timestamp.fromDate(new Date())
+
+  await runTransactionImpl(txn =>
+    runResendInviteTransaction({
+      db, txn, request, auth, input,
+      generated: { tokenHash, expiresAtTimestamp, nowTimestamp },
+    }),
+  )
+
+  return {
+    inviteId: input.inviteId,
+    token: rawToken,
+    expiresAtUtc: expiresAtDate.toISOString(),
+  }
+}
+
+export const resendInvite = onCall(async request => {
+  try {
+    return await performResendInvite(request)
   } catch (err) {
     throw toSafeHttpsError(err)
   }

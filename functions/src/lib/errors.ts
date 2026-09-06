@@ -31,6 +31,8 @@ export const APP_ERROR_CODES = [
   'invitation_already_pending',
   'invitation_not_found',
   'invitation_not_pending',
+  'invitation_resend_cooldown',
+  'invitation_resend_limit_reached',
   'internal_error',
 ] as const
 
@@ -70,6 +72,13 @@ const HTTPS_CODE_FOR: Record<AppErrorCode, HttpsErrorCode> = {
   // company you can't see".
   invitation_not_found: 'permission-denied',
   invitation_not_pending: 'failed-precondition',
+  // SEC-006 Stage 4 (resendInvite): both are "valid target, wrong timing/
+  // state" conditions — same family as `last_admin`/`maintenance_mode` —
+  // not a resource-lookup problem, so `failed-precondition` rather than
+  // any exhaustion-flavored code (this file's HttpsErrorCode union
+  // deliberately doesn't declare one).
+  invitation_resend_cooldown: 'failed-precondition',
+  invitation_resend_limit_reached: 'failed-precondition',
   internal_error: 'internal',
 }
 
