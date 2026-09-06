@@ -101,6 +101,13 @@ Do not repeat activation; no deployment or real email has occurred.
   activation approval:
   D:/projects/finapp/.runtime/SEC-006-stage8-staging-release-approval.md.
   Resolve that envelope and actual Git/PR HEAD before any external execution.
+- Candidate4749bbf independent PASS, Functions CI PASS; root CI34034292369
+  failed one unchanged migration refusal test at5875ms vs5000ms timeout
+  (569/570 passed). Narrow local reproduction PASS in2.43s, unchanged refusal
+  assertions verified; slow CI child phase not identified. New exact-head CI
+  required; no timeout bump or live maintenance.
+  Additional local artifact guard now rejects Functions dotenv/secret/runtime
+  configuration even when ignored by upload/Git;7 fixture tests added to CI.
 - Next: prepare bounded staging deployment package: private Rules
   backup+fresh hash before replacement, additive index preserving override,
   scoped8 Functions, runtime resource caps, staged SDK build and passive

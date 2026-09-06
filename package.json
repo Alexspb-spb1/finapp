@@ -17,6 +17,7 @@
     "test:functions-api-preflight": "node scripts/invitationRehearsal/apiActivation.mjs --self-test",
     "test:staging-resources": "node scripts/invitationRehearsal/stagingResources.mjs --self-test",
     "test:invitation-deployment-check": "node scripts/invitationRehearsal/deploymentCheck.mjs --self-test",
+    "test:release-artifact-preflight": "node --test --test-isolation=none scripts/invitationRehearsal/releaseArtifactSelfTest.mjs",
     "test:unit": "vitest run src",
     "lint": "eslint .",
     "preview": "vite preview",

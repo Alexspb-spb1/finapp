@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { assertNoLocalFunctionConfiguration } from './releaseArtifactCore.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -19,6 +20,7 @@ try {
     if (git(['rev-parse', 'HEAD']) !== args[5] || git(['status', '--porcelain', '--untracked-files=all']) !== '') throw new Error('git')
   }
   checkGit()
+  assertNoLocalFunctionConfiguration(path.join(root, 'functions'))
   const raw = fs.readFileSync(args[1])
   if (sha256(raw) !== args[3]) throw new Error('manifest')
   const manifest = JSON.parse(raw)
@@ -56,6 +58,7 @@ try {
     if (relative.startsWith('..') || path.isAbsolute(relative) || sha256(fs.readFileSync(filename)) !== entry.sha256) throw new Error('file')
   }
   checkGit()
+  assertNoLocalFunctionConfiguration(path.join(root, 'functions'))
   console.log('RELEASE_ARTIFACT_VERIFIED_LOCAL: exact source/static file sets, hashes, archive and clean HEAD match; cloud actions 0.')
 } catch {
   console.error('RELEASE_ARTIFACT_STOPPED: argument, HEAD, file set or artifact hash mismatch; no cloud actions.')

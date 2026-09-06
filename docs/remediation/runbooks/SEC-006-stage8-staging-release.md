@@ -62,8 +62,10 @@ or maintenance action.
    monetary limit, and no automatic artifact deletion is authorized.
 3. The implemented local artifact verifier checks all file hashes, Firebase
    config hash and fresh SDK sourceHash over the actual upload file set,
-   detecting unexpected additions. The prepared v2 bundle below passed
-   local staging fingerprint/build and source packaging checks; preserve
+   detecting unexpected additions. The verifier also refuses local Functions
+   .env*, .secret* and runtimeconfig entries: Firebase can read configuration
+   before archive exclusions apply. The prepared v2 bundle below passed local
+   staging fingerprint/build and source packaging checks; preserve
    it unchanged after approval.
 4. Implemented `stagingResources.mjs` and deployment metadata checks are
    part of independent review. Resources self-tests cover backup corruption, field
