@@ -5,9 +5,10 @@ import {
   onAuthStateChanged,
   sendPasswordResetEmail,
   sendEmailVerification,
+  type User as FirebaseUser,
 } from 'firebase/auth'
 import {
-  doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
+  doc, getDoc, getDocFromServer, getDocs, setDoc, updateDoc, deleteDoc,
   collection, query, where,
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
@@ -15,6 +16,8 @@ import { callCreateCompany } from '../lib/companyApi'
 import type { User, Company } from '../types/auth'
 import { parseLegacyUserDocument, type DataError } from '../schemas/auth'
 import { parseCompanyDocument } from '../schemas/company'
+import { isInvitationEntry } from '../lib/invitationEntry'
+import { confirmCompanyAccess } from '../lib/inviteAcceptanceApi'
 
 // ── In-memory state ──────────────────────────────────────────────────────────
 let currentUser:    User    | null = null
@@ -231,6 +234,17 @@ const DEFAULT_CATEGORIES_AUTH = [
 let _firstNullConsumed = false
 
 onAuthStateChanged(auth, async firebaseUser => {
+  // Invitation Auth never triggers legacy profile recovery or financial loading.
+  if (isInvitationEntry) {
+    if (!firebaseUser || firebaseUser.uid !== currentUser?.id) {
+      currentUser = null; currentCompany = null; companyUsers = []
+      allUserCompanies = []; activeCompanyId = null
+      authDataStatus = firebaseUser ? 'loading' : 'signed_out'
+      lastDataError = null
+      notify()
+    }
+    return
+  }
   if (!firebaseUser) {
     if (!_firstNullConsumed) {
       // This may be Firebase's temporary null during init — skip it.
@@ -377,6 +391,42 @@ const DEFAULT_CATEGORIES = [
 
 // ── Store ─────────────────────────────────────────────────────────────────────
 export const authStore = {
+
+  async activateAcceptedCompany(companyId: string, expectedUser: FirebaseUser): Promise<void> {
+    const sameSession = () => auth.currentUser === expectedUser && expectedUser.emailVerified
+    if (!isInvitationEntry || !sameSession()) throw new Error('Invitation session unavailable')
+    const access = await confirmCompanyAccess(companyId, expectedUser.uid)
+    if (!sameSession()) throw new Error('Invitation session changed')
+    const [profileSnap, companySnap] = await Promise.all([
+      getDocFromServer(doc(db, 'users', expectedUser.uid)),
+      getDocFromServer(doc(db, 'companies', companyId)),
+    ])
+    if (!sameSession() || !profileSnap.exists() || !companySnap.exists()) throw new Error('Access readback unavailable')
+    const profile = parseLegacyUserDocument(expectedUser.uid, profileSnap.data())
+    const company = parseCompanyDocument(companyId, companySnap.data())
+    if (!profile.ok || !company.ok) throw new Error('Access readback invalid')
+    const entries = profile.data.companies?.filter(entry => entry.companyId === companyId) ?? []
+    const role = profile.data.companyId === companyId ? profile.data.role : entries.length === 1 ? entries[0].role : null
+    if (role !== access.role || entries.some(entry => entry.role !== role)) throw new Error('Access bridge mismatch')
+    // Preserve company navigation for existing members. Only readable, valid
+    // metadata is listed; no other company's financial store is initialized.
+    const otherIds = [...new Set([profile.data.companyId, ...(profile.data.companies ?? []).map(entry => entry.companyId)])]
+      .filter(id => id !== companyId)
+    const otherCompanies = await Promise.all(otherIds.map(async id => {
+      try {
+        const snapshot = await getDocFromServer(doc(db, 'companies', id))
+        if (!snapshot.exists()) return null
+        const parsed = parseCompanyDocument(id, snapshot.data())
+        return parsed.ok ? parsed.data : null
+      } catch { return null }
+    }))
+    if (!sameSession()) throw new Error('Invitation session changed')
+    currentUser = profile.data; currentCompany = company.data
+    companyUsers = [profile.data]; allUserCompanies = [company.data, ...otherCompanies.filter(value => value !== null)]
+    activeCompanyId = companyId; authDataStatus = 'ready'; lastDataError = null
+    localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
+    notify()
+  },
 
   // ── Register new company owner ────────────────────────────────────────────
   // SEC-004: company/profile creation happens EXCLUSIVELY server-side (see

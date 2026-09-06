@@ -1,6 +1,7 @@
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore'
 import { db, auth } from '../lib/firebase'
 import { subscribeAuth, authStore } from './authStore'
+import { isInvitationEntry } from '../lib/invitationEntry'
 import { round2 } from '../utils/currency'
 import type { Account, Category, Counterparty, Transaction, Project, TransactionRule, BudgetItem, SplitPart, RecurringTemplate, RecurringPeriod, PaymentCalendarItem, AuditEntry } from '../types'
 
@@ -57,6 +58,7 @@ let unsubSnapshot: (() => void) | null = null
 // Данные доступны СРАЗУ, до того как Firebase вернёт авторизацию.
 // Это исключает "мигание" пустого состояния при загрузке страницы.
 ;(function preload() {
+  if (isInvitationEntry) return
   try {
     const lastId = localStorage.getItem(LS_LAST_ID)
     if (!lastId) return
@@ -121,14 +123,23 @@ function advanceDate(dateStr: string, period: RecurringPeriod): string {
 const companyStoreImpl = {
   // ── Init: load data + subscribe to real-time changes ──────────────────────
   async init(companyId: string) {
+    const invitationUser = auth.currentUser
+    const invitationContextValid = () => !isInvitationEntry || (
+      !!invitationUser && auth.currentUser === invitationUser &&
+      authStore.getAuthDataStatus() === 'ready' &&
+      authStore.getCurrentUser()?.id === invitationUser.uid &&
+      authStore.getActiveCompanyId() === companyId && currentCompanyId === companyId)
+    if (isInvitationEntry && (!invitationUser || authStore.getAuthDataStatus() !== 'ready' ||
+        authStore.getCurrentUser()?.id !== invitationUser.uid || authStore.getActiveCompanyId() !== companyId)) return
     if (currentCompanyId === companyId && unsubSnapshot !== null) return
     currentCompanyId = companyId
+    if (isInvitationEntry) state = { ...EMPTY }
 
     // Unsubscribe previous listener
     if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null }
 
     // 1. Сначала данные из localStorage — мгновенно, без ожидания сети
-    const lsRaw = localStorage.getItem(lsKey(companyId))
+    const lsRaw = isInvitationEntry ? null : localStorage.getItem(lsKey(companyId))
     if (lsRaw) {
       try {
         const lsData = JSON.parse(lsRaw) as CompanyData
@@ -148,6 +159,7 @@ const companyStoreImpl = {
     // Это защищает от случая когда Firestore пуст/устарел и затирает свежие локальные данные
     try {
       const snap = await getDoc(doc(db, 'company_data', companyId))
+      if (!invitationContextValid()) return
       if (snap.exists()) {
         const fresh = snap.data() as CompanyData
         if (!fresh.rules)           fresh.rules           = []
@@ -165,13 +177,17 @@ const companyStoreImpl = {
         notify()
       }
     } catch (err) {
+      if (!invitationContextValid()) return
       console.error('[companyStore] Firestore load error:', err)
     }
+
+    if (!invitationContextValid()) return
 
     // 3. Real-time listener — синхронизация между устройствами и вкладками
     unsubSnapshot = onSnapshot(
       doc(db, 'company_data', companyId),
       docSnap => {
+        if (!invitationContextValid()) return
         if (docSnap.exists()) {
           const fresh = docSnap.data() as CompanyData
           if (!fresh.rules)           fresh.rules           = []
@@ -668,6 +684,14 @@ export const companyStore: typeof companyStoreImpl = new Proxy(companyStoreImpl,
 
 // ── Авто-инициализация при смене пользователя ─────────────────────────────────
 subscribeAuth(() => {
+  if (isInvitationEntry && (!auth.currentUser || authStore.getAuthDataStatus() !== 'ready' ||
+      authStore.getCurrentUser()?.id !== auth.currentUser.uid)) {
+    if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null }
+    currentCompanyId = null
+    state = { ...EMPTY }
+    notify()
+    return
+  }
   // Use active company (may differ from home company after switchCompany)
   const initId = authStore.getActiveCompanyId() ?? auth.currentUser?.uid ?? null
 
