@@ -9,6 +9,10 @@ approval. Previous approval was Stage6 only and has already been used.
 
 Repository Alexspb-spb1/finapp; branch remediation/SEC-006-stage-7-acceptance;
 expected main 82934d2acfaaab79c6092cdbd67cd95e4189d645.
+PR26: https://github.com/Alexspb-spb1/finapp/pull/26.
+Independent PASS on implementation61c169d9837112e877d9716a7e81d6609a6e0671;
+final delivery HEAD differs only by documented review/delivery records and is
+given literally in the approval request. Use `$pr=26` below.
 Target https://alexspb-spb1.github.io/finapp/.
 Only a protected squash merge and static Pages publication, including the new
 404 entry. No Firebase Functions/Rules/indexes deployment, sign-in, live Auth,
