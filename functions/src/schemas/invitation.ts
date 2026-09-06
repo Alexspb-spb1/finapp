@@ -339,7 +339,7 @@ export type ResendInviteResponse = InviteMemberResponse
 // unauthenticated caller can legitimately present: the invite identifier
 // and the raw token proving possession of the link. Nothing else.
 export const PreviewInviteRequestSchema = z.object({
-  inviteId: idLikeString,
+  inviteId: FirestoreDocumentIdSchema,
   token: RawInvitationTokenSchema,
 }).strict()
 export type PreviewInviteRequest = z.infer<typeof PreviewInviteRequestSchema>
@@ -349,7 +349,25 @@ export type PreviewInviteRequest = z.infer<typeof PreviewInviteRequestSchema>
 // the stored invitation document (once tokenHash is verified); uid is read
 // exclusively from requireAuth(request).
 export const AcceptInviteRequestSchema = z.object({
-  inviteId: idLikeString,
+  inviteId: FirestoreDocumentIdSchema,
   token: RawInvitationTokenSchema,
 }).strict()
 export type AcceptInviteRequest = z.infer<typeof AcceptInviteRequestSchema>
+
+// Pre-auth preview discloses only link-holder metadata. Internal IDs,
+// full email, raw token and hash are excluded from this strict response.
+export const PreviewInviteResponseSchema = z.object({
+  maskedEmail: z.string().min(1),
+  companyDisplayName: z.string().min(1).max(300),
+  roleLabel: z.enum(['Наблюдатель', 'Бухгалтер', 'Администратор']),
+  expiresAt: z.iso.datetime(),
+}).strict()
+export type PreviewInviteResponse = z.infer<typeof PreviewInviteResponseSchema>
+
+// A successful accept (including a same-UID replay) returns a navigation
+// target, not an authorization credential. Future access still requires
+// the current canonical membership.
+export const AcceptInviteResponseSchema = z.object({
+  companyId: FirestoreDocumentIdSchema,
+}).strict()
+export type AcceptInviteResponse = z.infer<typeof AcceptInviteResponseSchema>

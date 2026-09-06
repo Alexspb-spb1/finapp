@@ -6,7 +6,7 @@
 // FIREBASE_AUTH_EMULATOR_HOST for this process AND for the spawned
 // Functions Emulator process automatically — no real Firebase project,
 // credentials, or service-account JSON are used or required.
-import { initializeApp as initializeClientApp, type FirebaseApp } from 'firebase/app'
+import { initializeApp as initializeClientApp, deleteApp, type FirebaseApp } from 'firebase/app'
 import { getAuth, connectAuthEmulator, signInWithCustomToken, signOut, type Auth } from 'firebase/auth'
 import { getFunctions, connectFunctionsEmulator, httpsCallable, type Functions } from 'firebase/functions'
 import { Timestamp } from 'firebase-admin/firestore'
@@ -309,4 +309,33 @@ export async function callResendInvite(payload: unknown): Promise<unknown> {
   const callable = httpsCallable(getClientFunctions(), 'resendInvite')
   const result = await callable(payload)
   return result.data
+}
+
+export async function callAcceptInvite(payload: unknown): Promise<unknown> {
+  return (await httpsCallable(getClientFunctions(), 'acceptInvite')(payload)).data
+}
+
+export async function callPreviewInvite(payload: unknown): Promise<unknown> {
+  return (await httpsCallable(getClientFunctions(), 'previewInvite')(payload)).data
+}
+
+let scopedClientCounter = 0
+/** Separate client identities let real concurrent callable requests race
+ * without changing the shared singleton Auth identity mid-request. */
+export async function callWithEmulatorIdentity(
+  uid: string,
+  command: 'acceptInvite' | 'cancelInvite' | 'resendInvite' | 'inviteMember',
+  payload: unknown,
+): Promise<unknown> {
+  const app = initializeClientApp({ projectId: PROJECT_ID, apiKey: 'emulator-only-synthetic-key' }, `scoped-invite-${++scopedClientCounter}`)
+  try {
+    const auth = getAuth(app)
+    connectAuthEmulator(auth, AUTH_EMULATOR_ORIGIN, { disableWarnings: true })
+    await signInWithCustomToken(auth, await adminAuth.createCustomToken(uid))
+    const functions = getFunctions(app)
+    connectFunctionsEmulator(functions, FUNCTIONS_EMULATOR_HOST, FUNCTIONS_EMULATOR_PORT)
+    return (await httpsCallable(functions, command)(payload)).data
+  } finally {
+    await deleteApp(app)
+  }
 }
