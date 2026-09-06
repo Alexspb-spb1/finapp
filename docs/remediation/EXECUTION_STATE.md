@@ -1,8 +1,8 @@
 # Execution checkpoint
 
-Updated: 2026-09-06. Status: READY_FOR_RELEASE_APPROVAL — SEC-006 Stage 8
-Functions API activation plus inventory rerun, subject to final delivery-HEAD
-CI below. Current live inventory remains BLOCKED by SERVICE_DISABLED.
+Updated: 2026-09-06. Status: IN_PROGRESS — SEC-006 Stage 8 staging release
+preparation. Approved dd8f049 API activation and full inventory SUCCEEDED.
+Do not repeat activation; no deployment or real email has occurred.
 
 - Scope: stabilization stages 0–8; stage9 excluded. Engineering, separate
   agents/review and expected-HEAD merges authorized. External actions require
@@ -35,7 +35,9 @@ CI below. Current live inventory remains BLOCKED by SERVICE_DISABLED.
   Frozen browser helper full PASS:13 contexts, pageErrors0, token URL/storage
   leaks0. One known legacy currency request hard-blocked; live actions0.
   Evidence: docs/remediation/evidence/SEC-006-stage8/ (artifact hashes/screenshot).
-  Production source/Rules/indexes/lockfiles unchanged.
+  At that browser/inventory checkpoint, production source/Rules/indexes and
+  lockfiles were unchanged. The subsequent runtime configuration delta below
+  changes Functions deployment descriptors; handler logic remains unchanged.
 - Independent /root/stage7_review found and verified fixes for
   inventory redirects, CLI auth fallback, Windows environment casing and safe
   browser diagnostic handling. REVIEW_RESULT PASS on implementation HEAD
@@ -57,8 +59,18 @@ CI below. Current live inventory remains BLOCKED by SERVICE_DISABLED.
   reason SERVICE_DISABLED. Existing CLI/environment guards PASS.
   Private evidence: D:/projects/finapp/.runtime/sec006-stage8-inventory-a5b70c7-blocked.json.
   No cloud writes, deployment, API activation or email occurred.
-- Remaining cloud Functions/Rules/index/Auth configuration and rollback readiness
-  are UNKNOWN; a disabled API is not evidence that no Functions exist.
+- Later owner explicitly approved dd8f049753d21161278efe76e3aefc340a4d9922
+  activation+inventory package. Exact-head CI34031548167 and final PASS rechecked.
+  API DISABLED -> ENABLED verified at2026-09-06T12:20:27.1Z, single activation.
+  Full inventory complete at12:20:58.448Z: no deployed v1/v2 Functions, no
+  composite indexes; database(default) eur3/FIRESTORE_NATIVE; field overrides1.
+  Active Rules b0f6c045e908bc632a4b24381c3c1164ccca95834761b2dc68d460bce6524c8f
+  differs from local15bbc0050dd1ed2259c921818794b4f234c4457ad3e66ee2d0fa1da6d148f89d.
+  Email/password enabled; domainslocalhost/stagingfirebaseapp/stagingwebapp.
+  Backup source not downloaded; billing/deployment/real email still unverified.
+  Evidence: D:/projects/finapp/.runtime/sec006-functions-api-dd8f049.jsonl and
+  D:/projects/finapp/.runtime/sec006-stage8-inventory-dd8f049.json.
+  Never replay prior SERVICE_DISABLED attempts or the successful activation.
   Owner supplied a private mailbox for the future email package; that is not
   email-sending authorization and the address must not enter public evidence.
 - Activation package: runbooks/SEC-006-stage8-functions-api.md, new helper plus
@@ -67,9 +79,35 @@ CI below. Current live inventory remains BLOCKED by SERVICE_DISABLED.
   separate before/after states, fixed-target read-only preflight/poll/recovery.
   Normal provider-managed activation effects are included in the proposed
   scope; billing upgrade, new terms acceptance, manual IAM/API expansion,
-  deployment, cleanup and email remain excluded. No activation authorized yet.
-- Next: verify final delivery-HEAD CI and request the exact activation plus
-  inventory-rerun package; execute neither until separately approved.
+  deployment, cleanup and email remain excluded. Activation scope executed.
+- Runtime deployment settings now explicit on all nine callable exports:
+  us-central1, 256MiB, CPU1, concurrency1, minInstances0, maxInstances1,
+  timeout60s. Deployment allowlist contains eight functions, excluding
+  authzProbe. Functions354 unit and224 emulator tests PASS; preliminary independent caps
+  review found no blockers. Final combined review/CI still required.
+  These settings apply per function and are not a monetary spending cap.
+- Private staging build and configuration fingerprint PASS. Local SDK source
+  package and per-file/static manifest retained under
+  D:/projects/finapp/.runtime/sec006-stage8-release-prepared-v2/.
+  Explicit Functions upload exclusions prevent diagnostic logs/local secret
+  files entering the archive. Prior package retained as rejected diagnostic.
+  No live staging frontend has been opened; dist now contains staging config,
+  so do not reuse it with the demo-finapp browser helper.
+- New release helpers: staging resources14 and deployment metadata17 native
+  tests PASS on host Node24. Root lint/types PASS (one existing Balance.tsx
+  dependency warning). Independent preliminary review found no blockers,
+  including94 archive entry hashes. Final commit review, CI and local artifact
+  guard receipts belong to the private approval envelope, not this earlier
+  activation approval:
+  D:/projects/finapp/.runtime/SEC-006-stage8-staging-release-approval.md.
+  Resolve that envelope and actual Git/PR HEAD before any external execution.
+- Next: prepare bounded staging deployment package: private Rules
+  backup+fresh hash before replacement, additive index preserving override,
+  scoped8 Functions, runtime resource caps, staged SDK build and passive
+  metadata verification. Auth fixtures and real-email scenario are deferred
+  to the next concrete package. Owner budget preference requested;
+  no deployment authorized yet. Existing billing must be verified enabled;
+  no billing-plan activation or upgrade is included.
   Do not blindly repeat the failed inventory or replay Stage7 publication.
   Resolve current local HEAD and PR headRefOid; they must match reviewed delivery
   code and green CI. The final approval message supplies exact SHA and new path.

@@ -1,0 +1,149 @@
+{
+  "status": "PASS",
+  "runtime": "v22.23.2",
+  "sourceIndexSha256": "2e6990ec7d78bc05df9560ef99f11f67960f67afedaf3ac76979d74c52b1f2ad",
+  "compiledIndexSha256": "f53fb34d637cc40a7fc21760eeb4305401ef60a73523a8c30f617474ddca974f",
+  "sdkDiscovery": "firebase-functions/runtime/loader.loadStack on built functions package",
+  "deploymentAllowlist": [
+    "acceptInvite",
+    "cancelInvite",
+    "createCompany",
+    "getCompanyAccess",
+    "inviteMember",
+    "listInvitations",
+    "previewInvite",
+    "resendInvite"
+  ],
+  "excludedFromDeployment": [
+    "authzProbe"
+  ],
+  "endpoints": {
+    "authzProbe": {
+      "entryPoint": "authzProbe",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    },
+    "createCompany": {
+      "entryPoint": "createCompany",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    },
+    "inviteMember": {
+      "entryPoint": "inviteMember",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    },
+    "listInvitations": {
+      "entryPoint": "listInvitations",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    },
+    "cancelInvite": {
+      "entryPoint": "cancelInvite",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    },
+    "resendInvite": {
+      "entryPoint": "resendInvite",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    },
+    "acceptInvite": {
+      "entryPoint": "acceptInvite",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    },
+    "previewInvite": {
+      "entryPoint": "previewInvite",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    },
+    "getCompanyAccess": {
+      "entryPoint": "getCompanyAccess",
+      "platform": "gcfv2",
+      "region": [
+        "us-central1"
+      ],
+      "availableMemoryMb": 256,
+      "cpu": 1,
+      "concurrency": 1,
+      "minInstances": 0,
+      "maxInstances": 1,
+      "timeoutSeconds": 60,
+      "callableTrigger": {}
+    }
+  },
+  "cloudActions": 0
+}
