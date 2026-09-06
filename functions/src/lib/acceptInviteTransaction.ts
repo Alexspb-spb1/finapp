@@ -14,6 +14,7 @@ import { buildAcceptedInvitationProfile } from './invitationProfileBridge'
 export async function runAcceptInviteTransaction(input: {
   db: Firestore; txn: Transaction; request: CallableRequest<unknown>; auth: RequestAuth;
   inviteId: string; tokenHash: string; now: Timestamp;
+  clock?: () => Timestamp;
 }): Promise<AcceptInviteResponse> {
   const { db, txn, request, auth, inviteId, tokenHash, now } = input
   await requireNotInMaintenanceMode(db, txn)
@@ -47,6 +48,10 @@ export async function runAcceptInviteTransaction(input: {
     uid: auth.uid, email: email.data, name, companyId: invite.companyId,
     role: invite.role, createdAt: now.toDate().toISOString(),
   })
+
+  // Reads may wait on transaction locks. Recheck expiry immediately before
+  // queuing writes, rather than trusting the attempt's initial timestamp.
+  requirePendingInvitation(invite, input.clock ? input.clock() : now)
 
   // All validation and reads finish above. A later failure aborts this
   // transaction, including the bridge and audit; no independent writes.

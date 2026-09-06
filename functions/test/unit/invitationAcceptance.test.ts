@@ -183,10 +183,20 @@ describe('acceptInvite transaction', () => {
     const a = fakeTransaction()
     const b = fakeTransaction()
     let nowCalls = 0
-    const clock = () => (++nowCalls === 1 ? NOW : Timestamp.fromMillis(NOW.toMillis() + 60_000))
+    const clock = () => (++nowCalls <= 2 ? NOW : Timestamp.fromMillis(NOW.toMillis() + 60_000))
     const run = async <T>(fn: (tx: Transaction) => Promise<T>) => { await fn(a.txn); return fn(b.txn) }
     await expect(performAcceptInvite(request(), run, clock)).rejects.toMatchObject({ appCode: 'invite_expired' })
+    expect(a.writes).toHaveLength(4)
     expect(b.writes).toHaveLength(0)
+  })
+
+  it('does not consume an invitation that expires while transaction reads are waiting', async () => {
+    const f = fakeTransaction()
+    let clockCalls = 0
+    const clock = () => (++clockCalls === 1 ? NOW : Timestamp.fromMillis(NOW.toMillis() + 60_000))
+    await expect(performAcceptInvite(request(), f.run, clock)).rejects.toMatchObject({ appCode: 'invite_expired' })
+    expect(f.reads).toContain(`users/${UID}`)
+    expect(f.writes).toHaveLength(0)
   })
 
   it('checks verified email inside the transaction body as well', async () => {

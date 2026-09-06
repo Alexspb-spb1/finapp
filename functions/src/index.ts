@@ -493,7 +493,7 @@ export async function performAcceptInvite(
   if (!FirestoreDocumentIdSchema.safeParse(auth.uid).success) throw new AppError('invite_invalid')
   const tokenHash = hashInvitationToken(input.token)
   return runTransactionImpl(txn => runAcceptInviteTransaction({
-    db, txn, request, auth, inviteId: input.inviteId, tokenHash, now: clock(),
+    db, txn, request, auth, inviteId: input.inviteId, tokenHash, now: clock(), clock,
   }))
 }
 
@@ -520,6 +520,7 @@ export async function performPreviewInvite(
     requirePendingInvitation(invite, clock())
     await requireCurrentInvitationLock(db, txn, input.inviteId, invite)
     const companyDisplayName = await readInvitationCompanyName(db, txn, invite.companyId)
+    requirePendingInvitation(invite, clock())
     const labels: Record<typeof invite.role, PreviewInviteResponse['roleLabel']> = {
       viewer: 'Наблюдатель', accountant: 'Бухгалтер', admin: 'Администратор',
     }
