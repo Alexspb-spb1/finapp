@@ -1,10 +1,5 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import './index.css'
-import App from './App.tsx'
+import './bootstrap/inviteTokenBootstrap'
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+// No static application dependencies: bootstrap must finish before React,
+// Firebase, styles or any application observer can evaluate.
+void import('./renderApp')

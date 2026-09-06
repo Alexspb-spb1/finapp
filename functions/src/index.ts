@@ -20,6 +20,7 @@
 import { onCall, type CallableRequest } from 'firebase-functions/v2/https'
 import { FieldValue, FieldPath, Timestamp, type Transaction } from 'firebase-admin/firestore'
 import { db, adminAuth } from './lib/admin'
+import { readCompanyAccess } from './lib/companyAccess'
 import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, requireNotInMaintenanceMode, validateRequest } from './lib/authz'
 import { AppError, toSafeHttpsError } from './lib/errors'
 import { writeAuditEvent } from './lib/audit'
@@ -534,6 +535,14 @@ export async function performPreviewInvite(
 export const previewInvite = onCall(async request => {
   try {
     return await performPreviewInvite(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+export const getCompanyAccess = onCall(async request => {
+  try {
+    return await readCompanyAccess(db, request)
   } catch (err) {
     throw toSafeHttpsError(err)
   }

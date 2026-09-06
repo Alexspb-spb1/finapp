@@ -119,7 +119,7 @@ function InvitationContext({ companyId }: Props) {
         <button className={buttonClass} disabled={locked} onClick={() => { setEmail(''); setRole('accountant'); openDialog({ kind: 'create' }) }}>Пригласить по email</button>
       </div>
     </div>
-    <p className="text-sm text-slate-500">Срок ссылки — 7 дней. Ссылку передаёт администратор вручную. Присоединение к компании по ссылке пока недоступно.</p>
+    <p className="text-sm text-slate-500">Срок ссылки — 7 дней. Ссылку передаёт администратор вручную. Для принятия нужен подтверждённый email приглашённого пользователя.</p>
     {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
     {loading && <p role="status">Загрузка приглашений…</p>}
     {!loading && confirmed && items.length === 0 && <p className="text-slate-500">Приглашений пока нет.</p>}

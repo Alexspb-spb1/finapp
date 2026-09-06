@@ -1,0 +1,19 @@
+{
+  "status": "PASS",
+  "checks": [
+    "no early financial modules/cache",
+    "new Auth without company/profile",
+    "unverified denied",
+    "actual emulator verification action",
+    "accepted viewer",
+    "same-UID no-write replay",
+    "disabled access denied after replay",
+    "wrong account denied",
+    "existing accountant acceptance",
+    "post-accept logout/login",
+    "two-tab logout",
+    "refresh requires original link in fresh tab",
+    "desktop/mobile"
+  ],
+  "liveActions": 0
+}

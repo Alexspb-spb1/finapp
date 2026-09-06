@@ -1,51 +1,55 @@
 # Execution checkpoint
 
-Updated: 2026-09-06. Status: READY_FOR_RELEASE_APPROVAL (SEC-006 Stage 6 only).
+Updated: 2026-09-06. Status: READY_FOR_RELEASE_APPROVAL — SEC-006 Stage 7,
+subject to final delivery-HEAD CI verification below. No Stage7 release executed.
 
-- Scope: stabilization stages 0–8, starting SEC-006 Stage6; product stage9 excluded.
-  Owner authorized autonomous engineering, independent review and protected
-  sequential merges. External actions follow handoff section8.
-- Worktree: D:/projects/finapp/finapp-sec006-stage6.
-- Branch: remediation/SEC-006-stage-6-invitation-ui.
-- Base/main: ff0ed1695f25e5cdb55b9cb9df8c35119b5164b0 (live fetch verified).
-- Implementation HEAD: 3584d169c4d4cf48ddeac93b1e35b70a083cbf5a.
-  This completion commit adds documentation plus a fixed error message in the
-  local browser test helper; application code and test assertions are identical.
-  Resolve final delivery HEAD with git rev-parse HEAD and PR25 headRefOid; they
-  MUST match before any action. Exact final SHA is also in the delivery message.
-- PR25: https://github.com/Alexspb-spb1/finapp/pull/25 (open, not merged).
-- Independent review: PASS on implementation HEAD above by separate
-  /root/independent_review agent. Initial 8d3409f review was CHANGES REQUIRED;
-  its P1 premature financial initialization defect was corrected and retested.
-  See reports/SEC-006.md for reproduction, verification and review history.
-- Implementation CI: both ci/functions SUCCESS at
-  https://github.com/Alexspb-spb1/finapp/actions/runs/34024154601.
-  Completion-commit CI must also be checked at /pull/25/checks; never substitute
-  the implementation run when verifying the final branch HEAD.
-- Local evidence: 193 root unit/DOM; 126 Rules; 570 migration; 5 preflight;
-  323 Functions unit / 211 Functions emulator; lint/typecheck/build PASS.
-  Exact runtimes: root Node24.16.0/npm11.13.0, Functions Node22.23.2, Java21.
-  Chromium synthetic acceptance PASS (callable lifecycle, role/company/session,
-  offline/recovery, two tabs). scripts/browser/stage6-smoke.cjs and
-  evidence/SEC-006-stage6 contain reproducible script instructions/screenshots.
-- Next action: obtain owner approval of runbooks/SEC-006-stage6-pages-release.md,
-  including exact final PR HEAD, because merge automatically publishes Pages.
-  Then recheck base/HEAD/PASS/checks/backup, merge with --match-head-commit,
-  verify exact main CI and Pages artifact/public static smoke. Do not disable CI
-  or deployment. Only after verified merge proceed to Stage7.
-- Live target: https://alexspb-spb1.github.io/finapp/. No Firebase deployment,
-  live Auth/data/membership/email/maintenance change was executed or authorized.
-- Backup: previous Pages artifact local
-  D:/projects/finapp/.runtime/pages-ff0ed16/artifact.tar;
-  SHA256 47d1cbb24098b35850a4b600c1b4f86125179f0ae57dab284d2c69225f079486.
-  Preserve it; see runbook for freshness and rollback limitations.
-- SEC-006 remains OPEN: Stage7 token bootstrap/acceptance/direct-path hosting;
-  Stage8 full emulator/release rehearsal and real verification email remain.
-  No production/multi-user readiness claim. SEC-005 is complete, never repeat
-  backfill. Broader auth/state/legacy member controls remain in later plan tasks.
-- Local background processes are temporary test infrastructure, not an ongoing
-  agent task. Check whether emulators/Vite are running before using localhost;
-  no background implementation after this response is promised.
+- Scope: stabilization stages 0–8; stage9 excluded. Owner authorized engineering,
+  separate agents/review and protected merges. External actions require a
+  concrete approved package under handoff section8. SEC-005 is complete: never
+  repeat its production backfill, imports or maintenance operations.
+- Worktree: D:/projects/finapp/finapp-sec006-stage7.
+- Branch: remediation/SEC-006-stage-7-acceptance.
+- Base/main: 82934d2acfaaab79c6092cdbd67cd95e4189d645.
+- Implementation/reviewed HEAD: 61c169d9837112e877d9716a7e81d6609a6e0671.
+  Independent REVIEW_RESULT PASS by separate /root/stage7_review; review
+  covered full implementation, actual production observer and release helper.
+  This delivery update changes documentation only; application/tests match PASS.
+- PR26: https://github.com/Alexspb-spb1/finapp/pull/26 (open, unmerged).
+  Resolve final delivery HEAD from local HEAD and PR headRefOid; require equality.
+  Final CI source: https://github.com/Alexspb-spb1/finapp/pull/26/checks.
+  Verify ci/functions SUCCESS for that exact delivery HEAD before publication;
+  never substitute a prior implementation run or a historical status snapshot.
+- Stage6: PR25 merged with expected HEAD protection on
+  6ed66efca3520ac55007078cc5c11f92d3c7d28a after independent PASS.
+  Merge tree equals reviewed tree eed358216feeeb1ee84788d04bba1e361dc71a23.
+  Main CI success: https://github.com/Alexspb-spb1/finapp/actions/runs/34025262542.
+  Pages success: https://github.com/Alexspb-spb1/finapp/actions/runs/34025377206.
+  Static artifact ID9986884092 and live HTML/JS/CSS SHA256 match; fresh public
+  login rendered without page errors, Auth/data actions=0. This verifies static
+  publication only, not live invitations or production multi-user readiness.
+- Owner's latest `да` authorized the Stage6 Pages package; it has been executed.
+  It does not authorize Stage7 Functions/Pages or real verification emails.
+- Preserved artifacts: D:/projects/finapp/.runtime/pages-ff0ed16/artifact.tar
+  (SHA256 47d1cbb24098b35850a4b600c1b4f86125179f0ae57dab284d2c69225f079486)
+  and D:/projects/finapp/.runtime/pages-82934d2/. Rollback window remains open.
+- Stage7 implementation: import-free fragment bootstrap; actual Pages 404 entry;
+  isolated invite Auth/preview/verification/acceptance; fresh canonical server
+  access check; fail-closed bridge readback before financial module import.
+  New getCompanyAccess callable is needed because current Rules deny member
+  reads and authzProbe is admin-only. Existing invitation callables/Rules intact.
+- Local checks: 248 frontend tests; 344 Functions unit; 224 Functions emulator;
+  Rules126/migration570/preflight5; lint/typecheck/build and Rules TypeScript PASS.
+  Full browser acceptance passed, including forced-document logout/re-login.
+  Independent review found the re-login defect before commit; fixed and verified.
+  Exact implementation independent PASS obtained; final doc-update CI must be
+  verified at the PR checks link before release, as above.
+- Next: after final CI success, request the specific Pages-only package in
+  runbooks/SEC-006-stage7-pages-release.md for PR26's exact delivery HEAD.
+  Do not merge until separately approved (merge triggers Pages). Then verify
+  exact main CI/artifact/public smoke and proceed to Stage8 engineering.
+- SEC006 remains OPEN. Stage8 complete rehearsal, actual email and live release
+  checks remain. SEC008/009/STATE001 general legacy Auth/state weaknesses are
+  not closed by this narrowly isolated invitation-entry path.
 
-Resume: read this checkpoint and report, fetch/check GitHub and actual diff.
-Do not repeat external actions based on historical report permissions.
+Resume: inspect actual diff, GitHub and current checkpoint. Do not replay past
+external operations. Local emulators/Vite are temporary; verify ports before use.
