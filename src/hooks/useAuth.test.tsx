@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   company: { id: 'co_a' },
   activeCompanyId: 'co_a',
   listener: null as (() => void) | null,
+  selectionListener: null as (() => void) | null,
 }))
 
 vi.mock('../store/authStore', () => ({
@@ -24,11 +25,15 @@ vi.mock('../store/authStore', () => ({
     state.listener = listener
     return () => { state.listener = null }
   },
+  subscribeCompanySelection: (listener: () => void) => {
+    state.selectionListener = listener
+    return () => { state.selectionListener = null }
+  },
 }))
 
 import { useAuth } from './useAuth'
 
-it('rerenders on switch-start notification when only activeCompanyId changes', () => {
+it('rerenders on the separate selection signal when only activeCompanyId changes and general auth does not notify', () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   const container = document.createElement('div')
   document.body.append(container)
@@ -52,7 +57,7 @@ it('rerenders on switch-start notification when only activeCompanyId changes', (
     const previousCompany = state.company
 
     state.activeCompanyId = 'co_b'
-    act(() => state.listener!())
+    act(() => state.selectionListener!())
 
     expect(state.user).toBe(previousUser)
     expect(state.company).toBe(previousCompany)
@@ -67,4 +72,5 @@ it('rerenders on switch-start notification when only activeCompanyId changes', (
     state.activeCompanyId = 'co_a'
   }
   expect(state.listener).toBeNull()
+  expect(state.selectionListener).toBeNull()
 })

@@ -112,8 +112,8 @@ beforeEach(() => {
 })
 
 describe('authStore — data_error on corrupted documents', () => {
-  it('notifies subscribers synchronously when a company switch starts, before loading the new metadata', async () => {
-    const { authStore, subscribeAuth } = await import('./authStore')
+  it('notifies only company-selection subscribers at switch start, deferring general auth notification until metadata is loaded', async () => {
+    const { authStore, subscribeAuth, subscribeCompanySelection } = await import('./authStore')
     setUserDoc('uid_1', validUser('uid_1', 'co_a'))
     setCompanyDoc('co_a', validCompany('co_a'))
     setCompanyDoc('co_b', validCompany('co_b'))
@@ -121,7 +121,12 @@ describe('authStore — data_error on corrupted documents', () => {
     await triggerSignIn('uid_1')
 
     const snapshots: { activeCompanyId: string | null; companyId: string | undefined }[] = []
-    const unsubscribe = subscribeAuth(() => snapshots.push({
+    const generalSnapshots: { activeCompanyId: string | null; companyId: string | undefined }[] = []
+    const unsubscribeSelection = subscribeCompanySelection(() => snapshots.push({
+      activeCompanyId: authStore.getActiveCompanyId(),
+      companyId: authStore.getCurrentCompany()?.id,
+    }))
+    const unsubscribe = subscribeAuth(() => generalSnapshots.push({
       activeCompanyId: authStore.getActiveCompanyId(),
       companyId: authStore.getCurrentCompany()?.id,
     }))
@@ -130,10 +135,14 @@ describe('authStore — data_error on corrupted documents', () => {
       // Deliberately assert before awaiting the asynchronous switch. This
       // mismatch lets Users unmount sensitive old-company UI immediately.
       expect(snapshots).toEqual([{ activeCompanyId: 'co_b', companyId: 'co_a' }])
+      // companyStore also subscribes to general auth changes. An early shared
+      // notification must not let it initialize financial data with mixed scope.
+      expect(generalSnapshots).toEqual([])
       await switching
-      expect(snapshots.at(-1)).toEqual({ activeCompanyId: 'co_b', companyId: 'co_b' })
+      expect(generalSnapshots).toEqual([{ activeCompanyId: 'co_b', companyId: 'co_b' }])
     } finally {
       unsubscribe()
+      unsubscribeSelection()
       await switching
     }
   })

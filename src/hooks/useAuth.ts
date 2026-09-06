@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { authStore, subscribeAuth } from '../store/authStore'
+import { authStore, subscribeAuth, subscribeCompanySelection } from '../store/authStore'
 
 export function useAuth() {
   const [user,      setUser]      = useState(() => authStore.getCurrentUser())
@@ -10,6 +10,9 @@ export function useAuth() {
   const [dataError, setDataError] = useState(() => authStore.getDataError())
 
   useEffect(() => {
+    const unsubSelection = subscribeCompanySelection(() => {
+      setActiveCompanyId(authStore.getActiveCompanyId())
+    })
     const unsub = subscribeAuth(() => {
       setUser(authStore.getCurrentUser())
       setCompany(authStore.getCurrentCompany())
@@ -19,7 +22,7 @@ export function useAuth() {
       setLoading(false)
     })
     const timer = setTimeout(() => setLoading(false), 3000)
-    return () => { unsub(); clearTimeout(timer) }
+    return () => { unsub(); unsubSelection(); clearTimeout(timer) }
   }, [])
 
   const role = authStore.getEffectiveRole()

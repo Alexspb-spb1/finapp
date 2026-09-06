@@ -198,6 +198,15 @@ export function subscribeAuth(fn: Listener) {
   return () => listeners.delete(fn)
 }
 
+// Selection intent is not a completed Auth/data context. Only UI observes
+// this signal; notifying subscribeAuth here would prematurely start financial
+// companyStore.init against the new company while old data is still visible.
+const selectionListeners = new Set<Listener>()
+export function subscribeCompanySelection(fn: Listener) {
+  selectionListeners.add(fn)
+  return () => selectionListeners.delete(fn)
+}
+
 // ── Default categories (reused for recovery) ──────────────────────────────────
 const DEFAULT_CATEGORIES_AUTH = [
   { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',     color: '#22c55e' },
@@ -666,7 +675,7 @@ export const authStore = {
     activeCompanyId = companyId
     localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
     // SEC-006: immediately unmount company-scoped invitation UI before I/O.
-    notify()
+    selectionListeners.forEach(listener => listener())
 
     // Load new company metadata
     const snap = await getDoc(doc(db, 'companies', companyId))
