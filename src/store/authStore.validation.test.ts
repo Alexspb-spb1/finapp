@@ -105,12 +105,53 @@ const validCompany = (companyId: string) => ({
 
 beforeEach(() => {
   vi.resetModules()
+  localStorage.clear()
   firestoreDocs.clear()
   firestoreQueryResults.clear()
   authStateCallback = null
 })
 
 describe('authStore — data_error on corrupted documents', () => {
+  it('notifies only company-selection subscribers at switch start, deferring general auth notification until metadata is loaded', async () => {
+    const { authStore, subscribeAuth, subscribeCompanySelection } = await import('./authStore')
+    setUserDoc('uid_1', validUser('uid_1', 'co_a'))
+    setCompanyDoc('co_a', validCompany('co_a'))
+    setCompanyDoc('co_b', validCompany('co_b'))
+    setCompanyUsersQuery('co_a', [{ id: 'uid_1', data: validUser('uid_1', 'co_a') }])
+    await triggerSignIn('uid_1')
+
+    const snapshots: { activeCompanyId: string | null; companyId: string | undefined }[] = []
+    const generalSnapshots: { activeCompanyId: string | null; companyId: string | undefined }[] = []
+    const unsubscribeSelection = subscribeCompanySelection(() => snapshots.push({
+      activeCompanyId: authStore.getActiveCompanyId(),
+      companyId: authStore.getCurrentCompany()?.id,
+    }))
+    const unsubscribe = subscribeAuth(() => generalSnapshots.push({
+      activeCompanyId: authStore.getActiveCompanyId(),
+      companyId: authStore.getCurrentCompany()?.id,
+    }))
+    const switching = authStore.switchCompany('co_b')
+    try {
+      // Deliberately assert before awaiting the asynchronous switch. This
+      // mismatch lets Users unmount sensitive old-company UI immediately.
+      expect(snapshots).toEqual([{ activeCompanyId: 'co_b', companyId: 'co_a' }])
+      // companyStore also subscribes to general auth changes. An early shared
+      // notification must not let it initialize financial data with mixed scope.
+      expect(generalSnapshots).toEqual([])
+      await switching
+      expect(generalSnapshots).toEqual([{ activeCompanyId: 'co_b', companyId: 'co_b' }])
+    } finally {
+      unsubscribe()
+      unsubscribeSelection()
+      await switching
+    }
+  })
+
+  it('does not expose the retired administrative REST signup method', async () => {
+    const { authStore } = await import('./authStore')
+    expect(authStore).not.toHaveProperty('inviteUser')
+  })
+
   it('valid profile + company + users list resolves to ready', async () => {
     const { authStore } = await import('./authStore')
     setUserDoc('uid_1', validUser('uid_1', 'co_a'))

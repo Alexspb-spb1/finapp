@@ -1,4 +1,7 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import { auth } from '../lib/firebase'
+import { canOpenInvitationManagement } from '../lib/invitationAccess'
 import { UserPlus, Trash2, X, AlertCircle, KeyRound, User as UserIcon, Plus, Pencil, Tag, Folder, FolderOpen, ChevronRight, ChevronDown, Lock } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { authStore } from '../store/authStore'
@@ -32,7 +35,7 @@ const roleColor: Record<User['role'], string> = {
 }
 
 export default function Settings() {
-  const { user, company, readOnly, isAdmin } = useAuth()
+  const { user, company, readOnly, isAdmin, activeCompanyId, status } = useAuth()
   const store = useStore()
 
   const [companyName, setCompanyName] = useState(company?.name ?? '')
@@ -47,13 +50,6 @@ export default function Settings() {
   const [profilePassword, setProfilePassword] = useState('')
   const [profileSaved,    setProfileSaved]    = useState(false)
   const [profileError,    setProfileError]    = useState('')
-
-  const [inviteOpen, setInviteOpen] = useState(false)
-  const [inviteName, setInviteName] = useState('')
-  const [inviteEmail, setInviteEmail] = useState('')
-  const [invitePassword, setInvitePassword] = useState('')
-  const [inviteRole, setInviteRole] = useState<User['role']>('accountant')
-  const [inviteError, setInviteError] = useState('')
 
   // Categories
   const [catTab,        setCatTab]        = useState<TransactionType>('income')
@@ -167,25 +163,6 @@ export default function Settings() {
     authStore.updateCompany(company.id, { name: companyName, legalType, inn, currency })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }
-
-  async function handleInvite(e: React.FormEvent) {
-    e.preventDefault()
-    setInviteError('')
-    if (!company) return
-    const result = await authStore.inviteUser({
-      name: inviteName,
-      email: inviteEmail,
-      password: invitePassword,
-      role: inviteRole,
-      companyId: company.id,
-    })
-    if (result.ok) {
-      setInviteOpen(false)
-      setInviteName(''); setInviteEmail(''); setInvitePassword('')
-    } else {
-      setInviteError('Пользователь с таким email уже существует')
-    }
   }
 
   return (
@@ -322,14 +299,14 @@ export default function Settings() {
             <h3 className="text-sm font-semibold text-slate-700">Пользователи</h3>
             <p className="text-xs text-slate-400 mt-0.5">{users.length} в вашей компании</p>
           </div>
-          {user?.role === 'admin' && (
-            <button
-              onClick={() => setInviteOpen(true)}
+          {canOpenInvitationManagement(user, company?.id ?? null, activeCompanyId, status, auth.currentUser?.uid ?? null) && (
+            <Link
+              to="/users"
               className="flex items-center gap-2 text-sm font-medium text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-lg transition-colors"
             >
               <UserPlus size={15} />
-              Добавить
-            </button>
+              Приглашения
+            </Link>
           )}
         </div>
 
@@ -810,63 +787,6 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* Invite modal */}
-      {inviteOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-              <h2 className="font-semibold text-slate-800">Добавить пользователя</h2>
-              <button onClick={() => setInviteOpen(false)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400">
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={handleInvite} className="px-6 py-5 space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1.5">Имя</label>
-                <input value={inviteName} onChange={e => setInviteName(e.target.value)} required
-                  placeholder="Мария Иванова"
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1.5">Email</label>
-                <input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} required
-                  placeholder="maria@company.ru"
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1.5">Пароль</label>
-                <input type="password" value={invitePassword} onChange={e => setInvitePassword(e.target.value)} required
-                  placeholder="Минимум 6 символов" minLength={6}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1.5">Роль</label>
-                <select value={inviteRole} onChange={e => setInviteRole(e.target.value as User['role'])}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300">
-                  <option value="admin">Администратор</option>
-                  <option value="accountant">Бухгалтер</option>
-                  <option value="viewer">Наблюдатель (только просмотр)</option>
-                </select>
-              </div>
-              {inviteError && (
-                <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-600 rounded-xl px-4 py-3 text-sm">
-                  <AlertCircle size={15} /> {inviteError}
-                </div>
-              )}
-              <div className="flex gap-3 pt-1">
-                <button type="button" onClick={() => setInviteOpen(false)}
-                  className="flex-1 py-2.5 border border-slate-200 text-sm text-slate-600 font-medium rounded-lg hover:bg-slate-50 transition">
-                  Отмена
-                </button>
-                <button type="submit"
-                  className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition">
-                  Добавить
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

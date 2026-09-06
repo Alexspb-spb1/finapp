@@ -1,23 +1,28 @@
 import { useState, useEffect } from 'react'
-import { authStore, subscribeAuth } from '../store/authStore'
+import { authStore, subscribeAuth, subscribeCompanySelection } from '../store/authStore'
 
 export function useAuth() {
   const [user,      setUser]      = useState(() => authStore.getCurrentUser())
   const [company,   setCompany]   = useState(() => authStore.getCurrentCompany())
+  const [activeCompanyId, setActiveCompanyId] = useState(() => authStore.getActiveCompanyId())
   const [loading,   setLoading]   = useState(true)
   const [status,    setStatus]    = useState(() => authStore.getAuthDataStatus())
   const [dataError, setDataError] = useState(() => authStore.getDataError())
 
   useEffect(() => {
+    const unsubSelection = subscribeCompanySelection(() => {
+      setActiveCompanyId(authStore.getActiveCompanyId())
+    })
     const unsub = subscribeAuth(() => {
       setUser(authStore.getCurrentUser())
       setCompany(authStore.getCurrentCompany())
+      setActiveCompanyId(authStore.getActiveCompanyId())
       setStatus(authStore.getAuthDataStatus())
       setDataError(authStore.getDataError())
       setLoading(false)
     })
     const timer = setTimeout(() => setLoading(false), 3000)
-    return () => { unsub(); clearTimeout(timer) }
+    return () => { unsub(); unsubSelection(); clearTimeout(timer) }
   }, [])
 
   const role = authStore.getEffectiveRole()
@@ -36,7 +41,7 @@ export function useAuth() {
     // authStore.getAuthDataStatus()/getDataError().
     status,
     dataError,
-    activeCompanyId: authStore.getActiveCompanyId(),
+    activeCompanyId,
     allCompanies: authStore.getAllCompanies(),
     // Права доступа для активной компании
     role,

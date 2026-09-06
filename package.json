@@ -50,6 +50,7 @@
     "firebase-admin": "^14.2.0",
     "firebase-tools": "15.24.0",
     "globals": "^17.6.0",
+    "jsdom": "^30.0.1",
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",

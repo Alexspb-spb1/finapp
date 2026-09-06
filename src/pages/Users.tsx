@@ -1,8 +1,11 @@
 import { useState } from 'react'
-import { UserPlus, Pencil, Trash2, X, AlertCircle, ShieldCheck, BookOpen, Eye, Search } from 'lucide-react'
+import { Pencil, Trash2, X, AlertCircle, ShieldCheck, BookOpen, Eye, Search } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { authStore } from '../store/authStore'
 import type { User } from '../types/auth'
+import { auth } from '../lib/firebase'
+import { canOpenInvitationManagement } from '../lib/invitationAccess'
+import InvitationManagement from '../components/invitations/InvitationManagement'
 
 const ROLES: User['role'][] = ['admin', 'accountant', 'viewer']
 
@@ -22,7 +25,7 @@ const RoleIcon: Record<User['role'], typeof ShieldCheck> = {
   viewer:     Eye,
 }
 
-type ModalMode = 'add' | 'edit'
+type ModalMode = 'edit'
 
 interface FormState {
   name: string
@@ -34,7 +37,14 @@ interface FormState {
 const emptyForm = (): FormState => ({ name: '', email: '', password: '', role: 'accountant' })
 
 export default function Users() {
-  const { user: me, company } = useAuth()
+  const { user: me, company, activeCompanyId, status } = useAuth()
+  if (!canOpenInvitationManagement(me, company?.id ?? null, activeCompanyId, status, auth.currentUser?.uid ?? null)) {
+    return <p className="py-12 text-slate-500">Управление пользователями доступно администратору активной компании после загрузки прав.</p>
+  }
+  return <CompanyUsers key={JSON.stringify([me!.id, company!.id])} me={me!} companyId={company!.id} />
+}
+
+function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
 
   const [search,    setSearch]    = useState('')
   const [modal,     setModal]     = useState<{ mode: ModalMode; target?: User } | null>(null)
@@ -44,18 +54,11 @@ export default function Users() {
   const [saved,     setSaved]     = useState(false)
   const [resetSent, setResetSent] = useState(false)
 
-  const allUsers = company ? authStore.getCompanyUsers(company.id) : []
+  const allUsers = authStore.getCompanyUsers(companyId)
   const users = allUsers.filter(u =>
     u.name.toLowerCase().includes(search.toLowerCase()) ||
     u.email.toLowerCase().includes(search.toLowerCase()),
   )
-
-  // ── Open add modal ──────────────────────────────────────────────
-  function openAdd() {
-    setForm(emptyForm())
-    setFormError('')
-    setModal({ mode: 'add' })
-  }
 
   // ── Open edit modal ─────────────────────────────────────────────
   function openEdit(u: User) {
@@ -79,17 +82,7 @@ export default function Users() {
     e.preventDefault()
     setFormError('')
 
-    if (modal?.mode === 'add') {
-      if (!company) return
-      const res = await authStore.inviteUser({
-        name:      form.name,
-        email:     form.email,
-        password:  form.password,
-        role:      form.role,
-        companyId: company.id,
-      })
-      if (!res.ok) { setFormError('Пользователь с таким email уже существует'); return }
-    } else if (modal?.mode === 'edit' && modal.target) {
+    if (modal?.target) {
       const payload: Parameters<typeof authStore.updateUser>[1] = {}
       if (form.name  !== modal.target.name)  payload.name  = form.name
       if (form.email !== modal.target.email) payload.email = form.email
@@ -112,18 +105,9 @@ export default function Users() {
 
   const delTarget = allUsers.find(u => u.id === deleteId)
 
-  // Guard — non-admins see nothing
-  if (me?.role !== 'admin') {
-    return (
-      <div className="flex flex-col items-center justify-center py-32 text-slate-400">
-        <ShieldCheck size={40} className="mb-3 text-slate-300" />
-        <p className="text-base font-medium">Только администратор имеет доступ к этому разделу</p>
-      </div>
-    )
-  }
-
   return (
     <div className="space-y-4 max-w-3xl">
+      <InvitationManagement companyId={companyId} sessionUid={me.id} />
 
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-3">
@@ -136,12 +120,7 @@ export default function Users() {
             className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
           />
         </div>
-        <button
-          onClick={openAdd}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
-        >
-          <UserPlus size={15} /> Добавить
-        </button>
+
       </div>
 
       {/* User cards */}
@@ -249,7 +228,7 @@ export default function Users() {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
               <h2 className="font-semibold text-slate-800">
-                {modal.mode === 'add' ? 'Новый пользователь' : 'Редактировать пользователя'}
+                Редактировать пользователя
               </h2>
               <button onClick={() => setModal(null)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400">
                 <X size={18} />
@@ -283,7 +262,7 @@ export default function Users() {
               </div>
 
               {/* Password */}
-              {(modal.mode === 'add' || modal.target?.id === me?.id) ? (
+              {(modal.target?.id === me.id) ? (
                 <div>
                   <label className="block text-xs font-medium text-slate-500 mb-1.5">
                     Пароль
@@ -295,9 +274,8 @@ export default function Users() {
                     type="password"
                     value={form.password}
                     onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                    required={modal.mode === 'add'}
-                    placeholder={modal.mode === 'add' ? 'Минимум 6 символов' : '••••••••'}
-                    minLength={modal.mode === 'add' || form.password ? 6 : undefined}
+                    placeholder="••••••••"
+                    minLength={form.password ? 6 : undefined}
                     className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300"
                   />
                 </div>
@@ -359,7 +337,7 @@ export default function Users() {
                   type="submit"
                   className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition"
                 >
-                  {modal.mode === 'add' ? 'Добавить' : 'Сохранить'}
+                  Сохранить
                 </button>
               </div>
             </form>
