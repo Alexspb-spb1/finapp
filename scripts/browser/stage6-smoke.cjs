@@ -115,4 +115,4 @@ async function seedUser(role) {
     for (const role of ['viewer','accountant']) {const limited=await login(role); await limited.page.getByText('Управление пользователями доступно администратору активной компании после загрузки прав.',{exact:true}).waitFor(); assert.equal(await limited.page.getByRole('button',{name:'Пригласить по email',exact:true}).count(),0);}
     console.log(JSON.stringify({result:'PASS',checks:['real create/list/resend/cancel callables','no admin-created Auth user','fragment URL and clipboard','no token storage','company switch clears link/data','mobile width','offline refresh denial/recovery','two-tab logout','viewer/accountant deny'],externalRequestsBlocked:externalAttempts}));
   } finally {for(const context of contexts)await context.close();await browser.close();await db.terminate();}
-})().catch(error=>{console.error('Browser acceptance failed:',error.name,error.message.replace(/#token=[\w-]+/g,'#token=[redacted]'));process.exitCode=1;});
+})().catch(()=>{console.error('Browser acceptance failed. Inspect the failed check locally without logging payloads.');process.exitCode=1;});
