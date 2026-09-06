@@ -1,7 +1,7 @@
 # Execution checkpoint
 
-Updated: 2026-09-06. Status: IN_PROGRESS — SEC-006 Stage 8 local acceptance
-PASS; final independent commit review and PR CI before inventory approval.
+Updated: 2026-09-06. Status: READY_FOR_RELEASE_APPROVAL — SEC-006 Stage 8
+read-only staging inventory, subject to final delivery-HEAD CI below.
 
 - Scope: stabilization stages 0–8; stage9 excluded. Engineering, separate
   agents/review and expected-HEAD merges authorized. External actions require
@@ -35,14 +35,22 @@ PASS; final independent commit review and PR CI before inventory approval.
   leaks0. One known legacy currency request hard-blocked; live actions0.
   Evidence: docs/remediation/evidence/SEC-006-stage8/ (artifact hashes/screenshot).
   Production source/Rules/indexes/lockfiles unchanged.
-- Independent preliminary /root/stage7_review found and verified fixes for
+- Independent /root/stage7_review found and verified fixes for
   inventory redirects, CLI auth fallback, Windows environment casing and safe
-  browser diagnostic handling. Final REVIEWED_HEAD record pending commit.
+  browser diagnostic handling. REVIEW_RESULT PASS on implementation HEAD
+  9d875cf07415b83938728d1ffea2698b197e0318, no authorship by reviewer.
+  This delivery update changes documentation only; code/tests/evidence remain
+  identical to that reviewed commit.
+- Draft PR27: https://github.com/Alexspb-spb1/finapp/pull/27 (UNMERGED).
+  Final delivery HEAD is local HEAD/PR headRefOid, which must match.
+  CI source: https://github.com/Alexspb-spb1/finapp/pull/27/checks.
+  Confirm ci/functions SUCCESS for that exact HEAD before inventory execution;
+  do not substitute an earlier run. Final delivery message supplies SHA/run.
 - Current cloud Functions/Rules/index/Auth configuration and rollback readiness
   are UNKNOWN. No live Firebase inventory/deploy/email authorized or performed.
   Owner supplied a private mailbox for the future email package; that is not
   email-sending authorization and the address must not enter public evidence.
-- Next: independent exact-commit review, Draft PR/CI, then request only the
+- Next: after final delivery CI success, request only the
   read-only staging inventory package in runbooks/SEC-006-stage8-staging-inventory.md.
   Resolve current local HEAD and PR headRefOid; they must match reviewed delivery
   code and green CI. The final approval message supplies exact SHA and new path.
