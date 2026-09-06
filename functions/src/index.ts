@@ -28,6 +28,8 @@ import { generateRawInvitationToken, hashInvitationToken } from './lib/invitatio
 import { runInviteMemberTransaction } from './lib/inviteMemberTransaction'
 import { runCancelInviteTransaction } from './lib/cancelInviteTransaction'
 import { runResendInviteTransaction } from './lib/resendInviteTransaction'
+import { runAcceptInviteTransaction } from './lib/acceptInviteTransaction'
+import { verifyInvitationToken, requirePendingInvitation, requireCurrentInvitationLock, readInvitationCompanyName, maskInvitationEmail } from './lib/invitationAccess'
 import { decodeInvitationsCursor, buildInvitationsCursor, timestampFromCursorPayload, mapInvitationDocumentToListItem } from './lib/invitationListing'
 import { AuthzProbeRequestSchema, type AuthzProbeResponse } from './schemas/auth'
 import { CreateCompanyRequestSchema, type CreateCompanyResponse } from './schemas/company'
@@ -37,6 +39,11 @@ import {
   ListInvitationsRequestSchema,
   CancelInviteRequestSchema,
   ResendInviteRequestSchema,
+  AcceptInviteRequestSchema,
+  PreviewInviteRequestSchema,
+  FirestoreDocumentIdSchema,
+  type AcceptInviteResponse,
+  type PreviewInviteResponse,
   InvitationDocumentSchema,
   type InviteMemberResponse,
   type ListInvitationsResponse,
@@ -467,6 +474,66 @@ export async function performResendInvite(
 export const resendInvite = onCall(async request => {
   try {
     return await performResendInvite(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+// SEC-006 Stage 5. No company, role or email is accepted from the payload.
+// Hash once; evaluate the clock for each transaction attempt so a retry
+// cannot reuse a timestamp from an earlier, not-yet-expired attempt.
+export async function performAcceptInvite(
+  request: CallableRequest<unknown>,
+  runTransactionImpl: <T>(fn: (txn: Transaction) => Promise<T>) => Promise<T> = fn => db.runTransaction(fn),
+  clock: () => Timestamp = () => Timestamp.now(),
+): Promise<AcceptInviteResponse> {
+  const auth = requireAuth(request)
+  requireVerifiedEmail(auth)
+  const input = validateRequest(AcceptInviteRequestSchema, request.data)
+  if (!FirestoreDocumentIdSchema.safeParse(auth.uid).success) throw new AppError('invite_invalid')
+  const tokenHash = hashInvitationToken(input.token)
+  return runTransactionImpl(txn => runAcceptInviteTransaction({
+    db, txn, request, auth, inviteId: input.inviteId, tokenHash, now: clock(), clock,
+  }))
+}
+
+export const acceptInvite = onCall(async request => {
+  try {
+    return await performAcceptInvite(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+// Possession of the token permits only this minimal pre-auth preview.
+// Status details become visible only after constant-time digest checking.
+export async function performPreviewInvite(
+  request: CallableRequest<unknown>,
+  runTransactionImpl: <T>(fn: (txn: Transaction) => Promise<T>) => Promise<T> = fn => db.runTransaction(fn, { readOnly: true }),
+  clock: () => Timestamp = () => Timestamp.now(),
+): Promise<PreviewInviteResponse> {
+  const input = validateRequest(PreviewInviteRequestSchema, request.data)
+  const tokenHash = hashInvitationToken(input.token)
+  return runTransactionImpl(async txn => {
+    const snap = await txn.get(db.collection('invitations').doc(input.inviteId))
+    const invite = verifyInvitationToken(snap.data(), tokenHash)
+    requirePendingInvitation(invite, clock())
+    await requireCurrentInvitationLock(db, txn, input.inviteId, invite)
+    const companyDisplayName = await readInvitationCompanyName(db, txn, invite.companyId)
+    requirePendingInvitation(invite, clock())
+    const labels: Record<typeof invite.role, PreviewInviteResponse['roleLabel']> = {
+      viewer: 'Наблюдатель', accountant: 'Бухгалтер', admin: 'Администратор',
+    }
+    return {
+      maskedEmail: maskInvitationEmail(invite.emailNormalized), companyDisplayName,
+      roleLabel: labels[invite.role], expiresAt: invite.expiresAt.toDate().toISOString(),
+    }
+  })
+}
+
+export const previewInvite = onCall(async request => {
+  try {
+    return await performPreviewInvite(request)
   } catch (err) {
     throw toSafeHttpsError(err)
   }

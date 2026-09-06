@@ -33,6 +33,11 @@ export const APP_ERROR_CODES = [
   'invitation_not_pending',
   'invitation_resend_cooldown',
   'invitation_resend_limit_reached',
+  'invite_invalid',
+  'invite_expired',
+  'invite_revoked',
+  'invite_already_used',
+  'membership_conflict',
   'internal_error',
 ] as const
 
@@ -79,6 +84,11 @@ const HTTPS_CODE_FOR: Record<AppErrorCode, HttpsErrorCode> = {
   // deliberately doesn't declare one).
   invitation_resend_cooldown: 'failed-precondition',
   invitation_resend_limit_reached: 'failed-precondition',
+  invite_invalid: 'permission-denied',
+  invite_expired: 'failed-precondition',
+  invite_revoked: 'failed-precondition',
+  invite_already_used: 'failed-precondition',
+  membership_conflict: 'failed-precondition',
   internal_error: 'internal',
 }
 

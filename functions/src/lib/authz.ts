@@ -13,7 +13,7 @@ import type { ZodType } from 'zod'
 
 export interface RequestAuth {
   uid: string
-  token: { email_verified?: boolean }
+  token: { email_verified?: boolean; email?: string; name?: string }
 }
 
 /**
