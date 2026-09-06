@@ -105,12 +105,44 @@ const validCompany = (companyId: string) => ({
 
 beforeEach(() => {
   vi.resetModules()
+  localStorage.clear()
   firestoreDocs.clear()
   firestoreQueryResults.clear()
   authStateCallback = null
 })
 
 describe('authStore — data_error on corrupted documents', () => {
+  it('notifies subscribers synchronously when a company switch starts, before loading the new metadata', async () => {
+    const { authStore, subscribeAuth } = await import('./authStore')
+    setUserDoc('uid_1', validUser('uid_1', 'co_a'))
+    setCompanyDoc('co_a', validCompany('co_a'))
+    setCompanyDoc('co_b', validCompany('co_b'))
+    setCompanyUsersQuery('co_a', [{ id: 'uid_1', data: validUser('uid_1', 'co_a') }])
+    await triggerSignIn('uid_1')
+
+    const snapshots: { activeCompanyId: string | null; companyId: string | undefined }[] = []
+    const unsubscribe = subscribeAuth(() => snapshots.push({
+      activeCompanyId: authStore.getActiveCompanyId(),
+      companyId: authStore.getCurrentCompany()?.id,
+    }))
+    const switching = authStore.switchCompany('co_b')
+    try {
+      // Deliberately assert before awaiting the asynchronous switch. This
+      // mismatch lets Users unmount sensitive old-company UI immediately.
+      expect(snapshots).toEqual([{ activeCompanyId: 'co_b', companyId: 'co_a' }])
+      await switching
+      expect(snapshots.at(-1)).toEqual({ activeCompanyId: 'co_b', companyId: 'co_b' })
+    } finally {
+      unsubscribe()
+      await switching
+    }
+  })
+
+  it('does not expose the retired administrative REST signup method', async () => {
+    const { authStore } = await import('./authStore')
+    expect(authStore).not.toHaveProperty('inviteUser')
+  })
+
   it('valid profile + company + users list resolves to ready', async () => {
     const { authStore } = await import('./authStore')
     setUserDoc('uid_1', validUser('uid_1', 'co_a'))

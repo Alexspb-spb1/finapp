@@ -4,6 +4,7 @@ import { authStore, subscribeAuth } from '../store/authStore'
 export function useAuth() {
   const [user,      setUser]      = useState(() => authStore.getCurrentUser())
   const [company,   setCompany]   = useState(() => authStore.getCurrentCompany())
+  const [activeCompanyId, setActiveCompanyId] = useState(() => authStore.getActiveCompanyId())
   const [loading,   setLoading]   = useState(true)
   const [status,    setStatus]    = useState(() => authStore.getAuthDataStatus())
   const [dataError, setDataError] = useState(() => authStore.getDataError())
@@ -12,6 +13,7 @@ export function useAuth() {
     const unsub = subscribeAuth(() => {
       setUser(authStore.getCurrentUser())
       setCompany(authStore.getCurrentCompany())
+      setActiveCompanyId(authStore.getActiveCompanyId())
       setStatus(authStore.getAuthDataStatus())
       setDataError(authStore.getDataError())
       setLoading(false)
@@ -36,7 +38,7 @@ export function useAuth() {
     // authStore.getAuthDataStatus()/getDataError().
     status,
     dataError,
-    activeCompanyId: authStore.getActiveCompanyId(),
+    activeCompanyId,
     allCompanies: authStore.getAllCompanies(),
     // Права доступа для активной компании
     role,

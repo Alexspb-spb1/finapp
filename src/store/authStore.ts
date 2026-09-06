@@ -571,52 +571,6 @@ export const authStore = {
   getAuthDataStatus(): AuthDataStatus { return authDataStatus },
   getDataError(): DataError | null { return lastDataError },
 
-  // ── Invite user (REST API — keeps current admin session) ──────────────────
-  async inviteUser(params: {
-    name: string; email: string; password: string
-    role: User['role']; companyId: string
-  }): Promise<{ ok: true } | { ok: false; error: AuthError }> {
-    try {
-      const apiKey = import.meta.env.VITE_FIREBASE_API_KEY
-      const resp = await fetch(
-        `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: params.email, password: params.password, returnSecureToken: false }),
-        },
-      )
-      const data = await resp.json()
-      if (!resp.ok) {
-        if (data?.error?.message?.includes('EMAIL_EXISTS')) return { ok: false, error: 'email_taken' }
-        return { ok: false, error: 'invalid_credentials' }
-      }
-
-      const uid: string = data.localId
-      const user: User = {
-        id: uid, name: params.name, email: params.email.toLowerCase(),
-        role: params.role, companyId: params.companyId, createdAt: new Date().toISOString(),
-      }
-      await setDoc(doc(db, 'users', uid), user)
-
-      // Refresh company users list
-      const snap = await getDocs(query(collection(db, 'users'), where('companyId', '==', params.companyId)))
-      const parsedUsers = parseLegacyUsersList(snap.docs)
-      if (!parsedUsers.ok) {
-        // The invite write above already succeeded — report it as such —
-        // but the refreshed list itself is corrupted: don't trust or apply
-        // it (no partial/partially-trusted list), surface data_error instead.
-        setDataErrorState(parsedUsers.error)
-        return { ok: true }
-      }
-      companyUsers = parsedUsers.data
-      notify()
-      return { ok: true }
-    } catch {
-      return { ok: false, error: 'invalid_credentials' }
-    }
-  },
-
   // ── Remove user (Firestore only — no Admin SDK needed) ────────────────────
   async removeUser(userId: string) {
     await deleteDoc(doc(db, 'users', userId))
@@ -711,6 +665,8 @@ export const authStore = {
     if (companyId === activeCompanyId) return
     activeCompanyId = companyId
     localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
+    // SEC-006: immediately unmount company-scoped invitation UI before I/O.
+    notify()
 
     // Load new company metadata
     const snap = await getDoc(doc(db, 'companies', companyId))
