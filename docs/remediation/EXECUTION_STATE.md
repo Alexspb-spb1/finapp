@@ -1,7 +1,8 @@
 # Execution checkpoint
 
-Updated: 2026-09-06. Status: READY_FOR_RELEASE_APPROVAL — SEC-006 Stage 8
-read-only staging inventory, subject to final delivery-HEAD CI below.
+Updated: 2026-09-06. Status: BLOCKED — SEC-006 Stage 8 staging inventory:
+Cloud Functions API disabled. Separate activation package prepared; final
+independent review and exact-HEAD CI pending before approval request.
 
 - Scope: stabilization stages 0–8; stage9 excluded. Engineering, separate
   agents/review and expected-HEAD merges authorized. External actions require
@@ -39,19 +40,34 @@ read-only staging inventory, subject to final delivery-HEAD CI below.
   inventory redirects, CLI auth fallback, Windows environment casing and safe
   browser diagnostic handling. REVIEW_RESULT PASS on implementation HEAD
   9d875cf07415b83938728d1ffea2698b197e0318, no authorship by reviewer.
-  This delivery update changes documentation only; code/tests/evidence remain
-  identical to that reviewed commit.
+  Inventory/browser code and evidence remain identical to that reviewed commit.
+  A separate API activation helper has since been added after the approved
+  inventory's SERVICE_DISABLED result; its final review record is pending.
 - Draft PR27: https://github.com/Alexspb-spb1/finapp/pull/27 (UNMERGED).
   Final delivery HEAD is local HEAD/PR headRefOid, which must match.
   CI source: https://github.com/Alexspb-spb1/finapp/pull/27/checks.
   Confirm ci/functions SUCCESS for that exact HEAD before inventory execution;
   do not substitute an earlier run. Final delivery message supplies SHA/run.
-- Current cloud Functions/Rules/index/Auth configuration and rollback readiness
-  are UNKNOWN. No live Firebase inventory/deploy/email authorized or performed.
+- Owner approved and executed the a5b70c7 read-only inventory package after
+  exact CI34029148879 and independent final PASS. Result: INVENTORY_BLOCKED,
+  no success report. Safe diagnostics: project200/database200/functionsV1 403,
+  reason SERVICE_DISABLED. Existing CLI/environment guards PASS.
+  Private evidence: D:/projects/finapp/.runtime/sec006-stage8-inventory-a5b70c7-blocked.json.
+  No cloud writes, deployment, API activation or email occurred.
+- Remaining cloud Functions/Rules/index/Auth configuration and rollback readiness
+  are UNKNOWN; a disabled API is not evidence that no Functions exist.
   Owner supplied a private mailbox for the future email package; that is not
   email-sending authorization and the address must not enter public evidence.
-- Next: after final delivery CI success, request only the
-  read-only staging inventory package in runbooks/SEC-006-stage8-staging-inventory.md.
+- Activation package: runbooks/SEC-006-stage8-functions-api.md, new helper plus
+  12 local self-tests PASS and mandatory CI step; prior inventory11 still PASS.
+  At most one native enable POST, complete fsynced journal before dispatch,
+  separate before/after states, fixed-target read-only preflight/poll/recovery.
+  Normal provider-managed activation effects are included in the proposed
+  scope; billing upgrade, new terms acceptance, manual IAM/API expansion,
+  deployment, cleanup and email remain excluded. No activation authorized yet.
+- Next: finalize independent review/CI and request the exact activation plus
+  inventory-rerun package; execute neither until separately approved.
+  Do not blindly repeat the failed inventory or replay Stage7 publication.
   Resolve current local HEAD and PR headRefOid; they must match reviewed delivery
   code and green CI. The final approval message supplies exact SHA and new path.
   Merge triggers Pages and needs its own package approval. Do not run existing
