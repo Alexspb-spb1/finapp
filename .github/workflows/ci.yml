@@ -61,6 +61,8 @@ jobs:
 
       - run: npm run test:staging-preflight
 
+      - run: npm run test:invitation-inventory
+
       - run: npm exec -- tsc --noEmit -p tests/rules/tsconfig.json
 
       - run: npm run test:unit

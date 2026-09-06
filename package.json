@@ -13,6 +13,7 @@
     "build": "tsc -b && vite build",
     "build:staging": "node scripts/verify-staging-env.mjs && tsc -b && vite build --mode staging",
     "test:staging-preflight": "node scripts/test-staging-preflight.mjs",
+    "test:invitation-inventory": "node scripts/invitationRehearsal/inventory.mjs --self-test",
     "test:unit": "vitest run src",
     "lint": "eslint .",
     "preview": "vite preview",

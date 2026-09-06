@@ -1,55 +1,58 @@
 # Execution checkpoint
 
-Updated: 2026-09-06. Status: READY_FOR_RELEASE_APPROVAL — SEC-006 Stage 7,
-subject to final delivery-HEAD CI verification below. No Stage7 release executed.
+Updated: 2026-09-06. Status: IN_PROGRESS — SEC-006 Stage 8 local acceptance
+PASS; final independent commit review and PR CI before inventory approval.
 
-- Scope: stabilization stages 0–8; stage9 excluded. Owner authorized engineering,
-  separate agents/review and protected merges. External actions require a
-  concrete approved package under handoff section8. SEC-005 is complete: never
-  repeat its production backfill, imports or maintenance operations.
-- Worktree: D:/projects/finapp/finapp-sec006-stage7.
-- Branch: remediation/SEC-006-stage-7-acceptance.
-- Base/main: 82934d2acfaaab79c6092cdbd67cd95e4189d645.
-- Implementation/reviewed HEAD: 61c169d9837112e877d9716a7e81d6609a6e0671.
-  Independent REVIEW_RESULT PASS by separate /root/stage7_review; review
-  covered full implementation, actual production observer and release helper.
-  This delivery update changes documentation only; application/tests match PASS.
-- PR26: https://github.com/Alexspb-spb1/finapp/pull/26 (open, unmerged).
-  Resolve final delivery HEAD from local HEAD and PR headRefOid; require equality.
-  Final CI source: https://github.com/Alexspb-spb1/finapp/pull/26/checks.
-  Verify ci/functions SUCCESS for that exact delivery HEAD before publication;
-  never substitute a prior implementation run or a historical status snapshot.
-- Stage6: PR25 merged with expected HEAD protection on
-  6ed66efca3520ac55007078cc5c11f92d3c7d28a after independent PASS.
-  Merge tree equals reviewed tree eed358216feeeb1ee84788d04bba1e361dc71a23.
-  Main CI success: https://github.com/Alexspb-spb1/finapp/actions/runs/34025262542.
-  Pages success: https://github.com/Alexspb-spb1/finapp/actions/runs/34025377206.
-  Static artifact ID9986884092 and live HTML/JS/CSS SHA256 match; fresh public
-  login rendered without page errors, Auth/data actions=0. This verifies static
-  publication only, not live invitations or production multi-user readiness.
-- Owner's latest `да` authorized the Stage6 Pages package; it has been executed.
-  It does not authorize Stage7 Functions/Pages or real verification emails.
-- Preserved artifacts: D:/projects/finapp/.runtime/pages-ff0ed16/artifact.tar
-  (SHA256 47d1cbb24098b35850a4b600c1b4f86125179f0ae57dab284d2c69225f079486)
-  and D:/projects/finapp/.runtime/pages-82934d2/. Rollback window remains open.
-- Stage7 implementation: import-free fragment bootstrap; actual Pages 404 entry;
-  isolated invite Auth/preview/verification/acceptance; fresh canonical server
-  access check; fail-closed bridge readback before financial module import.
-  New getCompanyAccess callable is needed because current Rules deny member
-  reads and authzProbe is admin-only. Existing invitation callables/Rules intact.
-- Local checks: 248 frontend tests; 344 Functions unit; 224 Functions emulator;
-  Rules126/migration570/preflight5; lint/typecheck/build and Rules TypeScript PASS.
-  Full browser acceptance passed, including forced-document logout/re-login.
-  Independent review found the re-login defect before commit; fixed and verified.
-  Exact implementation independent PASS obtained; final doc-update CI must be
-  verified at the PR checks link before release, as above.
-- Next: after final CI success, request the specific Pages-only package in
-  runbooks/SEC-006-stage7-pages-release.md for PR26's exact delivery HEAD.
-  Do not merge until separately approved (merge triggers Pages). Then verify
-  exact main CI/artifact/public smoke and proceed to Stage8 engineering.
-- SEC006 remains OPEN. Stage8 complete rehearsal, actual email and live release
-  checks remain. SEC008/009/STATE001 general legacy Auth/state weaknesses are
-  not closed by this narrowly isolated invitation-entry path.
+- Scope: stabilization stages 0–8; stage9 excluded. Engineering, separate
+  agents/review and expected-HEAD merges authorized. External actions require
+  a concrete approved package under handoff section8. SEC-005 is complete:
+  never repeat production backfill, imports or maintenance.
+- Worktree: D:/projects/finapp/finapp-sec006-stage8.
+- Branch: remediation/SEC-006-stage-8-rehearsal.
+- Base/main: 2d73f13c474269283dd653233bb3d38a47185120.
+- Stage7 PR26 MERGED after independent final PASS by /root/stage7_review on
+  888c53e6ffd4017b6efe2da7a5ae0a72c27eb1d8 and exact-HEAD CI.
+  Protected squash merge and owner-approved Pages publication executed.
+  Reviewed and merged tree: bb0ddd76c306aeb3c85629c7324721bcd88ba52a.
+  PR: https://github.com/Alexspb-spb1/finapp/pull/26.
+  Main CI SUCCESS: https://github.com/Alexspb-spb1/finapp/actions/runs/34027637579.
+  Pages SUCCESS: https://github.com/Alexspb-spb1/finapp/actions/runs/34027763508.
+  These states and SHA were freshly rechecked after context recovery.
+- Stage7 actual Pages artifact9987612172 downloaded and compared with live
+  index/404/all JS/CSS. Static public login/missing-token invite PASS,
+  Auth/data actions0, page errors0. This is static publication evidence only.
+  Local evidence: D:/projects/finapp/.runtime/pages-2d73f13/public-smoke.json.
+  artifact.tar SHA256:
+  19260403b2d355cbd7842b8aa98d4253cfba24b18d31ae8f8635bbadebfc7996.
+- Stage6 PR25/main82934d2 previously merged and static-verified. Preserved
+  backups: D:/projects/finapp/.runtime/pages-ff0ed16/ and
+  D:/projects/finapp/.runtime/pages-82934d2/. No rollback or cleanup executed;
+  rollback window remains open. Never replay Stage6/7 releases from old text.
+- Stage8 local checks PASS: root248, Rules126, migration570, preflight5,
+  Rules TypeScript; Functions344unit/224emulator on Node22; installs, lint,
+  types and builds. Inventory self-test11 PASS and required in CI.
+  Frozen browser helper full PASS:13 contexts, pageErrors0, token URL/storage
+  leaks0. One known legacy currency request hard-blocked; live actions0.
+  Evidence: docs/remediation/evidence/SEC-006-stage8/ (artifact hashes/screenshot).
+  Production source/Rules/indexes/lockfiles unchanged.
+- Independent preliminary /root/stage7_review found and verified fixes for
+  inventory redirects, CLI auth fallback, Windows environment casing and safe
+  browser diagnostic handling. Final REVIEWED_HEAD record pending commit.
+- Current cloud Functions/Rules/index/Auth configuration and rollback readiness
+  are UNKNOWN. No live Firebase inventory/deploy/email authorized or performed.
+  Owner supplied a private mailbox for the future email package; that is not
+  email-sending authorization and the address must not enter public evidence.
+- Next: independent exact-commit review, Draft PR/CI, then request only the
+  read-only staging inventory package in runbooks/SEC-006-stage8-staging-inventory.md.
+  Resolve current local HEAD and PR headRefOid; they must match reviewed delivery
+  code and green CI. The final approval message supplies exact SHA and new path.
+  Merge triggers Pages and needs its own package approval. Do not run existing
+  stagingVerify live harness under read-only approval (it writes/deletes fixtures).
+  Firebase deploy --dry-run may enable APIs and is not a read-only preflight.
+- SEC006 remains OPEN. Phase1 is copy-link with Firebase verification;
+  actual mailbox/link and live release criteria remain. General legacy
+  Auth/state weaknesses belong to SEC008/009/STATE001 and members Rules SEC011.
+  Do not advance through an unmet gate or claim production readiness.
 
-Resume: inspect actual diff, GitHub and current checkpoint. Do not replay past
-external operations. Local emulators/Vite are temporary; verify ports before use.
+Resume: inspect actual diff, GitHub and this checkpoint. Local emulators are
+temporary; verify processes/ports before reuse. Do not replay external actions.
