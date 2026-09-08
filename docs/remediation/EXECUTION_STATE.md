@@ -140,9 +140,10 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   `x-goog-user-project`; all other metadata requests retain the header. Review
   found firebase-tools can inject the header from GOOGLE_CLOUD_QUOTA_PROJECT;
   the Billing request must also set its exact `ignoreQuotaProject` option.
-- Current task: review and CI the narrow preflight transport fix, then resume
-  package265d552 from a fresh exact-HEAD artifact/preflight sequence. Because
-  code HEAD changes, regenerate the private approval bindings before writes.
+- At this checkpoint the next task was review/CI of the narrow preflight
+  transport fix, then resumption of package `265d552` from a fresh exact-HEAD
+  artifact/preflight sequence. The later deployment checkpoint below supersedes
+  this historical next-action note.
 
 ## 2026-09-08 staging deployment checkpoint
 
