@@ -47,6 +47,34 @@ const jsonHash = value => sha256(JSON.stringify(value))
 const clone = value => structuredClone(value)
 const frozen = value => Object.freeze(clone(value))
 const verifiedSessionProofs = new WeakSet()
+const privateRecoveryByJournal = new WeakMap()
+
+const forbiddenPrivateRecoveryKey = /(?:authorization|cookie|password|secret|provider(?:body|error|payload|response)|raw(?:capability|invite|token))/i
+const forbiddenPrivateRecoveryText = /(?:bearer\s+|eyJ[a-zA-Z0-9_-]{8,}\.|[?&](?:oobCode|token|key|password)=|[^\s@]+@[^\s@]+\.[^\s@]+)/i
+
+/** Recovery output deliberately contains generated idempotency keys, while
+ * still rejecting credentials, raw invite capabilities and provider data. */
+export function assertPrivateRecoveryMaterial(value) {
+  const visit = (node, key = '') => {
+    if (forbiddenPrivateRecoveryKey.test(key)) {
+      const safeHash = /Sha256$/.test(key) && hex64(node)
+      if (!safeHash) blocked()
+    }
+    if (typeof node === 'string' && forbiddenPrivateRecoveryText.test(node)) blocked()
+    if (Array.isArray(node)) return node.forEach(item => visit(item))
+    if (record(node)) for (const [childKey, child] of Object.entries(node)) visit(child, childKey)
+  }
+  visit(value)
+  return true
+}
+
+export function readPrivateExecutorRecovery(journal) {
+  const value = privateRecoveryByJournal.get(journal)
+  if (!value) blocked()
+  const result = clone(value)
+  assertPrivateRecoveryMaterial(result)
+  return frozen(result)
+}
 
 function freshObservedAt(value, floor, ceiling) {
   if (!iso(value)) blocked()
@@ -445,6 +473,16 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
   if (!journal || typeof journal.append !== 'function' || typeof journal.bytes !== 'function' || typeof journal.events !== 'function' ||
       !cooldownGate || typeof cooldownGate.start !== 'function' || typeof cooldownGate.wait !== 'function' || typeof cooldownGate.isReady !== 'function') blocked()
   const state = initialState(initial)
+  const recovery = {
+    version: 1, runId: state.runId, mailboxSha256: state.mailboxSha256,
+    authSubjects: { ownerASubjectSha256: state.ownerASubjectSha256, ownerBSubjectSha256: state.ownerBSubjectSha256 },
+    lifecycle: 'CREATED', fixtureSlots: Object.fromEntries(FIXTURE_MUTATION_SLOT_SPECS.map((spec, index) => [spec.slot, {
+      index, callable: spec.callable, disposition: spec.disposition, state: 'NOT_STARTED',
+    }])),
+    readOnlySlots: Object.fromEntries(READ_ONLY_SLOT_SPECS.map(spec => [spec.slot, { callable: spec.callable, state: 'NOT_STARTED' }])),
+    verificationEmail: { state: 'NOT_STARTED' }, state: clone(state),
+  }
+  privateRecoveryByJournal.set(journal, recovery)
   let started = false, nextSlot = 0, nextReadOnlySlot = 0, emailCompleted = false, emailOutcomeSha256 = null
   let verificationChallengeSha256 = null, verifiedSessionProofSha256 = null, plan = null, acceptanceVerified = false
   const appendFailure = code => { journal.append('FAILED', { failureCode: code }) }
@@ -457,6 +495,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       journal.append('PRECONDITIONS_VERIFIED')
       journal.append('PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED', { envelopeSha256: jsonHash(envelope) })
       journal.append('SCENARIOS_RUNNING')
+      recovery.lifecycle = 'SCENARIOS_RUNNING'
       started = true
       return receipt
     },
@@ -473,6 +512,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       const totalCallableCount = progress.total + (spec.callable === null ? 0 : 1)
       const may = { index: nextSlot, slot, callCount: nextSlot + 1, callable: spec.callable, callableCount, totalCallableCount, requestSha256 }
       journal.append('FIXTURE_MUTATION_MAY_BE_SENT', may)
+      recovery.fixtureSlots[slot] = { ...recovery.fixtureSlots[slot], state: 'MAY_BE_SENT', requestSha256, binding: clone(binding) }
       let dispatched
       try {
         dispatched = safeDispatchResult(await dispatch(frozen({ ...may, binding: clone(binding), journalBytes: journal.bytes() })), requestSha256)
@@ -484,6 +524,10 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
           callableCount: may.callableCount, totalCallableCount: may.totalCallableCount,
           disposition: spec.disposition, outcomeSha256: dispatched.outcomeSha256, readbackSha256: reconciled.readbackSha256,
         })
+        recovery.fixtureSlots[slot] = { ...recovery.fixtureSlots[slot], state: 'RECONCILED', requestSha256,
+          binding: clone(binding), outcomeSha256: dispatched.outcomeSha256, readbackSha256: reconciled.readbackSha256,
+          produced: clone(reconciled.produced) }
+        recovery.state = clone(state)
       } catch {
         const outcomeSha256 = dispatched?.outcomeSha256 ?? sha256(`uncertain:${slot}:${requestSha256}`)
         try {
@@ -492,6 +536,9 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
           })
           appendFailure('FIXTURE_MUTATION_UNCERTAIN')
         } catch { /* retain the last bytes that did reach fsync */ }
+        recovery.fixtureSlots[slot] = { ...recovery.fixtureSlots[slot], state: 'UNCERTAIN', requestSha256,
+          binding: clone(binding), outcomeSha256 }
+        recovery.lifecycle = 'RECOVERY_REQUIRED'
         throw new Error('live_executor_blocked')
       }
       if (slot === 'denyMailboxResendCooldown') cooldownGate.start()
@@ -510,6 +557,8 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       const bindingSha256 = jsonHash({ slot, callable, binding: validatedBinding })
       const may = { callable, callableCount, totalCallableCount, requestSha256, bindingSha256 }
       journal.append('CALLABLE_REQUEST_MAY_BE_SENT', may)
+      recovery.readOnlySlots[slot] = { ...recovery.readOnlySlots[slot], state: 'MAY_BE_SENT', requestSha256,
+        binding: clone(validatedBinding), bindingSha256 }
       let dispatched
       try {
         dispatched = safeDispatchResult(await dispatch(frozen({ ...may, slot, binding: clone(validatedBinding), journalBytes: journal.bytes() })), requestSha256)
@@ -518,12 +567,18 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
         if (Object.keys(reconciled.produced).length !== 0) blocked()
         journal.append('CALLABLE_REQUEST_RECONCILED', { callable, callableCount, totalCallableCount, bindingSha256,
           outcomeSha256: dispatched.outcomeSha256, readbackSha256: reconciled.readbackSha256 })
+        recovery.readOnlySlots[slot] = { ...recovery.readOnlySlots[slot], state: 'RECONCILED', requestSha256,
+          binding: clone(validatedBinding), bindingSha256, outcomeSha256: dispatched.outcomeSha256,
+          readbackSha256: reconciled.readbackSha256 }
       } catch {
         const outcomeSha256 = dispatched?.outcomeSha256 ?? sha256(`uncertain:${callable}:${requestSha256}`)
         try {
           journal.append('CALLABLE_REQUEST_UNCERTAIN', { callable, callableCount, totalCallableCount, bindingSha256, outcomeSha256 })
           appendFailure('CALLABLE_REQUEST_UNCERTAIN')
         } catch { /* retain the last bytes that did reach fsync */ }
+        recovery.readOnlySlots[slot] = { ...recovery.readOnlySlots[slot], state: 'UNCERTAIN', requestSha256,
+          binding: clone(validatedBinding), bindingSha256, outcomeSha256 }
+        recovery.lifecycle = 'RECOVERY_REQUIRED'
         throw new Error('live_executor_blocked')
       }
       nextReadOnlySlot++
@@ -533,14 +588,18 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       requireStarted()
       if (nextSlot !== 12 || emailCompleted || !hex64(requestSha256) || typeof dispatch !== 'function') blocked()
       journal.append('EMAIL_REQUEST_MAY_BE_SENT', { requestSha256 })
+      recovery.verificationEmail = { state: 'MAY_BE_SENT', requestSha256 }
       try {
         const result = safeEmailDispatchResult(await dispatch(frozen({ requestSha256, journalBytes: journal.bytes() })), requestSha256)
         journal.append('EMAIL_SENT', { outcomeSha256: result.outcomeSha256 })
+        recovery.verificationEmail = { state: 'SENT', requestSha256, outcomeSha256: result.outcomeSha256 }
         emailCompleted = true; emailOutcomeSha256 = result.outcomeSha256
         return frozen({ sent: true, outcomeSha256: result.outcomeSha256 })
       } catch {
         const outcomeSha256 = sha256(`uncertain:verification:${requestSha256}`)
         try { journal.append('EMAIL_UNCERTAIN', { outcomeSha256 }); appendFailure('EMAIL_UNCERTAIN') } catch { /* retain synced evidence */ }
+        recovery.verificationEmail = { state: 'UNCERTAIN', requestSha256, outcomeSha256 }
+        recovery.lifecycle = 'RECOVERY_REQUIRED'
         throw new Error('live_executor_blocked')
       }
     },
@@ -591,6 +650,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       const targets = buildCleanupTargets(plan, validated.observedDynamic)
       const cleanupPlanSha256 = jsonHash(targets)
       journal.append('CLEANUP_DEFERRED', { cleanupPlanSha256 })
+      recovery.lifecycle = 'COMPLETE'
       return frozen({ status: 'CLEANUP_PLAN_ONLY', executionEnabled: false, cleanupPerformed: false, cleanupPlanSha256, targets })
     },
     snapshot() { return frozen({ nextSlot, nextReadOnlySlot, emailCompleted, verifiedSessionMarked: Boolean(verifiedSessionProofSha256), planMaterialized: Boolean(plan), state }) },

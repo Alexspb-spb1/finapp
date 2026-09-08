@@ -22,7 +22,7 @@ export function createFixedLiveScenarioOperations({ authAdapter, callablePrimiti
   if (!authAdapter || typeof authAdapter.slot !== 'function' || !callablePrimitive ||
       typeof callablePrimitive.prepare !== 'function' || typeof callablePrimitive.dispatchPrepared !== 'function' ||
       !reconciler || typeof reconciler.reconcile !== 'function' || typeof reconciler.captureBefore !== 'function' ||
-      typeof reconciler.readReplayProof !== 'function' ||
+      typeof reconciler.readReplayProof !== 'function' || typeof reconciler.registerIdempotencyMaterial !== 'function' ||
       !exactKeys(normalPath, ['prepare', 'dispatch', 'ownerMailboxUid', 'clearClipboard']) ||
       Object.values(normalPath).some(value => typeof value !== 'function') ||
       !exactKeys(secrets, ['mailbox', 'ownerAEmail', 'ownerBEmail', 'idempotencyA', 'idempotencyB']) ||
@@ -98,6 +98,10 @@ export function createFixedLiveScenarioOperations({ authAdapter, callablePrimiti
           return { requestSha256: result.requestSha256, binding }
         }
         handle = callablePrimitive.prepare({ callable, identity, input })
+        if (['createCompanyA', 'createCompanyB'].includes(slot)) {
+          reconciler.registerIdempotencyMaterial({ slot, identity, actorUid: binding.actorUid,
+            requestSha256: handle.requestSha256, callable, input })
+        }
         return { requestSha256: handle.requestSha256, binding }
       },
       async dispatch(permit, bind) {

@@ -1,6 +1,6 @@
 # SEC-006 Stage 8 — live staging invitation and real-email acceptance
 
-Status: **LOCAL EXECUTOR VALIDATED — AUTH-SHAPE DISCOVERY PASSED; LIVE FIXTURES/EMAIL NOT AUTHORIZED**.
+Status: **LOCAL REVIEW REMEDIATION VALIDATED — INDEPENDENT RE-REVIEW/EXACT-HEAD CI PENDING; LIVE FIXTURES/EMAIL NOT AUTHORIZED**.
 
 This package is the behavioral staging gate that follows the completed backend
 deployment and the read-only mailbox discovery. It targets only
@@ -146,11 +146,15 @@ only in memory. After the owner reports completion, that tab executes its normal
 The private journal is created with `wx`, restrictive permissions and a full
 fsync after every state transition. Each possible mutation has a durable
 `MAY_BE_SENT` event before dispatch and a read-only reconciliation event after
-the response. It retains run-scoped IDs, safe hashes, timestamps, update-time
-preconditions, disposition and counters. It excludes mailbox, passwords, raw
-invitation/OOB/ID/refresh tokens, provider bodies and raw errors. The public
-result contains only counts, PASS/blocked state, artifact hashes and zero-leak
-counters.
+the response. Together with the private `--out` recovery manifest, it retains
+the exact run-scoped Auth/Firestore/audit IDs, raw generated `createCompany`
+idempotency material, safe hashes, create/update timestamps, CAS preconditions,
+dispositions and counters needed for later reconciliation or cleanup. The
+private output is written with `wx`, complete-write checks and fsync on both
+`SUCCESS` and ordinary `RECOVERY_REQUIRED` safe stops. Both artifacts exclude
+the mailbox, passwords, raw invitation/OOB/ID/refresh tokens, provider bodies
+and raw errors. The returned public result contains only counts, PASS/blocked
+state and artifact/evidence hashes.
 
 Safe-stop conditions include HEAD/PR/CI/artifact/resource/config drift, active
 maintenance, mailbox or fixture collision, unexpected endpoint/callable/data,
@@ -214,3 +218,44 @@ protobuf-default `false` field; a sanitized field-presence probe confirmed that
 shape, the validator was narrowed to that documented omission, and the clean
 retry passed. All three invocations were read-only and emitted no provider
 body, domain, mailbox, credentials or token.
+
+## Independent-review remediation checkpoint
+
+The first independent review of clean checkpoint HEAD
+`337016d29e3f53dced939c03141f7369ba295856` returned `CHANGES REQUIRED` on
+three remaining gaps: six unconditional scenario PASS rows without the claimed
+UI observations, fail-open clipboard cleanup without a real admin copy-link
+check, and no durable private recovery/cleanup manifest with exact recovery
+material.
+
+The corrected local tree now:
+
+- creates the first mailbox invitation through the actual owner-A admin UI,
+  validates the displayed link and clipboard value, immediately clears the
+  clipboard and proves an empty readback; missing Clipboard API is a hard stop;
+- permits the one synthetic empty invitation-list bootstrap only after a fresh
+  exact Firestore query proves zero Company-A invitations, while the post-create
+  list request is sent to the real callable and reconciled through the journal;
+- records 11 typed Playwright evidence rows for admin/viewer/accountant UI,
+  company switching, direct `/users` denial, offline/online recovery, two-tab
+  logout and mailbox reload, then derives each of the six scenario PASS rows
+  from both backend and required UI evidence;
+- preserves the verified mailbox page until all post-fixture UI checks finish;
+- writes the private recovery manifest on success and ordinary safe-stop paths,
+  including all 16 fixture slots, all 14 read-only slots, verification-email
+  state, exact resource/audit paths and IDs, generated idempotency inputs,
+  timestamps, CAS cleanup preconditions and deferred cleanup dispositions.
+
+Current local checks after these corrections: aggregate live executor 70/70,
+adapters 13/13, runtime 11/11, Playwright 24/24, loopback 7/7, root unit
+248/248, Rules 126/126, migration 570/570, Functions unit 354/354 and Functions
+emulator 224/224. Root/Functions lint, typecheck and builds pass; root lint keeps
+the pre-existing `Balance.tsx` hook warning. The first Rules command selected
+the system Java 17 and stopped before tests; the required rerun explicitly put
+the retained portable JRE 21 first in `PATH` and passed.
+
+These results remain local evidence on an uncommitted tree. A clean commit,
+independent `PASS`, matching PR head and successful exact-head `ci` plus
+`functions` checks are still required before generating the private section-8
+execution package. No live fixture, verification email, cleanup, production,
+merge or Pages action was performed by this remediation.

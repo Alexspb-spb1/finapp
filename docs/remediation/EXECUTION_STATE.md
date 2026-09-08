@@ -268,3 +268,43 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   `customized`, and a clean retry passed. The final static adapter marker is
   removed. Live fixture writes, the verification email, cleanup, production,
   merge and Pages remain unexecuted and unauthorized under this checkpoint.
+
+## 2026-09-08 final Stage 8 review remediation checkpoint
+
+- Independent review of clean HEAD
+  `337016d29e3f53dced939c03141f7369ba295856` returned `CHANGES REQUIRED` for
+  three issues: unconditional scenario PASS rows without real UI evidence,
+  fail-open clipboard handling without a real admin copy-link check, and no
+  durable private recovery/cleanup manifest with exact recovery material.
+- The current local tree fixes all three. The first mailbox invite is driven
+  through the actual owner-A admin UI after a full exact Firestore query proves
+  Company A has zero invitations. The initial empty list may then be supplied
+  locally, but the post-create `listInvitations` request is real, journal-gated
+  and semantically reconciled. The displayed link and clipboard are checked;
+  clipboard clearing and empty readback are mandatory.
+- Eleven typed Playwright observations now cover owner-A admin UI, owner-B
+  admin/viewer company switching, direct `/users` denial, offline/online
+  recovery, restored admin context, two-tab logout, mailbox accountant UI and
+  mailbox reload. Six scenario PASS rows are derived from backend evidence and
+  the required UI rows. The already verified mailbox page is borrowed without
+  credential access and retained until those checks finish.
+- Private `--out` now includes a validated recovery manifest for `SUCCESS` and
+  ordinary `RECOVERY_REQUIRED` safe stops: all 16 fixture states, all 14
+  read-only states, email state, exact UIDs/document/audit paths, generated
+  create-company idempotency inputs, create/update timestamps, CAS
+  preconditions and deferred cleanup targets. Public output retains only safe
+  UI rows and hashes.
+- Current full local matrix PASS: root unit 248/248; Rules 126/126; migration
+  570/570; Functions unit 354/354; Functions emulator 224/224; aggregate live
+  executor 70/70; adapters 13/13; runtime 11/11; Playwright 24/24; loopback
+  7/7; staging preflight 5/5; auth-template discovery 5/5. Root/Functions lint,
+  typecheck and builds PASS; root lint retains only the pre-existing
+  `Balance.tsx` warning; `git diff --check` PASS. The first Rules attempt found
+  system Java 17 and stopped before tests; the explicit portable-JRE-21 rerun
+  passed.
+- Worktree is intentionally dirty pending this documentation update and commit.
+  Next gates: clean commit, independent re-review, push, exact PR-head equality,
+  exact-head `ci` and `functions` success, then a concrete private section-8
+  live execution package. Live staging fixture writes, the verification email,
+  cleanup, production, PR27 merge and Pages remain unperformed and are not
+  authorized by this checkpoint.

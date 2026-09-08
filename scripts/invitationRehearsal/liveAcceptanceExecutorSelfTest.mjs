@@ -7,9 +7,9 @@ import { createHash } from 'node:crypto'
 import { CALLABLE_CAPS, FIXTURE_MUTATION_SLOT_SPECS, READBACK_CHECKS, TRANSPORT_CAPS } from './liveAcceptanceCore.mjs'
 import {
   ACTIVE_RULES_SHA256, FIELD_OVERRIDES_SHA256, LIVE_FUNCTIONS, READ_ONLY_SLOT_SPECS,
-  createDurableLiveJournal, createLiveStagingExecutor, createRealCooldownGate,
+  assertPrivateRecoveryMaterial, createDurableLiveJournal, createLiveStagingExecutor, createRealCooldownGate,
   createVisibleOwnerHandoff, runFreshLivePreflight, validateAcceptanceObservationBundle,
-  validateExecutorStateAliases,
+  validateExecutorStateAliases, readPrivateExecutorRecovery,
 } from './liveAcceptanceExecutorCore.mjs'
 
 const h = value => createHash('sha256').update(value).digest('hex')
@@ -337,6 +337,12 @@ test('executor orders exact slot commitments, enforces cooldown and emits cleanu
   assert.deepEqual(cleanup.targets.destructive.authUids, ['uid_owner_a', 'uid_owner_b'])
   assert.equal(cleanup.targets.destructive.authUids.includes('uid_owner_subject'), false)
   assert.equal(journal.events().at(-1).status, 'CLEANUP_DEFERRED')
+  const recovery = readPrivateExecutorRecovery(journal)
+  assert.equal(recovery.lifecycle, 'COMPLETE')
+  assert.equal(Object.keys(recovery.fixtureSlots).length, FIXTURE_MUTATION_SLOT_SPECS.length)
+  assert.equal(Object.values(recovery.fixtureSlots).every(row => row.state === 'RECONCILED'), true)
+  assert.equal(Object.values(recovery.readOnlySlots).every(row => row.state === 'RECONCILED'), true)
+  assert.equal(recovery.verificationEmail.state, 'SENT')
   journal.close()
 })
 
@@ -360,6 +366,10 @@ test('executor fails closed on slot/body/ID drift and observation replay changes
   }).then(() => assert.fail('altered readback must be terminal'), () => {})
   assert.equal(journal.events().at(-2).status, 'FIXTURE_MUTATION_UNCERTAIN')
   assert.equal(journal.events().at(-1).status, 'FAILED')
+  const uncertainRecovery = readPrivateExecutorRecovery(journal)
+  assert.equal(uncertainRecovery.lifecycle, 'RECOVERY_REQUIRED')
+  assert.equal(uncertainRecovery.fixtureSlots.createOwnerAAuth.state, 'UNCERTAIN')
+  assert.equal(uncertainRecovery.fixtureSlots.createCompanyA.state, 'NOT_STARTED')
 
   const fakePlan = { version: 0 }
   assert.throws(() => validateAcceptanceObservationBundle(fakePlan, {}, {}, []))
@@ -396,4 +406,16 @@ test('executor fails closed on slot/body/ID drift and observation replay changes
   assert.equal(aliasJournal.events().at(-2).status, 'FIXTURE_MUTATION_UNCERTAIN')
   assert.equal(aliasJournal.events().at(-1).status, 'FAILED')
   aliasJournal.close()
+})
+
+test('private recovery safety rejects credentials, provider errors and raw capabilities', () => {
+  assert.equal(assertPrivateRecoveryMaterial({ idempotencyKey: 'idem-safe-1234567890', capabilitySha256: h('capability') }), true)
+  for (const value of [
+    { password: 'synthetic-password' },
+    { providerBody: { opaque: true } },
+    { providerError: 'permission denied' },
+    { rawCapability: 'raw-invite-capability' },
+    { value: 'owner@example.invalid' },
+    { value: 'Bearer opaque-credential' },
+  ]) assert.throws(() => assertPrivateRecoveryMaterial(value))
 })

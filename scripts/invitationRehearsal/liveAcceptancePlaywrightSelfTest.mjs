@@ -5,7 +5,9 @@ import { FIXTURE_MUTATION_SLOT_SPECS, SCENARIO_NAMES } from './liveAcceptanceCor
 import { READ_ONLY_SLOT_SPECS } from './liveAcceptanceExecutorCore.mjs'
 import {
   PLAYWRIGHT_LIVE_MISSING_BINDINGS, SIX_SCENARIO_SCHEDULE,
-  createBoundedVisiblePlaywrightSessionFactory, createHeldPlaywrightRequestBridge, createSixScenarioComposer,
+  LIVE_PLAYWRIGHT_UI_STEPS, createAdminInvitationPlaywrightDriver, createBoundedVisiblePlaywrightSessionFactory,
+  createHeldPlaywrightRequestBridge, createPostFixturePlaywrightUiVerifier, createSixScenarioComposer,
+  validateLivePlaywrightUiEvidence,
 } from './liveAcceptancePlaywrightCore.mjs'
 
 const h = value => createHash('sha256').update(value).digest('hex')
@@ -69,7 +71,8 @@ function harness({ failSlot = null } = {}) {
   const operation = slot => ({
     mode: ['createOwnerAAuth', 'createOwnerBAuth'].includes(slot) ? 'provider-admin'
       : slot === 'createOwnerMailboxAuth' ? 'owner-handoff'
-      : ['acceptMailboxFinalInvite', 'mailboxCompanyAAccountant'].includes(slot) ? 'held-normal-path' : 'bound-callback',
+      : ['createMailboxCancelledInvite', 'acceptMailboxFinalInvite', 'listCancelledPending', 'mailboxCompanyAAccountant'].includes(slot)
+        ? 'held-normal-path' : 'bound-callback',
     async prepare() {
       // Referencing closure-owned secrets proves they exist during the run;
       // only hashes and semantic labels cross the adapter boundary.
@@ -379,4 +382,212 @@ test('bounded Playwright factory rejects any alternate static origin', () => {
     requestBridge: { attach: method, prepare: method, release: method, takePreparedNormal: method, confirmVerifiedSession: method },
     localStaticOrigin: 'http://localhost:5177',
   }))
+})
+
+function adminUiHarness({ clipboardMode = 'ok', bootstrapCompanyId = 'company_a' } = {}) {
+  let pageRoute, linkVisible = false, copied = false, closed = 0, fulfilled = 0, aborted = 0, binds = 0
+  const inviteBody = JSON.stringify({ data: { companyId: 'company_a', email: 'private@example.invalid', role: 'accountant' } })
+  const listBody = JSON.stringify({ data: { companyId: bootstrapCompanyId, pageSize: 20 } })
+  const response = kind => ({ status: () => 200, kind })
+  const route = (kind, url, body) => {
+    const request = { method: () => 'POST', url: () => url, postData: () => body, async response() { return response(kind) } }
+    return { request: () => request, async fallback() {}, async abort() { aborted++ },
+      async fulfill(options) {
+        fulfilled++
+        assert.deepEqual(options, { status: 200, contentType: 'application/json', body: JSON.stringify({ data: { items: [], nextCursor: null } }) })
+      },
+      async continue() {
+        if (kind === 'invite') {
+          linkVisible = true
+          void pageRoute(route('list', 'https://us-central1-finapp-staging.cloudfunctions.net/listInvitations',
+            JSON.stringify({ data: { companyId: 'company_a', pageSize: 20 } })))
+        }
+      } }
+  }
+  const locator = (kind, name = '') => ({
+    async waitFor() {
+      if (kind === 'link-field' && !linkVisible) throw new Error('link-not-visible')
+      if (kind === 'copied' && !copied) throw new Error('copy-not-complete')
+    },
+    async click() {
+      if (kind === 'create') await pageRoute(route('invite', 'https://us-central1-finapp-staging.cloudfunctions.net/inviteMember', inviteBody))
+      if (kind === 'copy') copied = true
+      if (kind === 'close') linkVisible = false
+    },
+    async selectOption(value) { assert.equal(kind, 'combobox'); assert.equal(value, 'accountant') },
+    async count() { return kind === 'link-field' && linkVisible ? 1 : 0 },
+    getByLabel(label) {
+      assert.equal(kind, 'dialog')
+      if (label === 'Email') return locator('email')
+      if (label === 'Ссылка') return locator('link-field')
+      throw new Error('unexpected-label')
+    },
+    getByRole(role, options = {}) {
+      assert.equal(kind, 'dialog')
+      if (role === 'combobox') return locator('combobox')
+      if (options.name === 'Создать приглашение') return locator('create')
+      if (options.name === 'Копировать ссылку') return locator('copy')
+      if (options.name === 'Скопировано') return locator('copied')
+      if (options.name === 'Закрыть') return locator('close')
+      throw new Error('unexpected-dialog-role')
+    },
+  })
+  const page = {
+    setDefaultTimeout() {}, async route(_glob, handler) { pageRoute = handler },
+    async goto(url) {
+      if (url.endsWith('#/users')) await pageRoute(route('bootstrap',
+        'https://us-central1-finapp-staging.cloudfunctions.net/listInvitations', listBody))
+    },
+    async waitForURL() {},
+    getByRole(role, options = {}) {
+      if (role === 'region') return locator('region')
+      if (role === 'dialog') return locator('dialog')
+      if (role === 'button' && options.name === 'Пригласить по email') return locator('invite-open')
+      throw new Error('unexpected-page-role')
+    },
+    async evaluate(_callback, argument) {
+      if (argument) {
+        if (clipboardMode === 'missing') throw new Error('clipboard-unavailable')
+        return { clipboardApi: true, displayedMatched: clipboardMode !== 'mismatch', linkShapeMatched: true,
+          capabilityMatched: true, linkSha256: h('private-link'), cleared: true, clearReadbackMatched: true }
+      }
+    },
+  }
+  const context = { async route() {}, async newPage() { return page }, async close() { closed++ } }
+  const browser = { async newContext(options) {
+    assert.deepEqual(options.permissions, ['clipboard-read', 'clipboard-write']); return context
+  }, async close() { closed++ } }
+  const driver = createAdminInvitationPlaywrightDriver({
+    chromium: { async launch(options) { assert.deepEqual(options, { headless: false }); return browser } },
+    browserBinder: { async bind() { binds++; return { action: 'continue' } } },
+    secretActions: { async signInOwnerA() { return { signedIn: true } },
+      async fillInviteMailbox(_page, field) { assert.equal(typeof field.click, 'function'); return { filled: true } } },
+    summarizeInvitation: async (received, meta) => {
+      assert.equal(received.kind, 'invite')
+      return { requestSha256: meta.requestSha256, outcomeSha256: h('invite-outcome'), sanitized: {
+        disposition: 'SUCCESS', inviteId: 'invite_cancelled', capabilitySha256: h('private-token'), expiresAtUtc: '2026-09-15T00:00:00.000Z' } }
+    },
+    summarizeList: async (received, meta) => {
+      assert.equal(received.kind, 'list')
+      return { requestSha256: meta.requestSha256, outcomeSha256: h('list-outcome'),
+        sanitized: { disposition: 'SUCCESS', itemCount: 1, itemsSha256: h('items'), nextCursorPresent: false } }
+    },
+    waitTimeoutMs: 30,
+  })
+  return { driver, counts: () => ({ fulfilled, aborted, binds, closed }) }
+}
+
+test('admin UI driver locally bootstraps one verified-empty list, journals invite, verifies copy, and holds real listed readback', async () => {
+  const value = adminUiHarness()
+  await value.driver.open()
+  const prepared = await value.driver.prepareCancelledInvitation({ companyId: 'company_a' })
+  const invited = await value.driver.dispatchCancelledInvitation(prepared)
+  assert.equal(invited.sanitized.inviteId, 'invite_cancelled')
+  const listedPrepared = await value.driver.takePreparedPostCreateList()
+  const listed = await value.driver.dispatchPostCreateList(listedPrepared)
+  assert.equal(listed.sanitized.itemCount, 1)
+  const evidence = value.driver.readEvidence()
+  assert.equal(evidence.step, 'admin-copy-link'); assert.match(evidence.observationSha256, /^[a-f0-9]{64}$/)
+  assert.equal(evidence.initialListSource, 'verified-empty-local-bootstrap')
+  assert.deepEqual(value.counts(), { fulfilled: 1, aborted: 0, binds: 2, closed: 0 })
+  assert.equal(JSON.stringify({ invited, listed, evidence }).includes('private@example.invalid'), false)
+  await value.driver.close()
+  assert.equal(value.counts().closed, 2)
+})
+
+test('admin UI driver blocks missing clipboard API, readback mismatch, and unmatched bootstrap company', async t => {
+  for (const clipboardMode of ['missing', 'mismatch']) await t.test(clipboardMode, async () => {
+    const value = adminUiHarness({ clipboardMode })
+    await value.driver.open()
+    const prepared = await value.driver.prepareCancelledInvitation({ companyId: 'company_a' })
+    await assert.rejects(() => value.driver.dispatchCancelledInvitation(prepared))
+    assert.equal(value.counts().closed, 2)
+    assert.throws(() => value.driver.readEvidence())
+  })
+  const wrong = adminUiHarness({ bootstrapCompanyId: 'company_other' })
+  await wrong.driver.open()
+  await assert.rejects(() => wrong.driver.prepareCancelledInvitation({ companyId: 'company_a' }))
+  assert.equal(wrong.counts().aborted, 1)
+})
+
+function postUiHarness() {
+  let browserClosed = 0, contextClosed = 0, borrowedClosed = 0
+  const signIns = []
+  class FakeContext {
+    constructor(borrowed = false) { this.identity = null; this.company = null; this.offline = false; this.pages = []; this.borrowed = borrowed }
+    async route() {}
+    async newPage() { const value = new FakePage(this); this.pages.push(value); return value }
+    async setOffline(value) { this.offline = value }
+    async close() { if (this.borrowed) borrowedClosed++; else contextClosed++ }
+  }
+  class FakePage {
+    constructor(context) { this.context = context; this.path = '/login'; this.url = '' }
+    setDefaultTimeout() {}
+    isClosed() { return false }
+    async evaluate(_callback, expected) { return expected === 'http://127.0.0.1:5177' }
+    role() { return this.context.identity === 'ownerA' || this.context.identity === 'ownerB' && this.context.company === 'b' ? 'admin'
+      : this.context.identity === 'ownerB' ? 'viewer' : 'accountant' }
+    async goto(url) { this.url = url; this.path = url.split('#')[1] ?? '/'; return null }
+    async waitForURL(url) { if (this.url !== url) throw new Error('wrong-url') }
+    async reload() { if (this.context.offline) throw new Error('offline'); return null }
+    getByTitle(title) { return { click: async () => {
+      assert.equal(title, 'Выйти')
+      for (const page of this.context.pages) { page.path = '/login'; page.url = 'http://127.0.0.1:5177/finapp/#/login' }
+    } } }
+    getByText(text) {
+      const present = text.startsWith('Режим только для чтения') ? this.role() === 'viewer'
+        : text.startsWith('Управление пользователями') && this.path === '/users' && this.role() !== 'admin'
+      return { count: async () => present ? 1 : 0, waitFor: async () => { if (!present) throw new Error('text-not-visible') } }
+    }
+    getByRole(role, options = {}) {
+      const name = options.name
+      const count = () => {
+        if (role === 'heading') return ({ '/': 'Дашборд', '/settings': 'Настройки', '/transactions': 'Операции' })[this.path] === name ? 1 : 0
+        if (role === 'link' && name === 'Пользователи') return this.role() === 'admin' ? 1 : 0
+        if (role === 'button' && name === 'Сохранить') return this.path === '/settings' && this.role() === 'admin' ? 1 : 0
+        if (role === 'button' && name === 'Пригласить по email') return 0
+        if (role === 'button' && name === 'Добавить') return this.path === '/transactions' && this.role() === 'accountant' ? 1 : 0
+        if (role === 'button' && [this.context.company === 'a' ? 'Stage8 Company A' : 'Stage8 Company B', 'Stage8 Company A', 'Stage8 Company B'].includes(name)) return 1
+        return 0
+      }
+      return { count: async () => count(), waitFor: async () => { if (count() < 1) throw new Error('role-not-visible') },
+        click: async () => { if (name === 'Stage8 Company A') this.context.company = 'a'; if (name === 'Stage8 Company B') this.context.company = 'b' } }
+    }
+  }
+  const browser = { async newContext() { return new FakeContext() }, async close() { browserClosed++ } }
+  const borrowedContext = new FakeContext(true)
+  borrowedContext.identity = 'ownerMailbox'; borrowedContext.company = 'a'
+  const borrowedPage = new FakePage(borrowedContext)
+  borrowedPage.path = '/'; borrowedPage.url = 'http://127.0.0.1:5177/finapp/#/'
+  borrowedContext.pages.push(borrowedPage)
+  const verifier = createPostFixturePlaywrightUiVerifier({
+    chromium: { async launch(options) { assert.deepEqual(options, { headless: false }); return browser } },
+    browserBinder: { async bind() { return { action: 'continue' } } },
+    secretActions: { async signIn(page, identity) {
+      assert.equal(['ownerA', 'ownerB'].includes(identity), true)
+      signIns.push(identity)
+      page.context.identity = identity; page.context.company = identity === 'ownerB' ? 'b' : 'a'
+      page.path = '/'; page.url = 'http://127.0.0.1:5177/finapp/#/'
+      return { signedIn: true }
+    } },
+    borrowVerifiedMailboxSession: async () => ({ page: borrowedPage, context: borrowedContext }),
+    waitTimeoutMs: 30,
+  })
+  return { verifier, signIns, counts: () => ({ browserClosed, contextClosed, borrowedClosed }) }
+}
+
+test('post-fixture verifier produces typed evidence for roles, switches, direct URL, offline recovery, reload, and two-tab logout', async () => {
+  const value = postUiHarness()
+  const result = await value.verifier.run()
+  assert.equal(result.status, 'UI_ACCEPTANCE_RECONCILED')
+  assert.equal(result.evidence.length, LIVE_PLAYWRIGHT_UI_STEPS.length - 1)
+  const copy = { step: 'admin-copy-link', status: 'PASS', observationSha256: h('copy-evidence'),
+    initialListSource: 'verified-empty-local-bootstrap' }
+  const validated = validateLivePlaywrightUiEvidence([copy, ...result.evidence])
+  assert.equal(validated.status, 'PASS'); assert.equal(validated.evidence.length, LIVE_PLAYWRIGHT_UI_STEPS.length)
+  assert.throws(() => validateLivePlaywrightUiEvidence(result.evidence))
+  assert.throws(() => validateLivePlaywrightUiEvidence([copy, copy, ...result.evidence.slice(1)]))
+  assert.deepEqual(value.signIns, ['ownerA', 'ownerB'])
+  await value.verifier.close()
+  assert.deepEqual(value.counts(), { browserClosed: 1, contextClosed: 2, borrowedClosed: 0 })
 })

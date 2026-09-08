@@ -327,6 +327,414 @@ export function createBoundedVisiblePlaywrightSessionFactory({
   return Object.freeze({ openSession, close: closeAll, missingBindings: PLAYWRIGHT_LIVE_MISSING_BINDINGS })
 }
 
+export const LIVE_PLAYWRIGHT_UI_STEPS = Object.freeze([
+  'admin-copy-link',
+  'owner-a-admin-ui',
+  'owner-b-company-b-admin-ui',
+  'owner-b-company-a-viewer-ui',
+  'owner-b-direct-url-denial',
+  'owner-b-offline-blocked',
+  'owner-b-online-recovered',
+  'owner-b-company-b-restored',
+  'owner-b-two-tab-logout',
+  'owner-mailbox-accountant-ui',
+  'owner-mailbox-reload-recovered',
+])
+
+const uiBounded = (promise, timeoutMs, onTimeout = () => {}) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { try { onTimeout() } finally { reject(new Error('live_playwright_adapter_blocked')) } }, timeoutMs)
+  Promise.resolve(promise).then(value => { clearTimeout(timer); resolve(value) }, error => { clearTimeout(timer); reject(error) })
+})
+
+const uiRow = (step, observation) => {
+  if (!LIVE_PLAYWRIGHT_UI_STEPS.includes(step) || !record(observation)) blocked()
+  assertNoSecretMaterial(observation)
+  const row = { step, status: 'PASS', observationSha256: sha256(JSON.stringify(observation)) }
+  if (step === 'admin-copy-link') {
+    if (observation.initialListSource !== 'verified-empty-local-bootstrap') blocked()
+    row.initialListSource = observation.initialListSource
+  }
+  return frozen(row)
+}
+
+export function validateLivePlaywrightUiEvidence(rows) {
+  if (!Array.isArray(rows) || rows.length !== LIVE_PLAYWRIGHT_UI_STEPS.length) blocked()
+  const byStep = new Map()
+  for (const row of rows) {
+    const keys = row?.step === 'admin-copy-link' ? ['step', 'status', 'observationSha256', 'initialListSource'] : ['step', 'status', 'observationSha256']
+    if (!exactKeys(row, keys) || !LIVE_PLAYWRIGHT_UI_STEPS.includes(row.step) ||
+        row.status !== 'PASS' || !hex64(row.observationSha256) || byStep.has(row.step)) blocked()
+    if (row.step === 'admin-copy-link' && row.initialListSource !== 'verified-empty-local-bootstrap') blocked()
+    byStep.set(row.step, row)
+  }
+  if (LIVE_PLAYWRIGHT_UI_STEPS.some(step => !byStep.has(step))) blocked()
+  const ordered = LIVE_PLAYWRIGHT_UI_STEPS.map(step => byStep.get(step))
+  return frozen({ status: 'PASS', evidence: ordered, evidenceSha256: sha256(JSON.stringify(ordered)) })
+}
+
+/**
+ * Drive the real owner-A invitation dialog for createMailboxCancelledInvite.
+ * The callable request is held until the durable executor permit exists. Raw
+ * link/token values remain in the page and the injected capability summarizer.
+ */
+export function createAdminInvitationPlaywrightDriver({
+  chromium, browserBinder, secretActions, summarizeInvitation, summarizeList,
+  localStaticOrigin = 'http://127.0.0.1:5177', waitTimeoutMs = 20_000,
+}) {
+  if (!chromium || typeof chromium.launch !== 'function' || !browserBinder || typeof browserBinder.bind !== 'function' ||
+      !exactKeys(secretActions, ['signInOwnerA', 'fillInviteMailbox']) ||
+      Object.values(secretActions).some(value => typeof value !== 'function') ||
+      [summarizeInvitation, summarizeList].some(value => typeof value !== 'function') ||
+      localStaticOrigin !== 'http://127.0.0.1:5177' || !Number.isSafeInteger(waitTimeoutMs) || waitTimeoutMs < 10 || waitTimeoutMs > 60_000) blocked()
+  let browser = null, context = null, page = null, routeHandler = null, held = null, heldWaiter = null
+  let expectedCompanyId = null, initialListFulfilled = false, postCreateList = null, postCreateListWaiter = null, postCreateListDispatched = false
+  let opened = false, prepared = false, dispatched = false, evidence = null, closed = false
+  const close = async () => {
+    if (closed) return
+    closed = true
+    if (page) {
+      try {
+        await uiBounded(page.evaluate(async () => {
+          const clipboard = navigator.clipboard
+          if (!clipboard || typeof clipboard.writeText !== 'function' || typeof clipboard.readText !== 'function') throw new Error('clipboard_unavailable')
+          await clipboard.writeText('')
+          if (await clipboard.readText() !== '') throw new Error('clipboard_clear_mismatch')
+        }), waitTimeoutMs)
+      } catch { /* the active operation already fails closed */ }
+    }
+    try { if (context) await uiBounded(context.close(), waitTimeoutMs) } catch { /* best effort */ }
+    try { if (browser) await uiBounded(browser.close(), waitTimeoutMs) } catch { /* best effort */ }
+  }
+  const failHeld = async route => {
+    try { await uiBounded(route.abort(), waitTimeoutMs) } catch { /* best effort */ }
+    if (heldWaiter) { heldWaiter.resolve(null); heldWaiter = null }
+  }
+  const interfaceValue = {
+    async open() {
+      if (opened || closed) blocked()
+      opened = true
+      try {
+        browser = await uiBounded(chromium.launch({ headless: false }), waitTimeoutMs)
+        context = await uiBounded(browser.newContext({ serviceWorkers: 'block', permissions: ['clipboard-read', 'clipboard-write'],
+          viewport: { width: 1280, height: 900 } }), waitTimeoutMs)
+        await uiBounded(context.route('**/*', async route => {
+          try {
+            const request = route.request()
+            const decision = await uiBounded(browserBinder.bind({ method: request.method(), url: request.url(), postData: request.postData() }), waitTimeoutMs)
+            if (!decision || decision.action !== 'continue') return route.abort()
+            return route.continue()
+          } catch { return route.abort() }
+        }), waitTimeoutMs)
+        page = await uiBounded(context.newPage(), waitTimeoutMs)
+        page.setDefaultTimeout(waitTimeoutMs)
+        routeHandler = async route => {
+          const request = route.request()
+          let classification
+          try { classification = classifyLiveBrowserRequest(request.method(), request.url()) } catch { return route.fallback() }
+          if (classification.kind === 'callable' && classification.operation === 'listInvitations') {
+            let body
+            try { body = JSON.parse(request.postData()) } catch { return failHeld(route) }
+            if (!exactKeys(body, ['data']) || !exactKeys(body.data, ['companyId', 'pageSize']) ||
+                body.data.companyId !== expectedCompanyId || body.data.pageSize !== 20) return failHeld(route)
+            if (!initialListFulfilled && prepared && !held && !dispatched) {
+              initialListFulfilled = true
+              return route.fulfill({ status: 200, contentType: 'application/json',
+                body: JSON.stringify({ data: { items: [], nextCursor: null } }) })
+            }
+            if (initialListFulfilled && dispatched && !postCreateList && !postCreateListDispatched) {
+              const postData = request.postData()
+              postCreateList = { route, request, method: request.method(), url: request.url(), postData,
+                requestSha256: sha256(postData) }
+              if (postCreateListWaiter) { postCreateListWaiter.resolve(postCreateList.requestSha256); postCreateListWaiter = null }
+              return
+            }
+            return failHeld(route)
+          }
+          if (!prepared || dispatched || held || classification.kind !== 'callable' || classification.operation !== 'inviteMember') return route.fallback()
+          const postData = request.postData()
+          if (typeof postData !== 'string') return failHeld(route)
+          held = { route, request, method: request.method(), url: request.url(), postData, requestSha256: sha256(postData) }
+          if (heldWaiter) { heldWaiter.resolve(held.requestSha256); heldWaiter = null }
+        }
+        await uiBounded(page.route('**/*', routeHandler), waitTimeoutMs)
+        await uiBounded(page.goto(`${localStaticOrigin}/finapp/#/login`, { waitUntil: 'networkidle', timeout: waitTimeoutMs }), waitTimeoutMs)
+        const signedIn = await uiBounded(secretActions.signInOwnerA(page), waitTimeoutMs)
+        if (!exactKeys(signedIn, ['signedIn']) || signedIn.signedIn !== true) blocked()
+        await uiBounded(page.waitForURL(`${localStaticOrigin}/finapp/#/`, { timeout: waitTimeoutMs }), waitTimeoutMs)
+        return frozen({ opened: true, visible: true, persistent: false })
+      } catch { await close(); blocked() }
+    },
+    async prepareCancelledInvitation(input) {
+      if (!page || prepared || held || dispatched || evidence) blocked()
+      if (!exactKeys(input, ['companyId']) || !safeId(input.companyId)) blocked()
+      expectedCompanyId = input.companyId
+      prepared = true
+      const waiting = new Promise((resolve, reject) => { heldWaiter = { resolve, reject } })
+      try {
+        await uiBounded(page.goto(`${localStaticOrigin}/finapp/#/users`, { waitUntil: 'networkidle', timeout: waitTimeoutMs }), waitTimeoutMs)
+        if (!initialListFulfilled) blocked()
+        await uiBounded(page.getByRole('region', { name: 'Приглашения', exact: true }).waitFor({ timeout: waitTimeoutMs }), waitTimeoutMs)
+        await uiBounded(page.getByRole('button', { name: 'Пригласить по email', exact: true }).click(), waitTimeoutMs)
+        const dialog = page.getByRole('dialog')
+        await uiBounded(dialog.waitFor({ timeout: waitTimeoutMs }), waitTimeoutMs)
+        const filled = await uiBounded(secretActions.fillInviteMailbox(page, dialog.getByLabel('Email', { exact: true })), waitTimeoutMs)
+        if (!exactKeys(filled, ['filled']) || filled.filled !== true) blocked()
+        await uiBounded(dialog.getByRole('combobox').selectOption('accountant'), waitTimeoutMs)
+        const click = uiBounded(dialog.getByRole('button', { name: 'Создать приглашение', exact: true }).click(), waitTimeoutMs)
+        const requestSha256 = await uiBounded(waiting, waitTimeoutMs, () => { heldWaiter = null })
+        await click
+        if (!hex64(requestSha256) || held?.requestSha256 !== requestSha256) blocked()
+        return frozen({ requestSha256 })
+      } catch { if (held) await failHeld(held.route); await close(); blocked() }
+    },
+    async dispatchCancelledInvitation(permit) {
+      if (!held || dispatched || !record(permit) || permit.requestSha256 !== held.requestSha256) blocked()
+      dispatched = true
+      const current = held
+      try {
+        const decision = await uiBounded(browserBinder.bind({ method: current.method, url: current.url, postData: current.postData }), waitTimeoutMs)
+        if (!decision || decision.action !== 'continue') { await failHeld(current.route); blocked() }
+        await uiBounded(current.route.continue(), waitTimeoutMs)
+        const response = await uiBounded(current.request.response(), waitTimeoutMs)
+        const result = await uiBounded(summarizeInvitation(response, { requestSha256: current.requestSha256 }), waitTimeoutMs)
+        if (!exactKeys(result, ['requestSha256', 'outcomeSha256', 'sanitized']) || result.requestSha256 !== current.requestSha256 ||
+            !hex64(result.outcomeSha256) || !exactKeys(result.sanitized, ['disposition', 'inviteId', 'capabilitySha256', 'expiresAtUtc']) ||
+            result.sanitized.disposition !== 'SUCCESS' || !safeId(result.sanitized.inviteId) || !hex64(result.sanitized.capabilitySha256)) blocked()
+        assertNoSecretMaterial(result)
+        const dialog = page.getByRole('dialog')
+        await uiBounded(dialog.getByLabel('Ссылка', { exact: true }).waitFor({ timeout: waitTimeoutMs }), waitTimeoutMs)
+        await uiBounded(dialog.getByRole('button', { name: 'Копировать ссылку', exact: true }).click(), waitTimeoutMs)
+        await uiBounded(dialog.getByRole('button', { name: 'Скопировано', exact: true }).waitFor({ timeout: waitTimeoutMs }), waitTimeoutMs)
+        const clipboard = await uiBounded(page.evaluate(async expected => {
+          const api = navigator.clipboard
+          if (!api || typeof api.writeText !== 'function' || typeof api.readText !== 'function') throw new Error('clipboard_unavailable')
+          const digest = async value => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))]
+            .map(byte => byte.toString(16).padStart(2, '0')).join('')
+          let safe = null
+          try {
+            const label = [...document.querySelectorAll('label')].find(node => node.textContent?.startsWith('Ссылка'))
+            const input = label?.querySelector('input')
+            if (!(input instanceof HTMLInputElement) || !input.readOnly) throw new Error('link_field_missing')
+            const displayed = input.value
+            const copied = await api.readText()
+            const parsed = new URL(copied)
+            const token = parsed.hash.startsWith('#token=') ? parsed.hash.slice(7) : ''
+            if (copied !== displayed || parsed.origin !== expected.origin || parsed.search !== '' ||
+                parsed.pathname !== `/finapp/accept-invite/${encodeURIComponent(expected.inviteId)}` || !/^[A-Za-z0-9_-]{43}$/.test(token) ||
+                await digest(token) !== expected.capabilitySha256) throw new Error('clipboard_mismatch')
+            safe = { clipboardApi: true, displayedMatched: true, linkShapeMatched: true, capabilityMatched: true,
+              linkSha256: await digest(copied) }
+          } finally {
+            await api.writeText('')
+            if (await api.readText() !== '') throw new Error('clipboard_clear_mismatch')
+          }
+          return { ...safe, cleared: true, clearReadbackMatched: true }
+        }, { origin: localStaticOrigin, inviteId: result.sanitized.inviteId,
+          capabilitySha256: result.sanitized.capabilitySha256 }), waitTimeoutMs)
+        if (!exactKeys(clipboard, ['clipboardApi', 'displayedMatched', 'linkShapeMatched', 'capabilityMatched', 'linkSha256', 'cleared', 'clearReadbackMatched']) ||
+            Object.entries(clipboard).some(([key, value]) => key !== 'linkSha256' && value !== true) || !hex64(clipboard.linkSha256)) blocked()
+        evidence = uiRow('admin-copy-link', { requestSha256: result.requestSha256, outcomeSha256: result.outcomeSha256,
+          inviteId: result.sanitized.inviteId, capabilitySha256: result.sanitized.capabilitySha256, linkSha256: clipboard.linkSha256,
+          clipboardCleared: true, initialListSource: 'verified-empty-local-bootstrap' })
+        await uiBounded(dialog.getByRole('button', { name: 'Закрыть', exact: true }).click(), waitTimeoutMs)
+        if (await uiBounded(dialog.getByLabel('Ссылка', { exact: true }).count(), waitTimeoutMs) !== 0) blocked()
+        held = null
+        return frozen(result)
+      } catch {
+        try {
+          await uiBounded(page.evaluate(async () => {
+            const api = navigator.clipboard
+            if (!api || typeof api.writeText !== 'function' || typeof api.readText !== 'function') throw new Error('clipboard_unavailable')
+            await api.writeText('')
+            if (await api.readText() !== '') throw new Error('clipboard_clear_mismatch')
+          }), waitTimeoutMs)
+        } catch { /* remain blocked */ }
+        await close(); blocked()
+      }
+    },
+    async takePreparedPostCreateList() {
+      if (!dispatched || !evidence || postCreateListDispatched) blocked()
+      const requestSha256 = postCreateList?.requestSha256 ?? await uiBounded(new Promise((resolve, reject) => {
+        if (postCreateListWaiter) blocked()
+        postCreateListWaiter = { resolve, reject }
+      }), waitTimeoutMs, () => { postCreateListWaiter = null })
+      if (!hex64(requestSha256)) blocked()
+      return frozen({ requestSha256 })
+    },
+    async dispatchPostCreateList(permit) {
+      if (!postCreateList || postCreateListDispatched || !record(permit) || permit.requestSha256 !== postCreateList.requestSha256) blocked()
+      postCreateListDispatched = true
+      const current = postCreateList
+      try {
+        const decision = await uiBounded(browserBinder.bind({ method: current.method, url: current.url, postData: current.postData }), waitTimeoutMs)
+        if (!decision || decision.action !== 'continue') { await failHeld(current.route); blocked() }
+        await uiBounded(current.route.continue(), waitTimeoutMs)
+        const response = await uiBounded(current.request.response(), waitTimeoutMs)
+        const result = await uiBounded(summarizeList(response, { requestSha256: current.requestSha256 }), waitTimeoutMs)
+        if (!exactKeys(result, ['requestSha256', 'outcomeSha256', 'sanitized']) || result.requestSha256 !== current.requestSha256 ||
+            !hex64(result.outcomeSha256) || !exactKeys(result.sanitized, ['disposition', 'itemCount', 'itemsSha256', 'nextCursorPresent']) ||
+            result.sanitized.disposition !== 'SUCCESS' || result.sanitized.itemCount !== 1 ||
+            !hex64(result.sanitized.itemsSha256) || result.sanitized.nextCursorPresent !== false) blocked()
+        assertNoSecretMaterial(result)
+        postCreateList = null
+        return frozen(result)
+      } catch { await close(); blocked() }
+    },
+    readEvidence() { if (!evidence) blocked(); return frozen(evidence) },
+    close,
+  }
+  return Object.freeze(interfaceValue)
+}
+
+/** Run the mutation-free UI portion after all fixture/read-only slots. Every
+ * row comes from fixed Playwright observations. Injected sign-in code owns only
+ * owner-A/B credentials; the verified mailbox page is borrowed from its
+ * ownerHandoff and remains owned by that lifecycle. */
+export function createPostFixturePlaywrightUiVerifier({
+  chromium, browserBinder, secretActions, borrowVerifiedMailboxSession,
+  companyNames = { a: 'Stage8 Company A', b: 'Stage8 Company B' },
+  localStaticOrigin = 'http://127.0.0.1:5177', waitTimeoutMs = 20_000,
+}) {
+  if (!chromium || typeof chromium.launch !== 'function' || !browserBinder || typeof browserBinder.bind !== 'function' ||
+      !exactKeys(secretActions, ['signIn']) || typeof secretActions.signIn !== 'function' ||
+      typeof borrowVerifiedMailboxSession !== 'function' ||
+      !exactKeys(companyNames, ['a', 'b']) || Object.values(companyNames).some(value => typeof value !== 'string' ||
+        value.length < 1 || value.length > 80 || value !== value.trim()) || companyNames.a === companyNames.b ||
+      localStaticOrigin !== 'http://127.0.0.1:5177' || !Number.isSafeInteger(waitTimeoutMs) || waitTimeoutMs < 10 || waitTimeoutMs > 60_000) blocked()
+  let browser = null, ran = false, closed = false
+  const contexts = new Set()
+  const close = async () => {
+    if (closed) return
+    closed = true
+    for (const context of contexts) { try { await uiBounded(context.close(), waitTimeoutMs) } catch { /* best effort */ } }
+    contexts.clear()
+    try { if (browser) await uiBounded(browser.close(), waitTimeoutMs) } catch { /* best effort */ }
+  }
+  const bindContext = async context => uiBounded(context.route('**/*', async route => {
+    try {
+      const request = route.request()
+      const decision = await uiBounded(browserBinder.bind({ method: request.method(), url: request.url(), postData: request.postData() }), waitTimeoutMs)
+      if (!decision || decision.action !== 'continue') return route.abort()
+      return route.continue()
+    } catch { return route.abort() }
+  }), waitTimeoutMs)
+  const openIdentity = async identity => {
+    const context = await uiBounded(browser.newContext({ serviceWorkers: 'block', viewport: { width: 1280, height: 900 } }), waitTimeoutMs)
+    contexts.add(context)
+    await bindContext(context)
+    const page = await uiBounded(context.newPage(), waitTimeoutMs)
+    page.setDefaultTimeout(waitTimeoutMs)
+    await uiBounded(page.goto(`${localStaticOrigin}/finapp/#/login`, { waitUntil: 'networkidle', timeout: waitTimeoutMs }), waitTimeoutMs)
+    const signedIn = await uiBounded(secretActions.signIn(page, identity), waitTimeoutMs)
+    if (!exactKeys(signedIn, ['signedIn']) || signedIn.signedIn !== true) blocked()
+    assertNoSecretMaterial(signedIn)
+    await uiBounded(page.waitForURL(`${localStaticOrigin}/finapp/#/`, { timeout: waitTimeoutMs }), waitTimeoutMs)
+    await uiBounded(page.getByRole('heading', { name: 'Дашборд', exact: true }).waitFor({ timeout: waitTimeoutMs }), waitTimeoutMs)
+    return { context, page }
+  }
+  const count = (locatorValue, expected) => uiBounded(locatorValue.count(), waitTimeoutMs).then(value => {
+    if (value !== expected) blocked()
+  })
+  const visible = locatorValue => uiBounded(locatorValue.waitFor({ state: 'visible', timeout: waitTimeoutMs }), waitTimeoutMs)
+  const goto = (page, hashPath) => uiBounded(page.goto(`${localStaticOrigin}/finapp/#${hashPath}`,
+    { waitUntil: 'networkidle', timeout: waitTimeoutMs }), waitTimeoutMs)
+  const expectCompanyButton = (page, name) => visible(page.getByRole('button', { name, exact: true }))
+  const switchCompany = async (page, from, to) => {
+    await uiBounded(page.getByRole('button', { name: from, exact: true }).click(), waitTimeoutMs)
+    await uiBounded(page.getByRole('button', { name: to, exact: true }).click(), waitTimeoutMs)
+  }
+  const rows = []
+  const add = (step, observation) => rows.push(uiRow(step, observation))
+  return Object.freeze({
+    async run() {
+      if (ran || closed) blocked()
+      ran = true
+      try {
+        browser = await uiBounded(chromium.launch({ headless: false }), waitTimeoutMs)
+
+        const ownerA = await openIdentity('ownerA')
+        await expectCompanyButton(ownerA.page, companyNames.a)
+        await count(ownerA.page.getByRole('link', { name: 'Пользователи', exact: true }), 1)
+        await goto(ownerA.page, '/settings')
+        await visible(ownerA.page.getByRole('heading', { name: 'Настройки', exact: true }))
+        await count(ownerA.page.getByRole('button', { name: 'Сохранить', exact: true }), 1)
+        add('owner-a-admin-ui', { identity: 'ownerA', company: 'a', role: 'admin', usersNavigation: true, companyWriteControl: true })
+        await uiBounded(ownerA.context.close(), waitTimeoutMs); contexts.delete(ownerA.context)
+
+        const ownerB = await openIdentity('ownerB')
+        await expectCompanyButton(ownerB.page, companyNames.b)
+        await count(ownerB.page.getByRole('link', { name: 'Пользователи', exact: true }), 1)
+        await goto(ownerB.page, '/settings')
+        await count(ownerB.page.getByRole('button', { name: 'Сохранить', exact: true }), 1)
+        add('owner-b-company-b-admin-ui', { identity: 'ownerB', company: 'b', role: 'admin', usersNavigation: true, companyWriteControl: true })
+
+        await switchCompany(ownerB.page, companyNames.b, companyNames.a)
+        await visible(ownerB.page.getByText('Режим только для чтения', { exact: false }))
+        await count(ownerB.page.getByRole('link', { name: 'Пользователи', exact: true }), 0)
+        add('owner-b-company-a-viewer-ui', { identity: 'ownerB', company: 'a', role: 'viewer', readOnlyBanner: true, usersNavigation: false })
+
+        await goto(ownerB.page, '/users')
+        await visible(ownerB.page.getByText('Управление пользователями доступно администратору активной компании после загрузки прав.', { exact: true }))
+        await count(ownerB.page.getByRole('button', { name: 'Пригласить по email', exact: true }), 0)
+        add('owner-b-direct-url-denial', { identity: 'ownerB', company: 'a', route: '/users', invitationUi: false, denialVisible: true })
+
+        await uiBounded(ownerB.context.setOffline(true), waitTimeoutMs)
+        let offlineRejected = false
+        try { await uiBounded(ownerB.page.reload({ waitUntil: 'domcontentloaded', timeout: waitTimeoutMs }), waitTimeoutMs) } catch { offlineRejected = true }
+        if (!offlineRejected) blocked()
+        add('owner-b-offline-blocked', { identity: 'ownerB', company: 'a', reloadRejected: true, mutationAttempted: false })
+        await uiBounded(ownerB.context.setOffline(false), waitTimeoutMs)
+        await goto(ownerB.page, '/settings')
+        await visible(ownerB.page.getByText('Режим только для чтения', { exact: false }))
+        await count(ownerB.page.getByRole('button', { name: 'Сохранить', exact: true }), 0)
+        add('owner-b-online-recovered', { identity: 'ownerB', company: 'a', role: 'viewer', directRoute: '/settings', recovered: true })
+
+        await switchCompany(ownerB.page, companyNames.a, companyNames.b)
+        await count(ownerB.page.getByRole('link', { name: 'Пользователи', exact: true }), 1)
+        await count(ownerB.page.getByRole('button', { name: 'Сохранить', exact: true }), 1)
+        add('owner-b-company-b-restored', { identity: 'ownerB', company: 'b', role: 'admin', restored: true })
+
+        await goto(ownerB.page, '/')
+        const secondTab = await uiBounded(ownerB.context.newPage(), waitTimeoutMs)
+        secondTab.setDefaultTimeout(waitTimeoutMs)
+        await goto(secondTab, '/')
+        await visible(secondTab.getByRole('heading', { name: 'Дашборд', exact: true }))
+        await uiBounded(ownerB.page.getByTitle('Выйти').click(), waitTimeoutMs)
+        await Promise.all([
+          uiBounded(ownerB.page.waitForURL(`${localStaticOrigin}/finapp/#/login`, { timeout: waitTimeoutMs }), waitTimeoutMs),
+          uiBounded(secondTab.waitForURL(`${localStaticOrigin}/finapp/#/login`, { timeout: waitTimeoutMs }), waitTimeoutMs),
+        ])
+        add('owner-b-two-tab-logout', { identity: 'ownerB', tabs: 2, firstSignedOut: true, secondSignedOut: true })
+        await uiBounded(ownerB.context.close(), waitTimeoutMs); contexts.delete(ownerB.context)
+
+        const mailbox = await uiBounded(borrowVerifiedMailboxSession(), waitTimeoutMs)
+        if (!exactKeys(mailbox, ['page', 'context']) || !mailbox.page || !mailbox.context ||
+            typeof mailbox.page.goto !== 'function' || typeof mailbox.page.reload !== 'function' ||
+            typeof mailbox.page.evaluate !== 'function' || typeof mailbox.page.getByRole !== 'function' ||
+            typeof mailbox.page.getByText !== 'function' || typeof mailbox.page.setDefaultTimeout !== 'function' ||
+            typeof mailbox.page.isClosed !== 'function' || mailbox.page.isClosed()) blocked()
+        mailbox.page.setDefaultTimeout(waitTimeoutMs)
+        if (await uiBounded(mailbox.page.evaluate(expected => location.origin === expected, localStaticOrigin), waitTimeoutMs) !== true) blocked()
+        await expectCompanyButton(mailbox.page, companyNames.a)
+        await count(mailbox.page.getByText('Режим только для чтения', { exact: false }), 0)
+        await count(mailbox.page.getByRole('link', { name: 'Пользователи', exact: true }), 0)
+        await goto(mailbox.page, '/transactions')
+        await visible(mailbox.page.getByRole('heading', { name: 'Операции', exact: true }))
+        if (await uiBounded(mailbox.page.getByRole('button', { name: 'Добавить', exact: true }).count(), waitTimeoutMs) < 1) blocked()
+        add('owner-mailbox-accountant-ui', { identity: 'ownerMailbox', company: 'a', role: 'accountant', readOnlyBanner: false, writeControl: true })
+        await uiBounded(mailbox.page.reload({ waitUntil: 'networkidle', timeout: waitTimeoutMs }), waitTimeoutMs)
+        await visible(mailbox.page.getByRole('heading', { name: 'Операции', exact: true }))
+        await count(mailbox.page.getByText('Режим только для чтения', { exact: false }), 0)
+        add('owner-mailbox-reload-recovered', { identity: 'ownerMailbox', company: 'a', role: 'accountant', reloaded: true })
+
+        return frozen({ status: 'UI_ACCEPTANCE_RECONCILED', evidence: rows,
+          evidenceSha256: sha256(JSON.stringify(rows)) })
+      } catch { await close(); blocked() }
+    },
+    close,
+  })
+}
+
 const exactOperationKeys = specs => specs.map(spec => spec.slot)
 function validateOperations(operations) {
   if (!exactKeys(operations, ['fixtures', 'readOnly', 'clipboard']) ||
@@ -340,12 +748,12 @@ function validateOperations(operations) {
   }
   for (const [slot, operation] of Object.entries(operations.fixtures)) {
     const expectedMode = ['createOwnerAAuth', 'createOwnerBAuth'].includes(slot) ? 'provider-admin'
-      : slot === 'acceptMailboxFinalInvite' ? 'held-normal-path'
+      : ['createMailboxCancelledInvite', 'acceptMailboxFinalInvite'].includes(slot) ? 'held-normal-path'
         : slot === 'createOwnerMailboxAuth' ? 'owner-handoff' : 'bound-callback'
     if (operation.mode !== expectedMode) blocked()
   }
   for (const [slot, operation] of Object.entries(operations.readOnly)) {
-    const expectedMode = slot === 'mailboxCompanyAAccountant' ? 'held-normal-path' : 'bound-callback'
+    const expectedMode = ['listCancelledPending', 'mailboxCompanyAAccountant'].includes(slot) ? 'held-normal-path' : 'bound-callback'
     if (operation.mode !== expectedMode) blocked()
   }
   if (typeof operations.clipboard.clear !== 'function') blocked()

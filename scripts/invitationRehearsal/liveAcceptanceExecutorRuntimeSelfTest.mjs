@@ -5,10 +5,12 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
-  createConcreteLiveAcceptanceRuntime, createCountedTransport, createFixedChromiumLauncher,
+  buildVerifiedScenarioRows, createConcreteLiveAcceptanceRuntime, createCountedTransport, createFixedChromiumLauncher,
   FIXED_CHROME_EXECUTABLE, LIVE_MAILBOX_FILE_ENV, spawnImmutableServer, summarizeVerificationResponse,
   validateConcreteRuntimePrerequisites, writePrivateOutput,
 } from './liveAcceptanceExecutorRuntime.mjs'
+import { SCENARIO_NAMES } from './liveAcceptanceCore.mjs'
+import { LIVE_PLAYWRIGHT_UI_STEPS } from './liveAcceptancePlaywrightCore.mjs'
 
 const h = value => createHash('sha256').update(value).digest('hex')
 const config = {
@@ -21,6 +23,22 @@ const envBytes = () => Buffer.from([
   `VITE_FIREBASE_MESSAGING_SENDER_ID=${config.messagingSenderId}`, `VITE_FIREBASE_APP_ID=${config.appId}`,
   `STAGING_FIREBASE_CONFIG_FINGERPRINT=${h(JSON.stringify(config))}`, '',
 ].join('\n'))
+
+test('scenario PASS rows require backend evidence and every validated live UI observation', () => {
+  const backendEvidence = SCENARIO_NAMES.map((scenario, index) => ({
+    scenario, kind: 'fixture', slot: `slot-${index}`, readbackSha256: h(`backend-${index}`),
+  }))
+  const uiEvidence = LIVE_PLAYWRIGHT_UI_STEPS.map(step => ({
+    step, status: 'PASS', observationSha256: h(step),
+    ...(step === 'admin-copy-link' ? { initialListSource: 'verified-empty-local-bootstrap' } : {}),
+  }))
+  const rows = buildVerifiedScenarioRows({ scenarioNames: [...SCENARIO_NAMES], backendEvidence, uiEvidence })
+  assert.equal(rows.length, 6)
+  assert.deepEqual(rows.map(row => row.name), [...SCENARIO_NAMES])
+  assert.equal(rows.every(row => row.status === 'PASS' && /^[a-f0-9]{64}$/.test(row.evidenceSha256)), true)
+  assert.throws(() => buildVerifiedScenarioRows({ scenarioNames: [...SCENARIO_NAMES], backendEvidence: backendEvidence.slice(1), uiEvidence }))
+  assert.throws(() => buildVerifiedScenarioRows({ scenarioNames: [...SCENARIO_NAMES], backendEvidence, uiEvidence: uiEvidence.slice(1) }))
+})
 
 function withFixedChrome(io = fs) {
   return new Proxy(io, { get(target, property) {
@@ -125,6 +143,19 @@ test('private output rejects zero, negative and oversized write progress', t => 
     } })
     assert.throws(() => writePrivateOutput(filename, { status: 'SAFE' }, fakeIo))
   }
+})
+
+test('private output accepts recovery-only idempotency material but still rejects credentials', t => {
+  const value = fixture(t)
+  const filename = path.join(value.privateRoot ?? path.dirname(value.mailboxFile), 'recovery.json')
+  const recovery = { status: 'RECOVERY_REQUIRED', recoveryManifest: {
+    idempotency: { createCompanyA: { idempotencyKey: 'generated-recovery-key-1234567890' } },
+  } }
+  writePrivateOutput(filename, recovery)
+  assert.deepEqual(JSON.parse(fs.readFileSync(filename, 'utf8')), recovery)
+  assert.throws(() => writePrivateOutput(path.join(path.dirname(value.mailboxFile), 'forbidden.json'), {
+    status: 'RECOVERY_REQUIRED', recoveryManifest: { password: 'must-never-persist' },
+  }))
 })
 
 test('fixed Chromium wrapper injects the exact executable path and rejects caller launch drift', async () => {

@@ -3,13 +3,14 @@ import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { createLiveBrowserRequestBinder } from './liveAcceptanceBrowserCore.mjs'
 import {
-  createLiveStagingExecutor, createVisibleOwnerHandoff, LIVE_FUNCTIONS,
+  assertPrivateRecoveryMaterial, createLiveStagingExecutor, createVisibleOwnerHandoff, LIVE_FUNCTIONS,
+  readPrivateExecutorRecovery,
 } from './liveAcceptanceExecutorCore.mjs'
 import {
   assertNoSecretMaterial, authorizePendingDispatchJournal, FIXTURE_MUTATION_SLOT_SPECS,
   PROJECT, READBACK_CHECKS, validateFixturePlan,
 } from './liveAcceptanceCore.mjs'
-import { PLAYWRIGHT_LIVE_MISSING_BINDINGS } from './liveAcceptancePlaywrightCore.mjs'
+import { PLAYWRIGHT_LIVE_MISSING_BINDINGS, validateLivePlaywrightUiEvidence } from './liveAcceptancePlaywrightCore.mjs'
 import { DATABASE, guardCliAccount, rulesHash } from './inventoryCore.mjs'
 import {
   checkFunction, requestSpec as deploymentRequestSpec,
@@ -54,6 +55,103 @@ const isoNow = now => {
 }
 
 const sessionInternals = new WeakMap()
+const privateRecoveryBySession = new WeakMap()
+
+function sessionRecovery(session) {
+  let value = privateRecoveryBySession.get(session)
+  if (!value) {
+    value = { syntheticAuth: {}, ownerMailboxUid: null, idempotency: {}, slotSnapshots: {} }
+    privateRecoveryBySession.set(session, value)
+  }
+  return value
+}
+
+function safeSnapshotForRecovery(value) {
+  const documents = value.documents.map(({ fields: _fields, ...row }) => ({ ...row }))
+  const audits = value.audits.map(({ fields: _fields, companyId, id, ...row }) => ({
+    ...row, id, path: `companies/${companyId}/audit_events/${id}`,
+  }))
+  return { observedAt: value.observedAt, documents, audits }
+}
+
+function cleanupDisposition(pathValue, executorState, providerRecovery) {
+  const mailboxUid = providerRecovery.ownerMailboxUid ?? executorState.ownerMailboxUid
+  if (mailboxUid && (pathValue === `users/${mailboxUid}` ||
+      pathValue.endsWith(`/members/${mailboxUid}`))) return 'CAS_REQUIRED'
+  return 'DELETE'
+}
+
+function mergeRecoveryResources(recovery, executorState, finalResources = null) {
+  const byPath = new Map()
+  const add = row => {
+    if (!record(row) || row.exists === false) return
+    if (!['firestore', 'firestore-audit'].includes(row.kind ?? 'firestore') || !safePath(row.path) || row.exists !== true ||
+        !hex64(row.stateSha256) || !rfc3339(row.createTime) || !rfc3339(row.updateTime)) blocked()
+    byPath.set(row.path, { kind: row.kind ?? 'firestore', path: row.path, expectedExists: true,
+      stateSha256: row.stateSha256, createTime: row.createTime, updateTime: row.updateTime,
+      cleanupDisposition: cleanupDisposition(row.path, executorState, recovery) })
+  }
+  for (const snapshot of Object.values(recovery?.slotSnapshots ?? {})) {
+    for (const phase of ['before', 'after']) {
+      for (const row of snapshot?.[phase]?.documents ?? []) add({ kind: 'firestore', ...row })
+      for (const row of snapshot?.[phase]?.audits ?? []) add({ kind: 'firestore-audit', exists: true, ...row })
+    }
+  }
+  if (Array.isArray(finalResources)) finalResources.forEach(add)
+  return [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path))
+}
+
+function journalRecoveryReceipt(journal) {
+  try {
+    const bytes = journal.bytes(), events = journal.events()
+    return { journalSha256: sha256(bytes), eventCount: events.length, lastStatus: events.at(-1)?.status ?? null }
+  } catch { return { journalSha256: null, eventCount: null, lastStatus: 'JOURNAL_UNREADABLE' } }
+}
+
+/** Full private recovery state. The returned value may contain raw generated
+ * idempotency keys and must only be passed to the private --out writer. */
+export function buildPrivateLiveRecoveryManifest({ sourceHead, journal, session, status, generatedAt,
+  finalResources = null, cleanupTargets = null }) {
+  if (!/^[a-f0-9]{40}$/.test(sourceHead ?? '') || !journal || !['SUCCESS', 'RECOVERY_REQUIRED'].includes(status) ||
+      !rfc3339(generatedAt) || !(finalResources === null || Array.isArray(finalResources)) ||
+      !(cleanupTargets === null || record(cleanupTargets))) blocked()
+  const executor = readPrivateExecutorRecovery(journal)
+  const provider = session ? sessionRecovery(session) : { syntheticAuth: {}, ownerMailboxUid: null, idempotency: {}, slotSnapshots: {} }
+  const state = executor.state
+  const auth = {
+    ownerA: provider.syntheticAuth.ownerA ?? { uid: state.ownerAUid, subjectSha256: executor.authSubjects.ownerASubjectSha256,
+      disposition: executor.fixtureSlots.createOwnerAAuth.state === 'RECONCILED' ? 'DELETE' : 'DELETE_IF_PRESENT' },
+    ownerB: provider.syntheticAuth.ownerB ?? { uid: state.ownerBUid, subjectSha256: executor.authSubjects.ownerBSubjectSha256,
+      disposition: executor.fixtureSlots.createOwnerBAuth.state === 'RECONCILED' ? 'DELETE' : 'DELETE_IF_PRESENT' },
+    ownerMailbox: { uid: provider.ownerMailboxUid ?? state.ownerMailboxUid, subjectSha256: executor.mailboxSha256, disposition: 'PRESERVE' },
+  }
+  const manifest = {
+    version: 1, task: 'SEC-006 Stage 8 private recovery and cleanup manifest', project: PROJECT,
+    status, sourceHead, generatedAt, runId: executor.runId, mailboxSha256: executor.mailboxSha256,
+    journal: journalRecoveryReceipt(journal), lifecycle: executor.lifecycle,
+    identifiers: {
+      ownerAUid: auth.ownerA.uid ?? null, ownerBUid: auth.ownerB.uid ?? null, ownerMailboxUid: auth.ownerMailbox.uid ?? null,
+      companyAId: state.companyAId, companyBId: state.companyBId,
+      mailboxCancelledInviteId: state.mailboxCancelledInviteId, mailboxFinalInviteId: state.mailboxFinalInviteId,
+      ownerBInviteId: state.ownerBInviteId, mailboxLockId: state.mailboxLockId, ownerBLockId: state.ownerBLockId,
+      mailboxCancelledCapabilitySha256: state.mailboxCancelledCapabilitySha256,
+      mailboxPreviousCapabilitySha256: state.mailboxPreviousCapabilitySha256,
+      mailboxFinalCapabilitySha256: state.mailboxFinalCapabilitySha256, ownerBCapabilitySha256: state.ownerBCapabilitySha256,
+    },
+    auth, idempotency: clone(provider.idempotency), fixtureSlots: executor.fixtureSlots,
+    readOnlySlots: executor.readOnlySlots, verificationEmail: executor.verificationEmail,
+    resources: mergeRecoveryResources(provider, state, finalResources),
+    cleanup: { executionAuthorized: false, cleanupPerformed: false, targets: cleanupTargets },
+  }
+  if (status === 'SUCCESS') {
+    if (executor.lifecycle !== 'COMPLETE' || Object.values(executor.fixtureSlots).some(row => row.state !== 'RECONCILED') ||
+        Object.values(executor.readOnlySlots).some(row => row.state !== 'RECONCILED') || executor.verificationEmail.state !== 'SENT' ||
+        !exactKeys(provider.idempotency, ['createCompanyA', 'createCompanyB']) || finalResources.length !== 27 ||
+        manifest.resources.length !== 27 || cleanupTargets === null) blocked()
+  }
+  assertPrivateRecoveryMaterial(manifest)
+  return frozen(manifest)
+}
 
 /** Load the signed-in firebase-tools session only after both local gates. */
 export function createGuardedFirebaseToolsSessionLoader({ repoRoot, loadModule } = {}) {
@@ -339,6 +437,11 @@ export function createSyntheticVerifiedAuthAdapter({ session, runId, accounts })
   for (const identity of Object.keys(AUTH_IDENTITIES)) validateSyntheticAccount(accounts[identity], identity, runId)
   if (accounts.ownerA.uid === accounts.ownerB.uid || accounts.ownerA.email === accounts.ownerB.email ||
       accounts.ownerA.password === accounts.ownerB.password) blocked()
+  const recovery = sessionRecovery(session)
+  recovery.syntheticAuth = {
+    ownerA: { uid: accounts.ownerA.uid, subjectSha256: sha256(accounts.ownerA.email), disposition: 'DELETE_IF_PRESENT' },
+    ownerB: { uid: accounts.ownerB.uid, subjectSha256: sha256(accounts.ownerB.email), disposition: 'DELETE_IF_PRESENT' },
+  }
   const completed = new Set()
   return Object.freeze({
     slot(identity, subjectSha256) {
@@ -370,6 +473,7 @@ export function createSyntheticVerifiedAuthAdapter({ session, runId, accounts })
           const uid = sanitizeCreatedAccount(lookup.users[0], account)
           const produced = { [identity === 'ownerA' ? 'ownerAUid' : 'ownerBUid']: uid }
           completed.add(identity)
+          recovery.syntheticAuth[identity].disposition = 'DELETE'
           return { requestSha256, outcomeSha256, readbackSha256: jsonHash({ uidSha256: sha256(uid), emailVerified: true, disabled: false }), produced }
         },
       })
@@ -992,6 +1096,7 @@ function safeIncrementalSnapshot(value) {
  * timestamps escape the adapter. */
 export function createIncrementalFirestoreReconciler({ session }) {
   const { Client } = internalSession(session)
+  const recovery = sessionRecovery(session)
   const before = new Map()
   const auditCheckpoints = new Map()
   let replayProof = null
@@ -1013,6 +1118,15 @@ export function createIncrementalFirestoreReconciler({ session }) {
       observedAt: observed.sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null }
   }
   return Object.freeze({
+    async assertCompanyInvitationsEmpty(companyId) {
+      if (!safeId(companyId)) blocked()
+      const body = { structuredQuery: { from: [{ collectionId: 'invitations' }], where: { fieldFilter: {
+        field: { fieldPath: 'companyId' }, op: 'EQUAL', value: { stringValue: companyId },
+      } } } }
+      const value = await exactPost(Client, `${DOCUMENTS_URL}:runQuery`, body)
+      if (!Array.isArray(value) || value.length !== 1 || !exactKeys(value[0], ['readTime']) || !rfc3339(value[0].readTime)) blocked()
+      return frozen({ empty: true, resultCount: 0, companyIdSha256: sha256(companyId), querySha256: jsonHash(body), readTime: value[0].readTime })
+    },
     async captureBefore(input) {
       if (before.has(input?.slot)) blocked()
       const value = await capture({ ...input, produced: {} })
@@ -1022,7 +1136,20 @@ export function createIncrementalFirestoreReconciler({ session }) {
         if (checkpoint && JSON.stringify(safeIncrementalSnapshot({ documents: [], audits: current })) !== checkpoint) blocked()
       }
       before.set(input.slot, value)
+      recovery.slotSnapshots[input.slot] = { state: 'PREPARED', before: safeSnapshotForRecovery(value), after: null }
       return frozen({ slot: input.slot, stateSha256: jsonHash(safeIncrementalSnapshot(value)) })
+    },
+    registerIdempotencyMaterial(value) {
+      if (!exactKeys(value, ['slot', 'identity', 'actorUid', 'requestSha256', 'callable', 'input']) ||
+          !['createCompanyA', 'createCompanyB'].includes(value.slot) ||
+          value.identity !== (value.slot === 'createCompanyA' ? 'ownerA' : 'ownerB') || value.callable !== 'createCompany' ||
+          !safeId(value.actorUid) || !hex64(value.requestSha256) ||
+          !exactKeys(value.input, ['idempotencyKey', 'ownerName', 'companyName', 'legalType']) ||
+          typeof value.input.idempotencyKey !== 'string' || value.input.idempotencyKey.length < 16 || value.input.idempotencyKey.length > 128 ||
+          typeof value.input.ownerName !== 'string' || !value.input.ownerName || typeof value.input.companyName !== 'string' ||
+          !value.input.companyName || !['ooo', 'ip'].includes(value.input.legalType) ||
+          sha256(callableBody(value.callable, value.input)) !== value.requestSha256 || recovery.idempotency[value.slot]) blocked()
+      recovery.idempotency[value.slot] = clone(value)
     },
     async reconcile(input) {
       if (!record(input) || !hex64(input.requestSha256) || !hex64(input.outcomeSha256) ||
@@ -1040,6 +1167,9 @@ export function createIncrementalFirestoreReconciler({ session }) {
           `companies/${input.state.companyAId}/members/${input.produced.ownerMailboxUid}`,
         ])
         if (absent.documents.some(row => row.exists)) blocked()
+        recovery.ownerMailboxUid = input.produced.ownerMailboxUid
+        recovery.slotSnapshots[input.slot] = { state: 'RECONCILED', before: null,
+          after: { observedAt: absent.observedAt, documents: absent.documents.map(({ fields: _fields, ...row }) => row), audits: [] } }
         return frozen({ requestSha256: input.requestSha256, outcomeSha256: input.outcomeSha256,
           readbackSha256: jsonHash({ uidSha256: sha256(user.localId), emailVerified: false, firestoreAbsent: true }),
           produced: input.produced })
@@ -1070,6 +1200,7 @@ export function createIncrementalFirestoreReconciler({ session }) {
         const rows = after.audits.filter(row => row.companyId === companyId)
         auditCheckpoints.set(companyId, JSON.stringify(safeIncrementalSnapshot({ documents: [], audits: rows })))
       }
+      recovery.slotSnapshots[input.slot] = { state: 'RECONCILED', before: safeSnapshotForRecovery(prior), after: safeSnapshotForRecovery(after) }
       return frozen({ requestSha256: input.requestSha256, outcomeSha256: input.outcomeSha256,
         readbackSha256: jsonHash({ slot: input.slot, after: safeIncrementalSnapshot(after), sanitized: input.sanitized }), produced: input.produced })
     },
@@ -1176,13 +1307,15 @@ export function createSemanticFirestoreReadbackAdapter({ session, plan, state, o
     const ordered = [...rawAudits.filter(row => row.company === 'a'), ...rawAudits.filter(row => row.company === 'b')]
     const expectedOrder = [...AUDIT_EXPECTATIONS.filter(row => row[1] === 'a'), ...AUDIT_EXPECTATIONS.filter(row => row[1] === 'b')]
     const identities = { ownerA: state.ownerAUid, ownerB: state.ownerBUid, ownerMailbox: state.ownerMailboxUid }
-    const auditEvents = ordered.map((row, index) => {
+    const groupedAuditEvents = ordered.map((row, index) => {
       const [slot, company, action, actor, target] = expectedOrder[index] ?? []
       expectExactFields(row.doc.fields, ['action', 'actorUid', 'targetUid', 'createdAt'])
       if (row.company !== company || row.doc.fields.action !== action || row.doc.fields.actorUid !== identities[actor] ||
           row.doc.fields.targetUid !== (target === null ? null : identities[target]) || !rfc3339(row.doc.fields.createdAt)) blocked()
       return { slot, company, id: row.id, stateSha256: jsonHash(row.doc.fields), createTime: row.doc.createTime, updateTime: row.doc.updateTime }
     })
+    const auditEvents = AUDIT_EXPECTATIONS.map(([slot]) => groupedAuditEvents.find(row => row.slot === slot) ?? blocked())
+    if (new Set(auditEvents.map(row => row.slot)).size !== AUDIT_EXPECTATIONS.length) blocked()
     const auditUpdateTime = auditEvents.map(row => row.updateTime).sort().at(-1)
     const readbacksByName = {
       'company-a': { docs: [companyA, get(plan.companies[0].dataPath), ownerAMember, ownerAProfile, get(plan.authUsers[0].bootstrapPath)], updateTime: companyA.updateTime },
@@ -1199,7 +1332,19 @@ export function createSemanticFirestoreReadbackAdapter({ session, plan, state, o
     const readbacks = READBACK_CHECKS.map(check => ({ check, stateSha256: jsonHash(readbacksByName[check].docs), updateTime: readbacksByName[check].updateTime }))
     const replay = { invitationUpdateTime: final.updateTime, membershipUpdateTime: mailboxMember.updateTime,
       profileUpdateTime: mailboxProfile.updateTime, auditCount: auditEvents.length }
-    return frozen({ readbacks, auditEvents, replay, fullStateSha256: jsonHash({ requestSha256, paths, readbacks, auditEvents }) })
+    const recoveryResources = [
+      ...paths.map(pathValue => {
+        const doc = get(pathValue)
+        return { kind: 'firestore', path: pathValue, exists: true, stateSha256: jsonHash(doc.fields),
+          createTime: doc.createTime, updateTime: doc.updateTime }
+      }),
+      ...ordered.map(row => ({ kind: 'firestore-audit', path: `companies/${plan.companies.find(company => company.key === row.company).id}/audit_events/${row.id}`,
+        exists: true, stateSha256: jsonHash(row.doc.fields), createTime: row.doc.createTime, updateTime: row.doc.updateTime })),
+    ]
+    if (recoveryResources.length !== paths.length + plan.counts.auditEvents ||
+        new Set(recoveryResources.map(row => row.path)).size !== recoveryResources.length) blocked()
+    return frozen({ readbacks, auditEvents, replay, recoveryResources,
+      fullStateSha256: jsonHash({ requestSha256, paths, readbacks, auditEvents }) })
   }
 
   return Object.freeze({
@@ -1260,6 +1405,7 @@ export async function runLiveAcceptanceComposition({ context, stages, now = () =
       typeof now !== 'function') blocked()
   const startedAt = isoNow(now)
   let loopback = null, provider = null, playwright = null, journal = null, teardown = null, journalClosed = false
+  let outputAttempted = false
   try {
     loopback = await stages.openLoopback(frozen({ sourceHead: context.sourceHead }))
     if (!exactKeys(loopback, ['receipt', 'close']) || !record(loopback.receipt) || typeof loopback.close !== 'function') blocked()
@@ -1277,17 +1423,21 @@ export async function runLiveAcceptanceComposition({ context, stages, now = () =
 
     const scenario = await stages.runScenarios(Object.freeze({ sourceHead: context.sourceHead, loopbackReceipt: loopback.receipt, journal,
       providerSession: provider.session, providerTransport: provider.transport, browser: playwright.browser }))
-    if (!record(scenario) || !Array.isArray(scenario.scenarios) || typeof scenario.materializeFixturePlan !== 'function' ||
+    if (!record(scenario) || !Array.isArray(scenario.scenarios) || !Array.isArray(scenario.uiEvidence) ||
+        !hex64(scenario.uiEvidenceSha256) || typeof scenario.materializeFixturePlan !== 'function' ||
         typeof scenario.readSemanticState !== 'function' || typeof scenario.readReplayProof !== 'function' ||
         typeof scenario.readCallableCounts !== 'function' || typeof scenario.readTransportCounts !== 'function' ||
         typeof scenario.verifyAcceptance !== 'function' || typeof scenario.buildCleanupPlanOnly !== 'function') blocked()
+    const verifiedUi = validateLivePlaywrightUiEvidence(scenario.uiEvidence)
+    if (verifiedUi.evidenceSha256 !== scenario.uiEvidenceSha256) blocked()
     const plan = scenario.materializeFixturePlan()
     validateFixturePlan(plan)
     const semanticState = scenario.readSemanticState()
     const semantic = await stages.createSemanticReadback(Object.freeze({ session: provider.session, plan, state: semanticState }))
     if (!semantic || typeof semantic.captureFinal !== 'function') blocked()
     const captured = await semantic.captureFinal()
-    if (!exactKeys(captured, ['readbacks', 'auditEvents', 'replay', 'fullStateSha256']) || !hex64(captured.fullStateSha256)) blocked()
+    if (!exactKeys(captured, ['readbacks', 'auditEvents', 'replay', 'recoveryResources', 'fullStateSha256']) ||
+        !Array.isArray(captured.recoveryResources) || !hex64(captured.fullStateSha256)) blocked()
     const bundle = {
       readbacks: captured.readbacks, auditEvents: captured.auditEvents, replay: scenario.readReplayProof(),
       callableCounts: scenario.readCallableCounts(), transportCounts: scenario.readTransportCounts(),
@@ -1299,20 +1449,29 @@ export async function runLiveAcceptanceComposition({ context, stages, now = () =
         cleanup.status !== 'CLEANUP_PLAN_ONLY' || cleanup.executionEnabled !== false || cleanup.cleanupPerformed !== false ||
         !hex64(cleanup.cleanupPlanSha256)) blocked()
     await teardown.close()
+    const finishedAt = isoNow(now)
+    const recoveryManifest = buildPrivateLiveRecoveryManifest({ sourceHead: context.sourceHead, journal, session: provider.session,
+      status: 'SUCCESS', generatedAt: finishedAt, finalResources: captured.recoveryResources, cleanupTargets: cleanup.targets })
     const journalReceipt = journal.close(); journalClosed = true
     if (!exactKeys(journalReceipt, ['journalSha256', 'eventCount']) || !hex64(journalReceipt.journalSha256) ||
-        !Number.isSafeInteger(journalReceipt.eventCount) || journalReceipt.eventCount < 1) blocked()
-    const finishedAt = isoNow(now)
-    if (scenario.scenarios.length !== 6 || scenario.scenarios.some(row => !exactKeys(row, ['name', 'status']) || row.status !== 'PASS')) blocked()
+        !Number.isSafeInteger(journalReceipt.eventCount) || journalReceipt.eventCount < 1 ||
+        recoveryManifest.journal.journalSha256 !== journalReceipt.journalSha256 ||
+        recoveryManifest.journal.eventCount !== journalReceipt.eventCount) blocked()
+    if (scenario.scenarios.length !== 6 || scenario.scenarios.some(row =>
+      !exactKeys(row, ['name', 'status', 'evidenceSha256']) || row.status !== 'PASS' || !hex64(row.evidenceSha256))) blocked()
     const output = frozen({
       task: 'SEC-006 Stage 8 live acceptance', status: 'LIVE_ACCEPTANCE_VERIFIED', project: PROJECT,
       sourceHead: context.sourceHead, planSha256: jsonHash(plan), observationsSha256: verified.observationsSha256,
       journalSha256: journalReceipt.journalSha256, cleanupPlanSha256: cleanup.cleanupPlanSha256,
       startedAt, finishedAt, scenarios: scenario.scenarios, callableCounts: bundle.callableCounts,
-      transportCounts: bundle.transportCounts, cleanup: 'DEFERRED_SEPARATE_APPROVAL', cleanupPerformed: false,
+      transportCounts: bundle.transportCounts, uiEvidence: verifiedUi.evidence,
+      uiEvidenceSha256: verifiedUi.evidenceSha256, cleanup: 'DEFERRED_SEPARATE_APPROVAL', cleanupPerformed: false,
     })
     assertNoSecretMaterial(output)
-    await stages.writeOutput(frozen({ filename: context.outputPath, value: output }))
+    const privateOutput = frozen({ ...output, recoveryManifest })
+    assertPrivateRecoveryMaterial(privateOutput)
+    outputAttempted = true
+    await stages.writeOutput(frozen({ filename: context.outputPath, value: privateOutput }))
     return output
   } catch {
     if (teardown) { try { await teardown.close() } catch { /* retain original failure */ } }
@@ -1320,6 +1479,21 @@ export async function runLiveAcceptanceComposition({ context, stages, now = () =
       if (playwright) { try { await playwright.close() } catch { /* best effort */ } }
       if (loopback) { try { await loopback.close() } catch { /* best effort */ } }
       if (provider) { try { await provider.close() } catch { /* best effort */ } }
+    }
+    if (journal && provider && !outputAttempted && !journalClosed) {
+      try {
+        const failedAt = isoNow(now)
+        const recoveryManifest = buildPrivateLiveRecoveryManifest({ sourceHead: context.sourceHead, journal,
+          session: provider.session, status: 'RECOVERY_REQUIRED', generatedAt: failedAt })
+        const recoveryOutput = frozen({ task: 'SEC-006 Stage 8 live acceptance', status: 'RECOVERY_REQUIRED', project: PROJECT,
+          sourceHead: context.sourceHead, startedAt, failedAt, recoveryManifest })
+        assertPrivateRecoveryMaterial(recoveryOutput)
+        const journalReceipt = journal.close(); journalClosed = true
+        if (recoveryManifest.journal.journalSha256 !== journalReceipt.journalSha256 ||
+            recoveryManifest.journal.eventCount !== journalReceipt.eventCount) blocked()
+        outputAttempted = true
+        await stages.writeOutput(frozen({ filename: context.outputPath, value: recoveryOutput }))
+      } catch { /* retain the original generic failure; the journal remains the recovery floor */ }
     }
     throw new Error('live_executor_adapters_blocked')
   } finally {

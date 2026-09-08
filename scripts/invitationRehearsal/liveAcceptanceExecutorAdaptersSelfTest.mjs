@@ -2,14 +2,19 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import {
-  createCallableDispatchPrimitive, createFirebaseReadOnlyPreflightAdapters,
+  buildPrivateLiveRecoveryManifest, createCallableDispatchPrimitive, createFirebaseReadOnlyPreflightAdapters,
   createGuardedFirebaseToolsSessionLoader, createSafeStopTeardown,
   createIncrementalFirestoreReconciler,
   createSemanticFirestoreReadbackAdapter, createSyntheticVerifiedAuthAdapter,
   discoverFirebaseAuthTemplateMetadata,
   LIVE_EXECUTOR_MISSING_ADAPTERS, runLiveAcceptanceComposition,
 } from './liveAcceptanceExecutorAdapters.mjs'
-import { appendJournalEvent, buildFixturePlan } from './liveAcceptanceCore.mjs'
+import { appendJournalEvent, buildFixturePlan, CALLABLE_CAPS, FIXTURE_MUTATION_SLOT_SPECS, SCENARIO_NAMES } from './liveAcceptanceCore.mjs'
+import {
+  ACTIVE_RULES_SHA256, FIELD_OVERRIDES_SHA256, LIVE_FUNCTIONS, READ_ONLY_SLOT_SPECS,
+  createLiveStagingExecutor, createVisibleOwnerHandoff,
+} from './liveAcceptanceExecutorCore.mjs'
+import { LIVE_PLAYWRIGHT_UI_STEPS } from './liveAcceptancePlaywrightCore.mjs'
 
 const h = value => createHash('sha256').update(value).digest('hex')
 const now = '2026-09-08T12:00:00.000Z'
@@ -393,6 +398,10 @@ test('semantic Firestore readback fixes paths and blocks alias, audit/updateTime
     ownerASubjectSha256: h(fixture.emails.ownerA), ownerBEmailSha256: h(fixture.emails.ownerB) })
   const captured = await adapter.captureFinal()
   assert.equal(captured.readbacks.length, 10); assert.equal(captured.auditEvents.length, 9)
+  assert.equal(captured.recoveryResources.length, 27)
+  assert.equal(new Set(captured.recoveryResources.map(row => row.path)).size, 27)
+  assert.equal(captured.recoveryResources.every(row => row.exists === true && row.createTime === fsTime && row.updateTime === fsTime), true)
+  assert.equal(JSON.stringify(captured.recoveryResources).includes(fixture.emails.mailbox), false)
   assert.equal(harness.requests[0].body.documents.length, 18)
   assert.equal(harness.requests.every(row => row.method === 'POST' && row.options.retries === 0), true)
   assert.throws(() => createSemanticFirestoreReadbackAdapter({ session, plan: fixture.plan,
@@ -550,6 +559,26 @@ test('incremental createCompany proves absent pre-state, exact chronology and ex
   assert.match(result.readbackSha256, /^[a-f0-9]{64}$/)
 })
 
+test('incremental company invitation bootstrap proof uses a full exact empty query', async () => {
+  const companyId = 'company_empty'
+  const root = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/documents'
+  const url = `${root}:runQuery`
+  const harness = fakeSessionHarness({ [`POST ${url}`]: [{ readTime: fsTime }] })
+  const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
+  const receipt = await createIncrementalFirestoreReconciler({ session }).assertCompanyInvitationsEmpty(companyId)
+  assert.deepEqual(Object.keys(receipt).sort(), ['companyIdSha256', 'empty', 'querySha256', 'readTime', 'resultCount'])
+  assert.equal(receipt.empty, true); assert.equal(receipt.resultCount, 0); assert.equal(receipt.companyIdSha256, h(companyId))
+  const body = harness.requests.at(-1).body
+  assert.equal(Object.hasOwn(body.structuredQuery, 'limit'), false)
+  assert.equal(body.structuredQuery.from[0].collectionId, 'invitations')
+  assert.equal(body.structuredQuery.where.fieldFilter.value.stringValue, companyId)
+
+  const nonempty = fakeSessionHarness({ [`POST ${url}`]: [{ document: fsDoc(`invitations/invite_existing`, { companyId }), readTime: fsTime }] })
+  const nonemptySession = await nonempty.loader.execute({ approvalValidated: true, localGatesValidated: true })
+  await assert.rejects(() => createIncrementalFirestoreReconciler({ session: nonemptySession }).assertCompanyInvitationsEmpty(companyId))
+  await assert.rejects(() => createIncrementalFirestoreReconciler({ session }).assertCompanyInvitationsEmpty('../foreign'))
+})
+
 test('incremental denial snapshots its invitation lock and audit checkpoint rejects an inter-slot event', async () => {
   const fixture = semanticFixture(), root = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/documents'
   const finalPath = `invitations/${fixture.ids.mailboxFinalInviteId}`
@@ -589,61 +618,240 @@ test('safe stop closes browser and transport without cleanup capability', async 
   assert.equal('cleanup' in stop, false)
 })
 
-test('live composition orders concrete stages and safe-stops with fake-only dependencies', async () => {
-  const fixture = semanticFixture(), calls = []
-  const journal = { append() {}, bytes: () => Buffer.alloc(0), events: () => [],
-    close: () => { calls.push('journal.close'); return { journalSha256: h('journal'), eventCount: 50 } } }
-  const scenario = {
-    scenarios: ['one', 'two', 'three', 'four', 'five', 'six'].map(name => ({ name, status: 'PASS' })),
-    materializeFixturePlan: () => { calls.push('materialize'); return fixture.plan },
-    readSemanticState: () => fixture.ids,
+function trackedPreflight(fixture, sourceHead) {
+  const functions = LIVE_FUNCTIONS.map(name => ({ name, state: 'ACTIVE', generation: 2, runtime: 'nodejs22', region: 'us-central1',
+    memory: '256Mi', cpu: 1, concurrency: 1, minInstances: 0, maxInstances: 1, timeoutSeconds: 60 }))
+  const expected = { sourceHead, functionsSha256: h(JSON.stringify(functions)), authMetadataSha256: h('auth-metadata'),
+    stagingFingerprint: h('staging-build'), mailboxSha256: h(fixture.emails.mailbox) }
+  const adapters = {
+    project: async () => ({ projectId: 'finapp-staging', databaseId: '(default)', databaseLocation: 'eur3',
+      databaseType: 'FIRESTORE_NATIVE', billingEnabled: true, sourceHead, observedAt: now }),
+    functions: async () => ({ items: functions, inventorySha256: expected.functionsSha256, authzProbeAbsent: true, sourceHead, observedAt: now }),
+    rules: async () => ({ canonicalSha256: ACTIVE_RULES_SHA256, observedAt: now }),
+    indexes: async () => ({ invitationIndexState: 'READY', fieldOverrideCount: 1, fieldOverridesSha256: FIELD_OVERRIDES_SHA256, observedAt: now }),
+    auth: async () => ({ emailPasswordEnabled: true, userSignupDisabled: false, verificationMethodPresent: true,
+      verificationTemplateMetadataPresent: true, callbackDomainPresent: true, metadataSha256: expected.authMetadataSha256, observedAt: now }),
+    maintenance: async () => ({ state: 'ABSENT', observedAt: now }),
+    subjectAbsence: async () => ({ mailboxSha256: expected.mailboxSha256, accountExists: false, profileExists: false, observedAt: now }),
+    build: async () => ({ sourceHead, stagingFingerprint: expected.stagingFingerprint,
+      servedFrom: 'http://127.0.0.1:5177', sixFieldsVerified: true, observedAt: now }),
+  }
+  return { expected, adapters }
+}
+
+function trackedBinding(spec, state) {
+  const actorUid = { ownerA: state.ownerAUid, ownerB: state.ownerBUid, ownerMailbox: state.ownerMailboxUid }[spec.identity]
+  const companyId = { companyA: state.companyAId, companyB: state.companyBId }[spec.entity]
+  if (spec.callable === 'listInvitations') return { identity: spec.identity, actorUid, companyId, expectation: spec.expectation }
+  if (spec.callable === 'previewInvite') return { identity: spec.identity,
+    invitationId: { mailboxCancelledInvite: state.mailboxCancelledInviteId, mailboxFinalInvite: state.mailboxFinalInviteId }[spec.entity],
+    capabilitySha256: { mailboxCancelledCapability: state.mailboxCancelledCapabilitySha256,
+      mailboxPreviousCapability: state.mailboxPreviousCapabilitySha256,
+      mailboxFinalCapability: state.mailboxFinalCapabilitySha256 }[spec.capability], expectation: spec.expectation }
+  return { identity: spec.identity, actorUid, companyId, expectation: spec.expectation }
+}
+
+function trackedFixtureRows(fixture) {
+  const { ids, emails } = fixture
+  const oldCapability = h('previous-final-capability')
+  return [
+    ['createOwnerAAuth', { identity: 'ownerA', subjectSha256: h(emails.ownerA) }, { ownerAUid: ids.ownerAUid }],
+    ['createCompanyA', { identity: 'ownerA', actorUid: ids.ownerAUid, idempotencyKeySha256: h('idem-a-1234567890') }, { companyAId: ids.companyAId }],
+    ['createOwnerBAuth', { identity: 'ownerB', subjectSha256: h(emails.ownerB) }, { ownerBUid: ids.ownerBUid }],
+    ['createCompanyB', { identity: 'ownerB', actorUid: ids.ownerBUid, idempotencyKeySha256: h('idem-b-1234567890') }, { companyBId: ids.companyBId }],
+    ['createMailboxCancelledInvite', { identity: 'ownerA', actorUid: ids.ownerAUid, companyId: ids.companyAId,
+      subjectSha256: h(emails.mailbox), role: 'accountant' }, { mailboxCancelledInviteId: ids.mailboxCancelledInviteId,
+      mailboxCancelledCapabilitySha256: ids.mailboxCancelledCapabilitySha256, mailboxLockId: ids.mailboxLockId }],
+    ['cancelMailboxInvite', { identity: 'ownerA', actorUid: ids.ownerAUid, companyId: ids.companyAId,
+      invitationId: ids.mailboxCancelledInviteId }, {}],
+    ['createMailboxFinalInvite', { identity: 'ownerA', actorUid: ids.ownerAUid, companyId: ids.companyAId,
+      subjectSha256: h(emails.mailbox), role: 'accountant' }, { mailboxFinalInviteId: ids.mailboxFinalInviteId,
+      mailboxFinalCapabilitySha256: oldCapability, mailboxLockId: ids.mailboxLockId }],
+    ['denyMailboxResendCooldown', { identity: 'ownerA', actorUid: ids.ownerAUid, companyId: ids.companyAId,
+      invitationId: ids.mailboxFinalInviteId }, {}],
+    ['resendMailboxFinalInvite', { identity: 'ownerA', actorUid: ids.ownerAUid, companyId: ids.companyAId,
+      invitationId: ids.mailboxFinalInviteId }, { mailboxFinalCapabilitySha256: ids.mailboxFinalCapabilitySha256 }],
+    ['createOwnerMailboxAuth', { identity: 'ownerMailbox', subjectSha256: h(emails.mailbox) }, { ownerMailboxUid: ids.ownerMailboxUid }],
+    ['denyWrongIdentityAccept', { identity: 'ownerB', actorUid: ids.ownerBUid, invitationId: ids.mailboxFinalInviteId,
+      capabilitySha256: ids.mailboxFinalCapabilitySha256 }, {}],
+    ['denyUnverifiedMailboxAccept', { identity: 'ownerMailbox', actorUid: ids.ownerMailboxUid,
+      invitationId: ids.mailboxFinalInviteId, capabilitySha256: ids.mailboxFinalCapabilitySha256 }, {}],
+    ['acceptMailboxFinalInvite', { identity: 'ownerMailbox', actorUid: ids.ownerMailboxUid,
+      invitationId: ids.mailboxFinalInviteId, capabilitySha256: ids.mailboxFinalCapabilitySha256 }, {}],
+    ['createOwnerBInvite', { identity: 'ownerA', actorUid: ids.ownerAUid, companyId: ids.companyAId,
+      subjectSha256: h(emails.ownerB), role: 'viewer' }, { ownerBInviteId: ids.ownerBInviteId,
+      ownerBCapabilitySha256: ids.ownerBCapabilitySha256, ownerBLockId: ids.ownerBLockId }],
+    ['acceptOwnerBInvite', { identity: 'ownerB', actorUid: ids.ownerBUid, invitationId: ids.ownerBInviteId,
+      capabilitySha256: ids.ownerBCapabilitySha256 }, {}],
+    ['replayMailboxFinalInvite', { identity: 'ownerMailbox', actorUid: ids.ownerMailboxUid,
+      invitationId: ids.mailboxFinalInviteId, capabilitySha256: ids.mailboxFinalCapabilitySha256 }, {}],
+  ]
+}
+
+async function createTrackedScenario(journal, fixture, sourceHead, { uncertainAt = null, onUncertainReadback = async () => {} } = {}) {
+  const preflight = trackedPreflight(fixture, sourceHead)
+  const executor = createLiveStagingExecutor({ journal, preflightAdapters: preflight.adapters, expectedPreflight: preflight.expected,
+    initial: { runId: fixture.plan.runId, mailboxSha256: h(fixture.emails.mailbox),
+      ownerASubjectSha256: h(fixture.emails.ownerA), ownerBSubjectSha256: h(fixture.emails.ownerB) },
+    nowMs: () => Date.parse(now), cooldownGate: { start() {}, async wait() { return {} }, isReady: () => true } })
+  await executor.start()
+  let readOnlyIndex = 0
+  const executeReadOnly = async spec => {
+    const binding = trackedBinding(spec, executor.snapshot().state)
+    const requestSha256 = h(`request-${spec.slot}`), outcomeSha256 = h(`outcome-${spec.slot}`)
+    await executor.executeReadOnlyCallable({ slot: spec.slot, callable: spec.callable, requestSha256, binding,
+      dispatch: async () => ({ requestSha256, outcomeSha256, producedSha256: h('{}') }),
+      readback: async () => ({ requestSha256, outcomeSha256, readbackSha256: h(`readback-${spec.slot}`), produced: {} }) })
+  }
+  const rows = trackedFixtureRows(fixture)
+  for (let index = 0; index < rows.length; index++) {
+    const [slot, binding, produced] = rows[index]
+    const requestSha256 = h(`request-${slot}`), outcomeSha256 = h(`outcome-${slot}`)
+    await executor.executeFixtureSlot({ slot, requestSha256, binding,
+      dispatch: async () => ({ requestSha256, outcomeSha256, producedSha256: h(JSON.stringify(produced)) }),
+      readback: async () => {
+        if (slot === uncertainAt) {
+          await onUncertainReadback({ slot, binding, state: executor.snapshot().state, requestSha256, outcomeSha256 })
+          throw new Error('synthetic uncertain readback')
+        }
+        return { requestSha256, outcomeSha256, readbackSha256: h(`readback-${slot}`), produced }
+      } })
+    if (slot === 'denyUnverifiedMailboxAccept') {
+      const emailRequest = h('verification-request'), emailOutcome = h('verification-outcome')
+      await executor.executeVerificationEmail({ requestSha256: emailRequest,
+        dispatch: async () => ({ requestSha256: emailRequest, outcomeSha256: emailOutcome }) })
+      const handoff = createVisibleOwnerHandoff({ openSession: async () => ({
+        inspectBoundary: async () => ({ visible: true, persistent: false, fragmentRemovedBeforeInit: true,
+          financialModulesLoaded: false, cachedCompanyDataLoaded: false, capabilityPersisted: false }),
+        confirmCredentialReady: async () => ({ ready: true, minimumLengthSatisfied: true }),
+        prepareRegistration: async () => ({}), dispatchRegistration: async () => ({}), prepareVerification: async () => ({}),
+        dispatchVerification: async () => ({}), confirmVerifiedSession: async value => ({ ...value, verified: true, reloaded: true, forcedRefresh: true }),
+        close: async () => {},
+      }), pause: async () => ({ acknowledged: true }) })
+      await handoff.open(); const proof = await handoff.awaitVerifiedSession(executor.verificationSessionChallenge())
+      executor.markVerifiedSession(proof); await handoff.close()
+    }
+    while (READ_ONLY_SLOT_SPECS[readOnlyIndex]?.afterFixtureCount === index + 1) await executeReadOnly(READ_ONLY_SLOT_SPECS[readOnlyIndex++])
+  }
+  const counts = Object.fromEntries(Object.keys(CALLABLE_CAPS).map(name => [name, 0]))
+  for (const event of journal.events()) if (['FIXTURE_MUTATION_MAY_BE_SENT', 'CALLABLE_REQUEST_MAY_BE_SENT'].includes(event.status) && event.details.callable) counts[event.details.callable]++
+  const semanticState = Object.fromEntries(['ownerAUid', 'ownerBUid', 'ownerMailboxUid', 'companyAId', 'companyBId',
+    'mailboxCancelledInviteId', 'mailboxFinalInviteId', 'ownerBInviteId', 'mailboxCancelledCapabilitySha256',
+    'mailboxFinalCapabilitySha256', 'ownerBCapabilitySha256', 'mailboxLockId', 'ownerBLockId'].map(key => [key, executor.snapshot().state[key]]))
+  const uiEvidence = LIVE_PLAYWRIGHT_UI_STEPS.map(step => ({
+    step, status: 'PASS', observationSha256: h(step),
+    ...(step === 'admin-copy-link' ? { initialListSource: 'verified-empty-local-bootstrap' } : {}),
+  }))
+  return { scenarios: SCENARIO_NAMES.map(name => ({ name, status: 'PASS', evidenceSha256: h(`scenario:${name}`) })),
+    uiEvidence, uiEvidenceSha256: h(JSON.stringify(uiEvidence)), materializeFixturePlan: executor.materializeFixturePlan,
+    readSemanticState: () => semanticState,
     readReplayProof: () => ({ invitationUpdateTimeBefore: fsTime, invitationUpdateTimeAfter: fsTime,
       membershipUpdateTimeBefore: fsTime, membershipUpdateTimeAfter: fsTime, profileUpdateTimeBefore: fsTime,
       profileUpdateTimeAfter: fsTime, auditCountBefore: 9, auditCountAfter: 9 }),
-    readCallableCounts: () => ({ createCompany: 2, inviteMember: 3, listInvitations: 3, cancelInvite: 1,
-      resendInvite: 2, previewInvite: 4, acceptInvite: 5, getCompanyAccess: 7 }),
+    readCallableCounts: () => counts,
     readTransportCounts: () => ({ authorizedRequests: 27, dispatchedRequests: 27, oauthRefreshes: 0, verificationDispatches: 1 }),
-    verifyAcceptance: () => ({ observationsSha256: h('observations') }),
-    buildCleanupPlanOnly: () => ({ status: 'CLEANUP_PLAN_ONLY', executionEnabled: false, cleanupPerformed: false,
-      cleanupPlanSha256: h('cleanup'), targets: {} }),
+    verifyAcceptance: executor.verifyAcceptance, buildCleanupPlanOnly: executor.buildCleanupPlanOnly }
+}
+
+test('live composition persists complete private recovery state while returning only public evidence', async () => {
+  const fixture = semanticFixture(), calls = [], sourceHead = 'a'.repeat(40)
+  const harness = fakeSessionHarness(semanticOverrides(fixture))
+  const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
+  const reconciler = createIncrementalFirestoreReconciler({ session })
+  for (const [slot, identity, actorUid, key, ownerName, companyName] of [
+    ['createCompanyA', 'ownerA', fixture.ids.ownerAUid, 'idem-a-1234567890', 'Owner A', 'Company A'],
+    ['createCompanyB', 'ownerB', fixture.ids.ownerBUid, 'idem-b-1234567890', 'Owner B', 'Company B'],
+  ]) {
+    const input = { idempotencyKey: key, ownerName, companyName, legalType: 'ooo' }
+    reconciler.registerIdempotencyMaterial({ slot, identity, actorUid, requestSha256: h(JSON.stringify({ data: input })), callable: 'createCompany', input })
   }
+  const memoryJournal = callLog => {
+    let events = [], closed = false
+    return { append(status, details = {}) { if (closed) throw new Error('closed'); events = appendJournalEvent(events, { seq: events.length, status, at: now, details }) },
+      bytes() { if (closed) throw new Error('closed'); return Buffer.from(events.map(row => JSON.stringify(row)).join('\n') + (events.length ? '\n' : '')) },
+      events() { if (closed) throw new Error('closed'); return structuredClone(events) },
+      close() { if (closed) throw new Error('closed'); const bytes = this.bytes(); closed = true; callLog.push('journal.close');
+        return { journalSha256: h(bytes), eventCount: events.length } } }
+  }
+  const journal = memoryJournal(calls)
+  let privateOutput
   const stages = {
-    openLoopback: async () => { calls.push('loopback.open'); return { receipt: { sourceHead: 'a'.repeat(40) }, close: async () => calls.push('loopback.close') } },
-    openProvider: async () => { calls.push('provider.open'); return { session: { opaque: true },
+    openLoopback: async () => { calls.push('loopback.open'); return { receipt: { sourceHead }, close: async () => calls.push('loopback.close') } },
+    openProvider: async () => { calls.push('provider.open'); return { session,
       transport: { close: async () => calls.push('transport.close') }, close: async () => calls.push('provider.close') } },
     createJournal: async () => { calls.push('journal.open'); return journal },
     openPlaywright: async () => { calls.push('playwright.open'); return { browser: { close: async () => calls.push('browser.close') },
       close: async () => calls.push('playwright.close') } },
-    runScenarios: async ({ loopbackReceipt }) => {
-      assert.deepEqual(loopbackReceipt, { sourceHead: 'a'.repeat(40) })
-      calls.push('scenarios'); return scenario
-    },
-    createSemanticReadback: async () => ({ captureFinal: async () => { calls.push('semantic'); return {
-      readbacks: Array.from({ length: 10 }, (_, index) => ({ check: String(index), stateSha256: h(String(index)), updateTime: fsTime })),
-      auditEvents: Array.from({ length: 9 }, (_, index) => ({ slot: String(index), company: 'a', id: `id${index}`,
-        stateSha256: h(`audit${index}`), createTime: fsTime, updateTime: fsTime })),
-      replay: { invitationUpdateTime: fsTime, membershipUpdateTime: fsTime, profileUpdateTime: fsTime, auditCount: 9 },
-      fullStateSha256: h('full') } } }),
-    writeOutput: async ({ value }) => { calls.push('output'); assert.equal(value.cleanupPerformed, false) },
+    runScenarios: async () => { calls.push('scenarios'); return createTrackedScenario(journal, fixture, sourceHead) },
+    createSemanticReadback: async ({ session: value, plan, state }) => { calls.push('semantic');
+      return createSemanticFirestoreReadbackAdapter({ session: value, plan, state,
+        ownerASubjectSha256: h(fixture.emails.ownerA), ownerBEmailSha256: h(fixture.emails.ownerB) }) },
+    writeOutput: async ({ value }) => { calls.push('output'); privateOutput = value },
   }
-  const result = await runLiveAcceptanceComposition({ context: { sourceHead: 'a'.repeat(40),
+  const result = await runLiveAcceptanceComposition({ context: { sourceHead,
     journalPath: 'D:\\private\\journal.jsonl', outputPath: 'D:\\private\\out.json' }, stages,
   now: (() => { const values = ['2026-09-08T12:00:00.000Z', '2026-09-08T12:01:00.000Z']; return () => values.shift() })() })
-  assert.equal(result.status, 'LIVE_ACCEPTANCE_VERIFIED')
-  assert.deepEqual(calls, ['loopback.open', 'provider.open', 'journal.open', 'playwright.open', 'scenarios', 'materialize',
-    'semantic', 'playwright.close', 'provider.close', 'loopback.close', 'journal.close', 'output'])
-  assert.equal(JSON.stringify(result).includes('@'), false)
+  assert.equal(result.status, 'LIVE_ACCEPTANCE_VERIFIED'); assert.equal('recoveryManifest' in result, false)
+  assert.equal(privateOutput.recoveryManifest.status, 'SUCCESS')
+  assert.equal(Object.keys(privateOutput.recoveryManifest.fixtureSlots).length, FIXTURE_MUTATION_SLOT_SPECS.length)
+  assert.equal(Object.values(privateOutput.recoveryManifest.fixtureSlots).every(row => row.state === 'RECONCILED'), true)
+  assert.equal(Object.values(privateOutput.recoveryManifest.readOnlySlots).every(row => row.state === 'RECONCILED'), true)
+  assert.equal(privateOutput.recoveryManifest.auth.ownerA.uid, fixture.ids.ownerAUid)
+  assert.equal(privateOutput.recoveryManifest.resources.length, 27)
+  assert.equal(privateOutput.recoveryManifest.resources.filter(row => row.kind === 'firestore-audit').length, 9)
+  assert.equal(privateOutput.recoveryManifest.resources.filter(row => row.cleanupDisposition === 'CAS_REQUIRED').length, 2)
+  assert.equal(privateOutput.recoveryManifest.idempotency.createCompanyA.input.idempotencyKey, 'idem-a-1234567890')
+  const persisted = JSON.stringify(privateOutput)
+  for (const forbidden of [...Object.values(fixture.emails), 'synthetic-password', 'raw-invite-capability', 'provider body']) assert.equal(persisted.includes(forbidden), false)
+  assert.equal(JSON.stringify(result).includes('idem-a-1234567890'), false)
+  assert.deepEqual(calls.slice(-5), ['playwright.close', 'provider.close', 'loopback.close', 'journal.close', 'output'])
 
-  const failedCalls = []
-  await assert.rejects(() => runLiveAcceptanceComposition({ context: { sourceHead: 'a'.repeat(40),
+  const failedCalls = [], failedJournal = memoryJournal(failedCalls)
+  const failedRoot = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/documents'
+  const failedReplayPaths = [`invitations/${fixture.ids.mailboxFinalInviteId}`, `invitationLocks/${fixture.ids.mailboxLockId}`,
+    `companies/${fixture.ids.companyAId}/members/${fixture.ids.ownerMailboxUid}`, `users/${fixture.ids.ownerMailboxUid}`]
+  const failedHarness = fakeSessionHarness({
+    [`POST ${failedRoot}:batchGet`]: failedReplayPaths.map(pathValue => ({ found: fixture.docs.get(pathValue), readTime: fsTime })),
+    [`POST ${failedRoot}/companies/${fixture.ids.companyAId}:runQuery`]: fixture.audit.map(document => ({ document, readTime: fsTime })),
+    [`POST ${failedRoot}/companies/${fixture.ids.companyBId}:runQuery`]: fixture.auditB.map(document => ({ document, readTime: fsTime })),
+  })
+  const failedSession = await failedHarness.loader.execute({ approvalValidated: true, localGatesValidated: true })
+  const failedReconciler = createIncrementalFirestoreReconciler({ session: failedSession })
+  for (const [slot, identity, actorUid, key, ownerName, companyName] of [
+    ['createCompanyA', 'ownerA', fixture.ids.ownerAUid, 'failed-idem-a-1234567890', 'Owner A', 'Company A'],
+    ['createCompanyB', 'ownerB', fixture.ids.ownerBUid, 'failed-idem-b-1234567890', 'Owner B', 'Company B'],
+  ]) {
+    const input = { idempotencyKey: key, ownerName, companyName, legalType: 'ooo' }
+    failedReconciler.registerIdempotencyMaterial({ slot, identity, actorUid,
+      requestSha256: h(JSON.stringify({ data: input })), callable: 'createCompany', input })
+  }
+  let recoveryOutput, failureProbe = {}
+  await assert.rejects(() => runLiveAcceptanceComposition({ context: { sourceHead,
     journalPath: 'D:\\private\\journal2.jsonl', outputPath: 'D:\\private\\out2.json' }, stages: {
     ...stages,
     openLoopback: async () => ({ receipt: {}, close: async () => failedCalls.push('loopback.close') }),
-    openProvider: async () => ({ session: {}, transport: { close: async () => {} }, close: async () => failedCalls.push('provider.close') }),
-    createJournal: async () => journal,
+    openProvider: async () => ({ session: failedSession, transport: { close: async () => {} }, close: async () => failedCalls.push('provider.close') }),
+    createJournal: async () => failedJournal,
     openPlaywright: async () => ({ browser: { close: async () => {} }, close: async () => failedCalls.push('playwright.close') }),
-    runScenarios: async () => { throw new Error('synthetic failure') },
-    writeOutput: async () => failedCalls.push('output'),
-  } }))
-  assert.deepEqual(failedCalls, ['playwright.close', 'provider.close', 'loopback.close'])
+    runScenarios: async () => createTrackedScenario(failedJournal, fixture, sourceHead, { uncertainAt: 'replayMailboxFinalInvite',
+      onUncertainReadback: async input => {
+        failureProbe.started = true
+        await failedReconciler.captureBefore(input)
+        failureProbe.captured = true
+        await failedReconciler.reconcile({ ...input, sanitized: null, produced: {} })
+        failureProbe.reconciled = true
+        failureProbe.resources = buildPrivateLiveRecoveryManifest({ sourceHead, journal: failedJournal, session: failedSession,
+          status: 'RECOVERY_REQUIRED', generatedAt: now }).resources.length
+      } }),
+    writeOutput: async ({ value }) => { failedCalls.push('output'); recoveryOutput = value },
+  }, now: () => '2026-09-08T12:02:00.000Z' }))
+  assert.equal(recoveryOutput.status, 'RECOVERY_REQUIRED')
+  assert.deepEqual(failureProbe, { started: true, captured: true, reconciled: true, resources: 13 })
+  assert.equal(recoveryOutput.recoveryManifest.fixtureSlots.acceptOwnerBInvite.state, 'RECONCILED')
+  assert.equal(recoveryOutput.recoveryManifest.fixtureSlots.replayMailboxFinalInvite.state, 'UNCERTAIN')
+  assert.equal(recoveryOutput.recoveryManifest.identifiers.companyAId, fixture.ids.companyAId)
+  assert.equal(recoveryOutput.recoveryManifest.idempotency.createCompanyA.input.idempotencyKey, 'failed-idem-a-1234567890')
+  assert.equal(recoveryOutput.recoveryManifest.resources.length, 13)
+  assert.equal(recoveryOutput.recoveryManifest.resources.filter(row => row.cleanupDisposition === 'CAS_REQUIRED').length, 2)
+  assert.deepEqual(failedCalls, ['playwright.close', 'provider.close', 'loopback.close', 'journal.close', 'output'])
 })

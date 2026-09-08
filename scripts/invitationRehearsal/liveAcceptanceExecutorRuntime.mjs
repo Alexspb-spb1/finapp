@@ -5,10 +5,10 @@ import readline from 'node:readline/promises'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { assertNoSecretMaterial, liveAcceptanceTransport, PROJECT } from './liveAcceptanceCore.mjs'
+import { assertNoSecretMaterial, liveAcceptanceTransport, PROJECT, SCENARIO_NAMES } from './liveAcceptanceCore.mjs'
 import { createLiveBrowserRequestBinder } from './liveAcceptanceBrowserCore.mjs'
 import {
-  createDurableLiveJournal, createLiveStagingExecutor, createVisibleOwnerHandoff,
+  assertPrivateRecoveryMaterial, createDurableLiveJournal, createLiveStagingExecutor, createVisibleOwnerHandoff,
 } from './liveAcceptanceExecutorCore.mjs'
 import {
   createCallableDispatchPrimitive, createFirebaseReadOnlyPreflightAdapters,
@@ -18,8 +18,9 @@ import {
 } from './liveAcceptanceExecutorAdapters.mjs'
 import { createFixedLiveScenarioOperations } from './liveAcceptanceExecutorOperations.mjs'
 import {
-  createBoundedVisiblePlaywrightSessionFactory, createHeldPlaywrightRequestBridge,
-  createSixScenarioComposer,
+  createAdminInvitationPlaywrightDriver, createBoundedVisiblePlaywrightSessionFactory,
+  createHeldPlaywrightRequestBridge, createPostFixturePlaywrightUiVerifier,
+  createSixScenarioComposer, validateLivePlaywrightUiEvidence,
 } from './liveAcceptancePlaywrightCore.mjs'
 import { openFreshStagingLoopbackGate, LOOPBACK_ORIGIN, STAGING_CONFIG_KEYS } from './liveAcceptanceLoopbackCore.mjs'
 import { createFixedIdentityTokenLifecycle } from './liveAcceptanceTokenLifecycle.mjs'
@@ -36,6 +37,47 @@ const sha256 = value => createHash('sha256').update(value).digest('hex')
 const hex64 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value)
 const frozen = value => Object.freeze(structuredClone(value))
+
+const UI_STEPS_BY_SCENARIO = Object.freeze({
+  'mailbox-cancelled-invitation': Object.freeze(['admin-copy-link', 'owner-a-admin-ui']),
+  'mailbox-resend-token-rotation': Object.freeze([]),
+  'wrong-identity-denial': Object.freeze([]),
+  'owner-mailbox-verification-acceptance': Object.freeze(['owner-mailbox-accountant-ui', 'owner-mailbox-reload-recovered']),
+  'existing-user-company-isolation': Object.freeze([
+    'owner-b-company-b-admin-ui', 'owner-b-company-a-viewer-ui', 'owner-b-direct-url-denial', 'owner-b-company-b-restored',
+  ]),
+  'same-uid-replay-session-recovery': Object.freeze([
+    'owner-b-offline-blocked', 'owner-b-online-recovered', 'owner-b-two-tab-logout',
+  ]),
+})
+
+export function buildVerifiedScenarioRows({ scenarioNames, backendEvidence, uiEvidence }) {
+  if (!Array.isArray(scenarioNames) || JSON.stringify(scenarioNames) !== JSON.stringify(SCENARIO_NAMES) ||
+      !Array.isArray(backendEvidence) || backendEvidence.length < SCENARIO_NAMES.length) blocked()
+  const verifiedUi = validateLivePlaywrightUiEvidence(uiEvidence)
+  const uiByStep = new Map(verifiedUi.evidence.map(row => [row.step, row]))
+  return frozen(SCENARIO_NAMES.map(name => {
+    const backend = backendEvidence.filter(row => record(row) && row.scenario === name &&
+      typeof row.kind === 'string' && typeof row.slot === 'string' &&
+      (row.readbackSha256 === null || hex64(row.readbackSha256)))
+    const ui = UI_STEPS_BY_SCENARIO[name]?.map(step => uiByStep.get(step))
+    if (!backend.length || !ui || ui.some(row => !row)) blocked()
+    const evidenceSha256 = sha256(JSON.stringify({
+      backend: backend.map(row => ({ kind: row.kind, slot: row.slot, readbackSha256: row.readbackSha256 })),
+      ui: ui.map(row => ({ step: row.step, observationSha256: row.observationSha256 })),
+    }))
+    return { name, status: 'PASS', evidenceSha256 }
+  }))
+}
+
+async function signInSyntheticOwner(page, account) {
+  if (!page || !record(account) || typeof account.email !== 'string' || typeof account.password !== 'string' ||
+      !account.email || account.password.length < 20) blocked()
+  await page.locator('input[type="email"]').fill(account.email)
+  await page.locator('input[type="password"]').fill(account.password)
+  await page.getByRole('button', { name: 'Войти', exact: true }).click()
+  return { signedIn: true }
+}
 
 function parseStagingConfig(bytes) {
   const lines = Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean)
@@ -197,7 +239,8 @@ async function pauseOwner(action) {
 }
 
 export function writePrivateOutput(filename, value, io = fs) {
-  assertNoSecretMaterial(value)
+  if (record(value) && Object.hasOwn(value, 'recoveryManifest')) assertPrivateRecoveryMaterial(value)
+  else assertNoSecretMaterial(value)
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`)
   const descriptor = io.openSync(filename, 'wx', 0o600)
   try {
@@ -241,7 +284,20 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
       await recheckHead()
       const local = loadConcreteRuntimePrerequisites({ repoRoot, approval, io })
       const secrets = generatedSecrets()
-      let providerTransport = null, playwrightClose = async () => {}, tokenLifecycle = null, incremental = null
+      let providerTransport = null, tokenLifecycle = null, incremental = null
+      const playwrightClosers = []
+      const registerPlaywrightCloser = close => {
+        if (typeof close !== 'function' || playwrightClosers.includes(close)) blocked()
+        playwrightClosers.push(close)
+      }
+      const playwrightClose = async () => {
+        let failure = null
+        for (const close of [...playwrightClosers].reverse()) {
+          try { await close() } catch (error) { failure ??= error }
+        }
+        playwrightClosers.length = 0
+        if (failure) throw failure
+      }
       const stages = {
         openLoopback: async ({ sourceHead }) => openFreshStagingLoopbackGate({ repoRoot, distDir: path.join(repoRoot, 'dist'),
           expectedHead: sourceHead, expectedStagingFingerprint: approval.stagingFingerprint,
@@ -302,9 +358,15 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
           })
           let activeOwnerPage = null
           const clearOwnerClipboard = async () => {
-            if (!activeOwnerPage) return { cleared: true }
-            await activeOwnerPage.evaluate(() => navigator.clipboard?.writeText?.(''))
-            return { cleared: true }
+            if (!activeOwnerPage || typeof activeOwnerPage.isClosed !== 'function' || activeOwnerPage.isClosed()) blocked()
+            const result = await activeOwnerPage.evaluate(async () => {
+              const api = navigator.clipboard
+              if (!api || typeof api.writeText !== 'function' || typeof api.readText !== 'function') throw new Error('clipboard_unavailable')
+              await api.writeText('')
+              return { cleared: await api.readText() === '' }
+            })
+            if (!exactKeys(result, ['cleared']) || result.cleared !== true) blocked()
+            return result
           }
           const sessionFactory = createBoundedVisiblePlaywrightSessionFactory({ chromium: browser.chromium, browserBinder: binder,
             mailboxSha256: approval.mailboxSha256, localStaticOrigin: LOOPBACK_ORIGIN,
@@ -329,7 +391,7 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
           })
           const openSession = async options => {
             const session = await sessionFactory.openSession(options)
-            playwrightClose = sessionFactory.close
+            if (!playwrightClosers.includes(sessionFactory.close)) registerPlaywrightCloser(sessionFactory.close)
             return session
           }
           const ownerHandoff = createVisibleOwnerHandoff({ openSession, pause: pauseOwner })
@@ -347,17 +409,84 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
           const normalPath = { prepare: callable => bridge.takePreparedNormal(callable),
             dispatch: (callable, permit) => bridge.release({ operation: callable, permit }),
             ownerMailboxUid: tokenLifecycle.ownerMailboxUid, clearClipboard: clearOwnerClipboard }
-          const operations = createFixedLiveScenarioOperations({ authAdapter, callablePrimitive: primitive, reconciler: incremental,
+          const baseOperations = createFixedLiveScenarioOperations({ authAdapter, callablePrimitive: primitive, reconciler: incremental,
             normalPath, secrets: { mailbox: local.mailbox, ownerAEmail: secrets.ownerA.email, ownerBEmail: secrets.ownerB.email,
               idempotencyA: secrets.idempotencyA, idempotencyB: secrets.idempotencyB } })
-          const composer = createSixScenarioComposer({ executor, browserBinder: binder, ownerHandoff, operations })
+
+          const adminDriver = createAdminInvitationPlaywrightDriver({
+            chromium: browser.chromium, browserBinder: binder, localStaticOrigin: LOOPBACK_ORIGIN,
+            secretActions: {
+              signInOwnerA: page => signInSyntheticOwner(page, secrets.ownerA),
+              async fillInviteMailbox(_page, locator) { await locator.fill(local.mailbox); return { filled: true } },
+            },
+            summarizeInvitation: (response, meta) => primitive.summarizeHeld('inviteMember', response, meta),
+            summarizeList: (response, meta) => primitive.summarizeHeld('listInvitations', response, meta),
+          })
+          registerPlaywrightCloser(adminDriver.close)
+          let emptyInvitationPrecondition = null
+          const adminFixture = Object.freeze({
+            mode: 'held-normal-path',
+            async prepare(snapshot) {
+              const state = snapshot?.state
+              if (!record(state) || !safeId(state.companyAId) || emptyInvitationPrecondition) blocked()
+              emptyInvitationPrecondition = await incremental.assertCompanyInvitationsEmpty(state.companyAId)
+              if (!exactKeys(emptyInvitationPrecondition, ['empty', 'resultCount', 'companyIdSha256', 'querySha256', 'readTime']) ||
+                  emptyInvitationPrecondition.empty !== true || emptyInvitationPrecondition.resultCount !== 0 ||
+                  emptyInvitationPrecondition.companyIdSha256 !== sha256(state.companyAId) ||
+                  !hex64(emptyInvitationPrecondition.querySha256) || typeof emptyInvitationPrecondition.readTime !== 'string') blocked()
+              await adminDriver.open()
+              const prepared = await adminDriver.prepareCancelledInvitation({ companyId: state.companyAId })
+              return { requestSha256: prepared.requestSha256,
+                binding: { identity: 'ownerA', actorUid: state.ownerAUid, companyId: state.companyAId,
+                  subjectSha256: approval.mailboxSha256, role: 'accountant' } }
+            },
+            dispatch: permit => adminDriver.dispatchCancelledInvitation(permit),
+            readback: baseOperations.fixtures.createMailboxCancelledInvite.readback,
+          })
+          const adminList = Object.freeze({
+            mode: 'held-normal-path',
+            async prepare(snapshot) {
+              const state = snapshot?.state
+              if (!record(state) || !safeId(state.ownerAUid) || !safeId(state.companyAId) || !emptyInvitationPrecondition) blocked()
+              const prepared = await adminDriver.takePreparedPostCreateList()
+              return { requestSha256: prepared.requestSha256,
+                binding: { identity: 'ownerA', actorUid: state.ownerAUid, companyId: state.companyAId, expectation: 'PENDING' } }
+            },
+            dispatch: permit => adminDriver.dispatchPostCreateList(permit),
+            readback: baseOperations.readOnly.listCancelledPending.readback,
+          })
+          const operations = Object.freeze({
+            fixtures: Object.freeze({ ...baseOperations.fixtures, createMailboxCancelledInvite: adminFixture }),
+            readOnly: Object.freeze({ ...baseOperations.readOnly, listCancelledPending: adminList }),
+            clipboard: Object.freeze({ clear: async () => ({ deferred: true }) }),
+          })
+          const deferredOwnerHandoff = Object.freeze({ ...ownerHandoff, close: async () => ({ deferred: true }) })
+          const composer = createSixScenarioComposer({ executor, browserBinder: binder, ownerHandoff: deferredOwnerHandoff, operations })
           const result = await composer.run()
+          const uiVerifier = createPostFixturePlaywrightUiVerifier({
+            chromium: browser.chromium, browserBinder: binder, localStaticOrigin: LOOPBACK_ORIGIN,
+            secretActions: { signIn: (page, identity) => {
+              const account = identity === 'ownerA' ? secrets.ownerA : identity === 'ownerB' ? secrets.ownerB : null
+              return signInSyntheticOwner(page, account)
+            } },
+            borrowVerifiedMailboxSession: async () => {
+              if (!activeOwnerPage || typeof activeOwnerPage.context !== 'function') blocked()
+              return { page: activeOwnerPage, context: activeOwnerPage.context() }
+            },
+          })
+          registerPlaywrightCloser(uiVerifier.close)
+          const postFixtureUi = await uiVerifier.run()
+          const verifiedUi = validateLivePlaywrightUiEvidence([adminDriver.readEvidence(), ...postFixtureUi.evidence])
+          const scenarios = buildVerifiedScenarioRows({ scenarioNames: result.scenarios,
+            backendEvidence: result.evidence, uiEvidence: verifiedUi.evidence })
+          await clearOwnerClipboard()
+          await ownerHandoff.close()
           const safeState = executor.snapshot().state
           const semanticState = Object.fromEntries(['ownerAUid', 'ownerBUid', 'ownerMailboxUid', 'companyAId', 'companyBId',
             'mailboxCancelledInviteId', 'mailboxFinalInviteId', 'ownerBInviteId', 'mailboxCancelledCapabilitySha256',
             'mailboxFinalCapabilitySha256', 'ownerBCapabilitySha256', 'mailboxLockId', 'ownerBLockId'].map(key => [key, safeState[key]]))
           return {
-            scenarios: result.scenarios.map(name => ({ name, status: 'PASS' })),
+            scenarios, uiEvidence: verifiedUi.evidence, uiEvidenceSha256: verifiedUi.evidenceSha256,
             materializeFixturePlan: executor.materializeFixturePlan,
             readSemanticState: () => frozen(semanticState), readReplayProof: incremental.readReplayProof,
             readCallableCounts: () => { const { total: _total, verificationDispatches: _email, ...counts } = rawBinder.counts(); return counts },
