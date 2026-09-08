@@ -41,6 +41,14 @@ export function requestSpec(kind, pageToken) {
   return { url: URLS[kind], queryParams }
 }
 
+export function metadataHeaders(target) {
+  if (!Object.values(URLS).includes(target)) blocked()
+  // Charging the Cloud Billing read to the target project can return 403 even
+  // for its owner when that API is not enabled there. The authenticated GET is
+  // already scoped to the exact project path; omit only this quota header.
+  return target === URLS.billing ? {} : { 'x-goog-user-project': PROJECT }
+}
+
 export function deploymentTransport(baseFetch) {
   let requests = 0
   return async (input, init = {}) => {

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { PROJECT, guardCliAccount } from './inventoryCore.mjs'
-import { deploymentGuard, deploymentTransport, runDeploymentCheck } from './deploymentCheckCore.mjs'
+import { deploymentGuard, deploymentTransport, metadataHeaders, runDeploymentCheck } from './deploymentCheckCore.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const args = process.argv.slice(2)
@@ -55,7 +55,7 @@ try {
     },
     get: async ({ url: target, queryParams }) => {
       const url = new URL(target), client = new Client({ urlPrefix: url.origin, auth: true })
-      return (await client.get(url.pathname, { queryParams, headers: { 'x-goog-user-project': PROJECT },
+      return (await client.get(url.pathname, { queryParams, headers: metadataHeaders(target),
         skipLog: { body: true, resBody: true, queryParams: true }, redirect: 'error', retries: 0, timeout: 10000 })).body
     },
   })

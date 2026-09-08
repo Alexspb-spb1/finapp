@@ -128,3 +128,21 @@ Do not repeat activation; no deployment or real email has occurred.
 
 Resume: inspect actual diff, GitHub and this checkpoint. Local emulators are
 temporary; verify processes/ports before reuse. Do not replay external actions.
+
+## 2026-09-08 billing checkpoint
+
+- Owner-approved package265d552 began with fresh clean HEAD/PR/CI and local
+  artifact PASS. Initial deployment preflight stopped before writes because
+  `finapp-staging` billing was disabled. Read-only reconciliation confirmed
+  Functions0/indexes0 and unchanged Rules/field override/Auth metadata.
+- Separately approved billing discovery found exactly one open account. Owner
+  then approved linking it; one link command succeeded and fresh Google CLI
+  metadata verified `billingEnabled=true` with the exact selected account.
+  Private receipt: D:/projects/finapp/.runtime/stage8-billing-link-01D5C5.json.
+- No index/Functions/Rules/Auth/data/email mutation followed. The protected
+  Firebase-session preflight still returned403 only for its billing GET. A
+  bounded comparison proved the same session succeeds when that GET omits
+  `x-goog-user-project`; all other metadata requests retain the header.
+- Current task: review and CI the narrow preflight transport fix, then resume
+  package265d552 from a fresh exact-HEAD artifact/preflight sequence. Because
+  code HEAD changes, regenerate the private approval bindings before writes.

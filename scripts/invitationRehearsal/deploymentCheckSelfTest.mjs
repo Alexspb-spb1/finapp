@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { PROJECT, DATABASE } from './inventoryCore.mjs'
-import { CALLABLES, URLS, FIELDS, deploymentTransport, requestSpec, runDeploymentCheck, checkFunction } from './deploymentCheckCore.mjs'
+import { CALLABLES, URLS, FIELDS, deploymentTransport, metadataHeaders, requestSpec, runDeploymentCheck, checkFunction } from './deploymentCheckCore.mjs'
 
 const HEAD = 'a'.repeat(40), SECRET = 'DO_NOT_PERSIST_PRIVATE_CONFIG_TOKEN_OR_PERSONAL_DATA'
 const options = { mode: 'preflight', project: PROJECT, expectedHead: HEAD, env: {} }
@@ -215,6 +215,14 @@ test('transport allows only exact projected GETs and normal OAuth refresh; disab
   await fetch('https://www.googleapis.com/oauth2/v3/token', { method: 'POST', body: SECRET })
   assert.equal(calls.length, 7)
   for (const call of calls) { assert.equal(call.init.redirect, 'error'); assert(call.init.signal instanceof AbortSignal) }
+})
+
+test('billing metadata omits target quota header while other fixed reads retain it', () => {
+  assert.deepEqual(metadataHeaders(URLS.billing), {})
+  for (const [kind, target] of Object.entries(URLS)) {
+    if (kind !== 'billing') assert.deepEqual(metadataHeaders(target), { 'x-goog-user-project': PROJECT })
+  }
+  assert.throws(() => metadataHeaders('https://cloudbilling.googleapis.com/v1/projects/other/billingInfo'))
 })
 
 test('transport blocks mutations, activation, records, configuration, source download and unsafe URLs', async () => {
