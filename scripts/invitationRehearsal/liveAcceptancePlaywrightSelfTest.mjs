@@ -181,16 +181,18 @@ test('bounded visible Playwright session exports exact safe methods and keeps se
   assert.equal(contextOptions.serviceWorkers, 'block')
   assert.equal('recordHar' in contextOptions, false); assert.equal('recordVideo' in contextOptions, false)
   assert.equal(typeof routeHandler, 'function')
+  assert.equal((await session.inspectBoundary()).fragmentRemovedBeforeInit, true)
+  assert.equal((await session.confirmCredentialReady()).minimumLengthSatisfied, true)
+  await assert.rejects(() => session.confirmVerifiedSession({ challengeSha256: h('challenge') }))
   let aborted = 0
   await routeHandler({ request: () => ({ method: () => 'GET', url: () => 'https://blocked.example/private', postData: () => null }),
     async abort() { aborted++ }, async continue() { assert.fail('blocked origin continued') } })
   assert.equal(aborted, 1)
-  assert.equal((await session.inspectBoundary()).fragmentRemovedBeforeInit, true)
-  assert.equal((await session.confirmCredentialReady()).minimumLengthSatisfied, true)
+  await assert.rejects(() => session.inspectBoundary())
+  await assert.rejects(() => session.confirmCredentialReady())
   assert.equal(JSON.stringify(session).includes(privateMailbox), false)
   assert.equal(JSON.stringify(session).includes(privateInvite), false)
   assert.equal(JSON.stringify(session).includes(privatePassword), false)
-  await assert.rejects(() => session.confirmVerifiedSession({ challengeSha256: h('challenge') }))
   await session.close()
   assert.equal(cleared, 1); assert.equal(closed, 2)
   assert.deepEqual(factory.missingBindings, [])
@@ -385,7 +387,7 @@ test('bounded Playwright factory rejects any alternate static origin', () => {
 })
 
 function adminUiHarness({ clipboardMode = 'ok', bootstrapCompanyId = 'company_a' } = {}) {
-  let pageRoute, linkVisible = false, copied = false, closed = 0, fulfilled = 0, aborted = 0, binds = 0
+  let pageRoute, contextRoute, linkVisible = false, copied = false, closed = 0, fulfilled = 0, aborted = 0, binds = 0
   const inviteBody = JSON.stringify({ data: { companyId: 'company_a', email: 'private@example.invalid', role: 'accountant' } })
   const listBody = JSON.stringify({ data: { companyId: bootstrapCompanyId, pageSize: 20 } })
   const response = kind => ({ status: () => 200, kind })
@@ -453,13 +455,13 @@ function adminUiHarness({ clipboardMode = 'ok', bootstrapCompanyId = 'company_a'
       }
     },
   }
-  const context = { async route() {}, async newPage() { return page }, async close() { closed++ } }
+  const context = { async route(_glob, handler) { contextRoute = handler }, async newPage() { return page }, async close() { closed++ } }
   const browser = { async newContext(options) {
     assert.deepEqual(options.permissions, ['clipboard-read', 'clipboard-write']); return context
   }, async close() { closed++ } }
   const driver = createAdminInvitationPlaywrightDriver({
     chromium: { async launch(options) { assert.deepEqual(options, { headless: false }); return browser } },
-    browserBinder: { async bind() { binds++; return { action: 'continue' } } },
+    browserBinder: { async bind(value) { binds++; return { action: value.url.includes('unexpected.example') ? 'abort' : 'continue' } } },
     secretActions: { async signInOwnerA() { return { signedIn: true } },
       async fillInviteMailbox(_page, field) { assert.equal(typeof field.click, 'function'); return { filled: true } } },
     summarizeInvitation: async (received, meta) => {
@@ -474,7 +476,10 @@ function adminUiHarness({ clipboardMode = 'ok', bootstrapCompanyId = 'company_a'
     },
     waitTimeoutMs: 30,
   })
-  return { driver, counts: () => ({ fulfilled, aborted, binds, closed }) }
+  return { driver, async denyAuxiliaryRequest() {
+    await contextRoute({ request: () => ({ method: () => 'GET', url: () => 'https://unexpected.example/aux', postData: () => null }),
+      async abort() { aborted++ }, async continue() { assert.fail('denied auxiliary request continued') } })
+  }, counts: () => ({ fulfilled, aborted, binds, closed }) }
 }
 
 test('admin UI driver locally bootstraps one verified-empty list, journals invite, verifies copy, and holds real listed readback', async () => {
@@ -510,12 +515,25 @@ test('admin UI driver blocks missing clipboard API, readback mismatch, and unmat
   assert.equal(wrong.counts().aborted, 1)
 })
 
-function postUiHarness() {
-  let browserClosed = 0, contextClosed = 0, borrowedClosed = 0
+test('admin UI driver latches a denied auxiliary request after evidence exists', async () => {
+  const value = adminUiHarness()
+  await value.driver.open()
+  const prepared = await value.driver.prepareCancelledInvitation({ companyId: 'company_a' })
+  await value.driver.dispatchCancelledInvitation(prepared)
+  const listedPrepared = await value.driver.takePreparedPostCreateList()
+  await value.driver.dispatchPostCreateList(listedPrepared)
+  await value.denyAuxiliaryRequest()
+  assert.equal(value.counts().aborted, 1)
+  assert.throws(() => value.driver.readEvidence())
+  await value.driver.close()
+})
+
+function postUiHarness({ denyAuxiliaryFor = null } = {}) {
+  let browserClosed = 0, contextClosed = 0, borrowedClosed = 0, aborted = 0
   const signIns = []
   class FakeContext {
     constructor(borrowed = false) { this.identity = null; this.company = null; this.offline = false; this.pages = []; this.borrowed = borrowed }
-    async route() {}
+    async route(_glob, handler) { this.routeHandler = handler }
     async newPage() { const value = new FakePage(this); this.pages.push(value); return value }
     async setOffline(value) { this.offline = value }
     async close() { if (this.borrowed) borrowedClosed++; else contextClosed++ }
@@ -562,18 +580,22 @@ function postUiHarness() {
   borrowedContext.pages.push(borrowedPage)
   const verifier = createPostFixturePlaywrightUiVerifier({
     chromium: { async launch(options) { assert.deepEqual(options, { headless: false }); return browser } },
-    browserBinder: { async bind() { return { action: 'continue' } } },
+    browserBinder: { async bind(value) { return { action: value.url.includes('unexpected.example') ? 'abort' : 'continue' } } },
     secretActions: { async signIn(page, identity) {
       assert.equal(['ownerA', 'ownerB'].includes(identity), true)
       signIns.push(identity)
       page.context.identity = identity; page.context.company = identity === 'ownerB' ? 'b' : 'a'
       page.path = '/'; page.url = 'http://127.0.0.1:5177/finapp/#/'
+      if (identity === denyAuxiliaryFor) await page.context.routeHandler({
+        request: () => ({ method: () => 'GET', url: () => 'https://unexpected.example/aux', postData: () => null }),
+        async abort() { aborted++ }, async continue() { assert.fail('denied auxiliary request continued') },
+      })
       return { signedIn: true }
     } },
     borrowVerifiedMailboxSession: async () => ({ page: borrowedPage, context: borrowedContext }),
     waitTimeoutMs: 30,
   })
-  return { verifier, signIns, counts: () => ({ browserClosed, contextClosed, borrowedClosed }) }
+  return { verifier, signIns, counts: () => ({ browserClosed, contextClosed, borrowedClosed, aborted }) }
 }
 
 test('post-fixture verifier produces typed evidence for roles, switches, direct URL, offline recovery, reload, and two-tab logout', async () => {
@@ -589,5 +611,12 @@ test('post-fixture verifier produces typed evidence for roles, switches, direct 
   assert.throws(() => validateLivePlaywrightUiEvidence([copy, copy, ...result.evidence.slice(1)]))
   assert.deepEqual(value.signIns, ['ownerA', 'ownerB'])
   await value.verifier.close()
-  assert.deepEqual(value.counts(), { browserClosed: 1, contextClosed: 2, borrowedClosed: 0 })
+  assert.deepEqual(value.counts(), { browserClosed: 1, contextClosed: 2, borrowedClosed: 0, aborted: 0 })
+})
+
+test('post-fixture verifier rejects after an otherwise successful sign-in triggers a denied auxiliary request', async () => {
+  const value = postUiHarness({ denyAuxiliaryFor: 'ownerA' })
+  await assert.rejects(() => value.verifier.run())
+  assert.deepEqual(value.signIns, ['ownerA'])
+  assert.deepEqual(value.counts(), { browserClosed: 1, contextClosed: 1, borrowedClosed: 0, aborted: 1 })
 })

@@ -49,11 +49,33 @@ test('CLI approval binds exact bytes, clean HEAD and new external output paths',
     const parsed = parseExecutorCliArgs(args)
     const resolved = validatePrivateExecutorPaths({ parsed, repoRoot: fixture.repoRoot, io: fs })
     assert.equal(resolved['--journal'], fixture.journal)
+    assert.equal(resolved.recovery, `${fixture.out}.recovery.jsonl`)
     assert.equal(validateExecutionApproval({ parsed, bytes, now: () => Date.parse('2026-09-08T12:30:00.000Z') }).status, 'APPROVED')
     assert.equal(validateCleanExecutorHead({ parsed, gitState: { head, status: '' } }), true)
     assert.throws(() => validateExecutionApproval({ parsed, bytes: Buffer.concat([bytes, Buffer.from(' ')]), now: () => Date.parse('2026-09-08T12:30:00.000Z') }))
     assert.throws(() => validateCleanExecutorHead({ parsed, gitState: { head, status: ' M file' } }))
     fs.writeFileSync(fixture.journal, '')
+    assert.throws(() => validatePrivateExecutorPaths({ parsed, repoRoot: fixture.repoRoot, io: fs }))
+  } finally { removeTemporary(fixture.base) }
+})
+
+test('CLI rejects an existing or colliding deterministic recovery checkpoint', () => {
+  const fixture = pathsAndArgs()
+  try {
+    let parsed = parseExecutorCliArgs(fixture.args)
+    fs.writeFileSync(`${fixture.out}.recovery.jsonl`, '')
+    assert.throws(() => validatePrivateExecutorPaths({ parsed, repoRoot: fixture.repoRoot, io: fs }))
+    fs.rmSync(`${fixture.out}.recovery.jsonl`)
+
+    const collidingArgs = [...fixture.args]
+    collidingArgs[collidingArgs.indexOf('--journal') + 1] = `${fixture.out}.recovery.jsonl`
+    parsed = parseExecutorCliArgs(collidingArgs)
+    assert.throws(() => validatePrivateExecutorPaths({ parsed, repoRoot: fixture.repoRoot, io: fs }))
+
+    const inCheckoutOut = path.join(fixture.repoRoot, 'out.json')
+    const inCheckoutArgs = [...fixture.args]
+    inCheckoutArgs[inCheckoutArgs.indexOf('--out') + 1] = inCheckoutOut
+    parsed = parseExecutorCliArgs(inCheckoutArgs)
     assert.throws(() => validatePrivateExecutorPaths({ parsed, repoRoot: fixture.repoRoot, io: fs }))
   } finally { removeTemporary(fixture.base) }
 })

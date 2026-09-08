@@ -8,6 +8,7 @@ const exactKeys = (value, keys) => record(value) && JSON.stringify(Object.keys(v
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 const jsonHash = value => sha256(JSON.stringify(value))
 const hex64 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(value)
 
 const denied = Object.freeze({
   denyMailboxResendCooldown: 'invitation_resend_cooldown', denyWrongIdentityAccept: 'invite_invalid',
@@ -17,6 +18,101 @@ const denied = Object.freeze({
 })
 
 function lockId(companyId, email) { return sha256(JSON.stringify([companyId, email])) }
+
+/** State-owning replacements for the first invitation and its immediately
+ * following list readback. They cannot borrow the closures created for the
+ * ordinary callable operations because those closures are initialized only by
+ * their own prepare methods. */
+export function createHeldAdminInvitationOperations({ reconciler, adminDriver, mailbox, mailboxSha256 }) {
+  if (!reconciler || typeof reconciler.assertCompanyInvitationsEmpty !== 'function' ||
+      typeof reconciler.captureBefore !== 'function' || typeof reconciler.reconcile !== 'function' ||
+      !adminDriver || ['open', 'prepareCancelledInvitation', 'dispatchCancelledInvitation',
+        'takePreparedPostCreateList', 'dispatchPostCreateList'].some(name => typeof adminDriver[name] !== 'function') ||
+      typeof mailbox !== 'string' || !mailbox || !hex64(mailboxSha256) || sha256(mailbox) !== mailboxSha256) blocked()
+
+  let emptyProof = null
+  let fixture = null
+  let listed = null
+
+  const invitation = Object.freeze({
+    mode: 'held-normal-path',
+    async prepare(snapshot) {
+      const state = snapshot?.state
+      if (fixture || !state || typeof state !== 'object' || !safeId(state.ownerAUid) || !safeId(state.companyAId)) blocked()
+      emptyProof = await reconciler.assertCompanyInvitationsEmpty(state.companyAId)
+      if (!exactKeys(emptyProof, ['empty', 'resultCount', 'companyIdSha256', 'querySha256', 'readTime']) ||
+          emptyProof.empty !== true || emptyProof.resultCount !== 0 || emptyProof.companyIdSha256 !== sha256(state.companyAId) ||
+          !hex64(emptyProof.querySha256) || typeof emptyProof.readTime !== 'string') blocked()
+      await adminDriver.open()
+      const prepared = await adminDriver.prepareCancelledInvitation({ companyId: state.companyAId })
+      if (!exactKeys(prepared, ['requestSha256']) || !hex64(prepared.requestSha256)) blocked()
+      const binding = { identity: 'ownerA', actorUid: state.ownerAUid, companyId: state.companyAId,
+        subjectSha256: mailboxSha256, role: 'accountant' }
+      await reconciler.captureBefore({ slot: 'createMailboxCancelledInvite', binding, state })
+      fixture = { state: structuredClone(state), binding, requestSha256: prepared.requestSha256, dispatched: null }
+      return { requestSha256: prepared.requestSha256, binding }
+    },
+    async dispatch(permit) {
+      if (!fixture || fixture.dispatched) blocked()
+      const dispatched = await adminDriver.dispatchCancelledInvitation(permit)
+      if (!exactKeys(dispatched, ['requestSha256', 'outcomeSha256', 'sanitized']) ||
+          dispatched.requestSha256 !== fixture.requestSha256 || !hex64(dispatched.outcomeSha256) ||
+          !exactKeys(dispatched.sanitized, ['disposition', 'inviteId', 'capabilitySha256', 'expiresAtUtc']) ||
+          dispatched.sanitized.disposition !== 'SUCCESS' || !safeId(dispatched.sanitized.inviteId) ||
+          !hex64(dispatched.sanitized.capabilitySha256)) blocked()
+      const produced = { mailboxCancelledInviteId: dispatched.sanitized.inviteId,
+        mailboxCancelledCapabilitySha256: dispatched.sanitized.capabilitySha256,
+        mailboxLockId: lockId(fixture.state.companyAId, mailbox) }
+      fixture.dispatched = { ...dispatched, produced }
+      return { requestSha256: dispatched.requestSha256, outcomeSha256: dispatched.outcomeSha256,
+        producedSha256: jsonHash(produced) }
+    },
+    async readback(input) {
+      if (!fixture?.dispatched) blocked()
+      const result = await reconciler.reconcile({ slot: 'createMailboxCancelledInvite', ...input,
+        binding: fixture.binding, state: fixture.state, sanitized: fixture.dispatched.sanitized,
+        produced: fixture.dispatched.produced })
+      if (!record(result) || !hex64(result.readbackSha256)) blocked()
+      return { ...input, readbackSha256: result.readbackSha256, produced: fixture.dispatched.produced }
+    },
+  })
+
+  const list = Object.freeze({
+    mode: 'held-normal-path',
+    async prepare(snapshot) {
+      const state = snapshot?.state
+      if (!fixture?.dispatched || listed || !emptyProof || !state || typeof state !== 'object' ||
+          !safeId(state.ownerAUid) || !safeId(state.companyAId) || state.companyAId !== fixture.state.companyAId) blocked()
+      const prepared = await adminDriver.takePreparedPostCreateList()
+      if (!exactKeys(prepared, ['requestSha256']) || !hex64(prepared.requestSha256)) blocked()
+      const binding = { identity: 'ownerA', actorUid: state.ownerAUid, companyId: state.companyAId, expectation: 'PENDING' }
+      await reconciler.captureBefore({ slot: 'listCancelledPending', binding, state })
+      listed = { state: structuredClone(state), binding, requestSha256: prepared.requestSha256, dispatched: null }
+      return { requestSha256: prepared.requestSha256, binding }
+    },
+    async dispatch(permit) {
+      if (!listed || listed.dispatched) blocked()
+      const dispatched = await adminDriver.dispatchPostCreateList(permit)
+      if (!exactKeys(dispatched, ['requestSha256', 'outcomeSha256', 'sanitized']) ||
+          dispatched.requestSha256 !== listed.requestSha256 || !hex64(dispatched.outcomeSha256) ||
+          !exactKeys(dispatched.sanitized, ['disposition', 'itemCount', 'itemsSha256', 'nextCursorPresent']) ||
+          dispatched.sanitized.disposition !== 'SUCCESS' || dispatched.sanitized.itemCount !== 1 ||
+          !hex64(dispatched.sanitized.itemsSha256) || dispatched.sanitized.nextCursorPresent !== false) blocked()
+      listed.dispatched = dispatched
+      return { requestSha256: dispatched.requestSha256, outcomeSha256: dispatched.outcomeSha256,
+        producedSha256: jsonHash({}) }
+    },
+    async readback(input) {
+      if (!listed?.dispatched) blocked()
+      const result = await reconciler.reconcile({ slot: 'listCancelledPending', ...input,
+        binding: listed.binding, state: listed.state, sanitized: listed.dispatched.sanitized, produced: {} })
+      if (!record(result) || !hex64(result.readbackSha256)) blocked()
+      return { ...input, readbackSha256: result.readbackSha256, produced: {} }
+    },
+  })
+
+  return Object.freeze({ invitation, list })
+}
 
 export function createFixedLiveScenarioOperations({ authAdapter, callablePrimitive, reconciler, normalPath, secrets }) {
   if (!authAdapter || typeof authAdapter.slot !== 'function' || !callablePrimitive ||

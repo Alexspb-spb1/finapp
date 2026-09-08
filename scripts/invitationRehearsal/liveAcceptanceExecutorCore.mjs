@@ -76,6 +76,92 @@ export function readPrivateExecutorRecovery(journal) {
   return frozen(result)
 }
 
+const RECOVERY_CHECKPOINT_KINDS = new Set([
+  'RECOVERY_OPENED', 'EXECUTOR_STATE', 'PROVIDER_STATE', 'FINAL_MANIFEST',
+  'RECOVERY_REQUIRED', 'OUTPUT_COMMITTED',
+])
+
+function validateRecoveryCheckpointEvent(event, expectedSeq, sourceHead, previousSha256) {
+  if (!exactKeys(event, ['version', 'seq', 'at', 'kind', 'sourceHead', 'previousSha256', 'payload']) ||
+      event.version !== 1 || event.seq !== expectedSeq || !iso(event.at) || !RECOVERY_CHECKPOINT_KINDS.has(event.kind) ||
+      event.sourceHead !== sourceHead || event.previousSha256 !== previousSha256 || !record(event.payload) ||
+      (expectedSeq === 0 && event.kind !== 'RECOVERY_OPENED') || (expectedSeq > 0 && event.kind === 'RECOVERY_OPENED')) blocked()
+  assertPrivateRecoveryMaterial(event)
+  return true
+}
+
+/** Parse the fsynced JSONL prefix. A torn final append is ignored so the last
+ * fully durable MAY_BE_SENT snapshot remains usable after process loss. */
+export function readDurableRecoveryCheckpoint(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 1) blocked()
+  const lastNewline = bytes.lastIndexOf(0x0a)
+  if (lastNewline < 0) blocked()
+  const complete = bytes.subarray(0, lastNewline + 1)
+  const trailingBytes = bytes.length - complete.length
+  const lines = complete.toString('utf8').split('\n').filter(Boolean)
+  if (!lines.length) blocked()
+  const events = []
+  let sourceHead = null, previousSha256 = null
+  for (let index = 0; index < lines.length; index++) {
+    let event
+    try { event = JSON.parse(lines[index]) } catch { blocked() }
+    if (index === 0) sourceHead = event?.sourceHead
+    if (!/^[a-f0-9]{40}$/.test(sourceHead ?? '')) blocked()
+    validateRecoveryCheckpointEvent(event, index, sourceHead, previousSha256)
+    events.push(event)
+    previousSha256 = sha256(JSON.stringify(event))
+  }
+  return frozen({ version: 1, sourceHead, events, eventCount: events.length,
+    lastKind: events.at(-1).kind, lastEventSha256: previousSha256, trailingBytes })
+}
+
+/** Private, append-only and hash-chained recovery stream. Every accepted
+ * checkpoint is completely written, fsynced and reread before returning. */
+export function createDurableRecoveryCheckpoint({ filename, repoRoot, sourceHead,
+  now = () => new Date().toISOString(), io = fs }) {
+  if (!/^[a-f0-9]{40}$/.test(sourceHead ?? '')) blocked()
+  const target = privateNewPath(filename, repoRoot, io)
+  const descriptor = io.openSync(target, 'wx', 0o600)
+  let events = [], expectedBytes = Buffer.alloc(0), previousSha256 = null, failed = false, closed = false
+  const ensureOpen = () => { if (failed || closed) blocked() }
+  const append = (kind, payload = {}) => {
+    ensureOpen()
+    const event = { version: 1, seq: events.length, at: now(), kind, sourceHead, previousSha256, payload: clone(payload) }
+    validateRecoveryCheckpointEvent(event, events.length, sourceHead, previousSha256)
+    const bytes = Buffer.from(`${JSON.stringify(event)}\n`)
+    try {
+      let offset = 0
+      while (offset < bytes.length) {
+        const written = io.writeSync(descriptor, bytes, offset, bytes.length - offset)
+        if (!Number.isSafeInteger(written) || written < 1 || written > bytes.length - offset) blocked()
+        offset += written
+      }
+      io.fsyncSync(descriptor)
+      const candidate = Buffer.concat([expectedBytes, bytes])
+      if (!io.readFileSync(target).equals(candidate)) blocked()
+      expectedBytes = candidate
+      events = [...events, event]
+      previousSha256 = sha256(JSON.stringify(event))
+      return frozen({ seq: event.seq, kind, eventSha256: previousSha256 })
+    } catch {
+      failed = true; closed = true
+      try { io.closeSync(descriptor) } catch { /* preserve the durability failure */ }
+      throw new Error('live_executor_blocked')
+    }
+  }
+  append('RECOVERY_OPENED', { project: PROJECT })
+  return Object.freeze({ append,
+    bytes() { ensureOpen(); return Buffer.from(expectedBytes) },
+    events() { ensureOpen(); return clone(events) },
+    close() {
+      ensureOpen(); closed = true
+      try { io.fsyncSync(descriptor) } finally { io.closeSync(descriptor) }
+      return frozen({ checkpointSha256: sha256(expectedBytes), eventCount: events.length,
+        lastKind: events.at(-1).kind, lastEventSha256: previousSha256 })
+    },
+  })
+}
+
 function freshObservedAt(value, floor, ceiling) {
   if (!iso(value)) blocked()
   const instant = Date.parse(value)
@@ -469,20 +555,30 @@ function validateReadOnlyBinding(spec, binding, state) {
   return frozen(expected)
 }
 
-export function createLiveStagingExecutor({ journal, preflightAdapters, expectedPreflight, initial, nowMs = () => Date.now(), cooldownGate = createRealCooldownGate() }) {
+export function createLiveStagingExecutor({ journal, preflightAdapters, expectedPreflight, initial, nowMs = () => Date.now(),
+  cooldownGate = createRealCooldownGate(), recoveryCheckpoint = null }) {
   if (!journal || typeof journal.append !== 'function' || typeof journal.bytes !== 'function' || typeof journal.events !== 'function' ||
+      !(recoveryCheckpoint === null || typeof recoveryCheckpoint?.append === 'function') ||
       !cooldownGate || typeof cooldownGate.start !== 'function' || typeof cooldownGate.wait !== 'function' || typeof cooldownGate.isReady !== 'function') blocked()
   const state = initialState(initial)
   const recovery = {
     version: 1, runId: state.runId, mailboxSha256: state.mailboxSha256,
     authSubjects: { ownerASubjectSha256: state.ownerASubjectSha256, ownerBSubjectSha256: state.ownerBSubjectSha256 },
+    plannedAuthUids: { ownerA: `${state.runId}-ownerA`, ownerB: `${state.runId}-ownerB` },
     lifecycle: 'CREATED', fixtureSlots: Object.fromEntries(FIXTURE_MUTATION_SLOT_SPECS.map((spec, index) => [spec.slot, {
       index, callable: spec.callable, disposition: spec.disposition, state: 'NOT_STARTED',
     }])),
     readOnlySlots: Object.fromEntries(READ_ONLY_SLOT_SPECS.map(spec => [spec.slot, { callable: spec.callable, state: 'NOT_STARTED' }])),
-    verificationEmail: { state: 'NOT_STARTED' }, state: clone(state),
+    verificationEmail: { state: 'NOT_STARTED' }, verifiedSession: { state: 'NOT_STARTED' },
+    fixturePlan: { state: 'NOT_STARTED' }, acceptance: { state: 'NOT_STARTED' }, state: clone(state),
   }
   privateRecoveryByJournal.set(journal, recovery)
+  const persistRecovery = () => {
+    assertPrivateRecoveryMaterial(recovery)
+    if (recoveryCheckpoint) recoveryCheckpoint.append('EXECUTOR_STATE', recovery)
+  }
+  const persistRecoveryBestEffort = () => { try { persistRecovery() } catch { /* preserve the last fsynced snapshot */ } }
+  persistRecovery()
   let started = false, nextSlot = 0, nextReadOnlySlot = 0, emailCompleted = false, emailOutcomeSha256 = null
   let verificationChallengeSha256 = null, verifiedSessionProofSha256 = null, plan = null, acceptanceVerified = false
   const appendFailure = code => { journal.append('FAILED', { failureCode: code }) }
@@ -496,6 +592,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       journal.append('PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED', { envelopeSha256: jsonHash(envelope) })
       journal.append('SCENARIOS_RUNNING')
       recovery.lifecycle = 'SCENARIOS_RUNNING'
+      persistRecovery()
       started = true
       return receipt
     },
@@ -515,6 +612,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       recovery.fixtureSlots[slot] = { ...recovery.fixtureSlots[slot], state: 'MAY_BE_SENT', requestSha256, binding: clone(binding) }
       let dispatched
       try {
+        persistRecovery()
         dispatched = safeDispatchResult(await dispatch(frozen({ ...may, binding: clone(binding), journalBytes: journal.bytes() })), requestSha256)
         const reconciled = safeReadback(await readback(frozen({ slot, binding: clone(binding), requestSha256, outcomeSha256: dispatched.outcomeSha256 })),
           requestSha256, dispatched.outcomeSha256, dispatched.producedSha256)
@@ -528,6 +626,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
           binding: clone(binding), outcomeSha256: dispatched.outcomeSha256, readbackSha256: reconciled.readbackSha256,
           produced: clone(reconciled.produced) }
         recovery.state = clone(state)
+        persistRecovery()
       } catch {
         const outcomeSha256 = dispatched?.outcomeSha256 ?? sha256(`uncertain:${slot}:${requestSha256}`)
         try {
@@ -539,6 +638,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
         recovery.fixtureSlots[slot] = { ...recovery.fixtureSlots[slot], state: 'UNCERTAIN', requestSha256,
           binding: clone(binding), outcomeSha256 }
         recovery.lifecycle = 'RECOVERY_REQUIRED'
+        persistRecoveryBestEffort()
         throw new Error('live_executor_blocked')
       }
       if (slot === 'denyMailboxResendCooldown') cooldownGate.start()
@@ -561,6 +661,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
         binding: clone(validatedBinding), bindingSha256 }
       let dispatched
       try {
+        persistRecovery()
         dispatched = safeDispatchResult(await dispatch(frozen({ ...may, slot, binding: clone(validatedBinding), journalBytes: journal.bytes() })), requestSha256)
         const reconciled = safeReadback(await readback(frozen({ slot, callable, binding: clone(validatedBinding), requestSha256, outcomeSha256: dispatched.outcomeSha256 })),
           requestSha256, dispatched.outcomeSha256, dispatched.producedSha256)
@@ -570,6 +671,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
         recovery.readOnlySlots[slot] = { ...recovery.readOnlySlots[slot], state: 'RECONCILED', requestSha256,
           binding: clone(validatedBinding), bindingSha256, outcomeSha256: dispatched.outcomeSha256,
           readbackSha256: reconciled.readbackSha256 }
+        persistRecovery()
       } catch {
         const outcomeSha256 = dispatched?.outcomeSha256 ?? sha256(`uncertain:${callable}:${requestSha256}`)
         try {
@@ -579,6 +681,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
         recovery.readOnlySlots[slot] = { ...recovery.readOnlySlots[slot], state: 'UNCERTAIN', requestSha256,
           binding: clone(validatedBinding), bindingSha256, outcomeSha256 }
         recovery.lifecycle = 'RECOVERY_REQUIRED'
+        persistRecoveryBestEffort()
         throw new Error('live_executor_blocked')
       }
       nextReadOnlySlot++
@@ -590,9 +693,11 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       journal.append('EMAIL_REQUEST_MAY_BE_SENT', { requestSha256 })
       recovery.verificationEmail = { state: 'MAY_BE_SENT', requestSha256 }
       try {
+        persistRecovery()
         const result = safeEmailDispatchResult(await dispatch(frozen({ requestSha256, journalBytes: journal.bytes() })), requestSha256)
         journal.append('EMAIL_SENT', { outcomeSha256: result.outcomeSha256 })
         recovery.verificationEmail = { state: 'SENT', requestSha256, outcomeSha256: result.outcomeSha256 }
+        persistRecovery()
         emailCompleted = true; emailOutcomeSha256 = result.outcomeSha256
         return frozen({ sent: true, outcomeSha256: result.outcomeSha256 })
       } catch {
@@ -600,6 +705,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
         try { journal.append('EMAIL_UNCERTAIN', { outcomeSha256 }); appendFailure('EMAIL_UNCERTAIN') } catch { /* retain synced evidence */ }
         recovery.verificationEmail = { state: 'UNCERTAIN', requestSha256, outcomeSha256 }
         recovery.lifecycle = 'RECOVERY_REQUIRED'
+        persistRecoveryBestEffort()
         throw new Error('live_executor_blocked')
       }
     },
@@ -609,6 +715,8 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       verificationChallengeSha256 = jsonHash({
         actorUid: state.ownerMailboxUid, emailOutcomeSha256, journalSha256: sha256(journal.bytes()),
       })
+      recovery.verifiedSession = { state: 'CHALLENGE_ISSUED', challengeSha256: verificationChallengeSha256 }
+      persistRecovery()
       return frozen({ challengeSha256: verificationChallengeSha256 })
     },
     markVerifiedSession(proof) {
@@ -622,6 +730,9 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
         challengeSha256: proof.challengeSha256, sessionProofSha256: proof.sessionProofSha256,
       })
       verifiedSessionProofSha256 = proof.sessionProofSha256
+      recovery.verifiedSession = { state: 'COMMITTED', challengeSha256: proof.challengeSha256,
+        sessionProofSha256: proof.sessionProofSha256 }
+      persistRecovery()
       return frozen({ verifiedSessionMarked: true, sessionProofSha256: verifiedSessionProofSha256 })
     },
     materializeFixturePlan() {
@@ -634,7 +745,10 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
         ownerMailboxUid: state.ownerMailboxUid,
         lockIds: { mailbox: state.mailboxLockId, ownerB: state.ownerBLockId },
       })
-      journal.append('MATERIALIZED_FIXTURE_PLAN_COMMITTED', { planSha256: jsonHash(plan) })
+      const planSha256 = jsonHash(plan)
+      journal.append('MATERIALIZED_FIXTURE_PLAN_COMMITTED', { planSha256 })
+      recovery.fixturePlan = { state: 'MATERIALIZED', planSha256 }
+      persistRecovery()
       return frozen(plan)
     },
     verifyAcceptance(bundle) {
@@ -642,6 +756,8 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       const validated = validateAcceptanceObservationBundle(plan, bundle, state, journal.events())
       journal.append('ACCEPTANCE_VERIFIED', { observationsSha256: validated.observationsSha256 })
       acceptanceVerified = true
+      recovery.acceptance = { state: 'VERIFIED', observationsSha256: validated.observationsSha256 }
+      persistRecovery()
       return validated
     },
     buildCleanupPlanOnly(bundle) {
@@ -651,6 +767,8 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       const cleanupPlanSha256 = jsonHash(targets)
       journal.append('CLEANUP_DEFERRED', { cleanupPlanSha256 })
       recovery.lifecycle = 'COMPLETE'
+      recovery.cleanup = { state: 'DEFERRED', cleanupPlanSha256 }
+      persistRecovery()
       return frozen({ status: 'CLEANUP_PLAN_ONLY', executionEnabled: false, cleanupPerformed: false, cleanupPlanSha256, targets })
     },
     snapshot() { return frozen({ nextSlot, nextReadOnlySlot, emailCompleted, verifiedSessionMarked: Boolean(verifiedSessionProofSha256), planMaterialized: Boolean(plan), state }) },

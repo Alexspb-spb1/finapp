@@ -146,15 +146,19 @@ only in memory. After the owner reports completion, that tab executes its normal
 The private journal is created with `wx`, restrictive permissions and a full
 fsync after every state transition. Each possible mutation has a durable
 `MAY_BE_SENT` event before dispatch and a read-only reconciliation event after
-the response. Together with the private `--out` recovery manifest, it retains
-the exact run-scoped Auth/Firestore/audit IDs, raw generated `createCompany`
-idempotency material, safe hashes, create/update timestamps, CAS preconditions,
-dispositions and counters needed for later reconciliation or cleanup. The
-private output is written with `wx`, complete-write checks and fsync on both
-`SUCCESS` and ordinary `RECOVERY_REQUIRED` safe stops. Both artifacts exclude
-the mailbox, passwords, raw invitation/OOB/ID/refresh tokens, provider bodies
-and raw errors. The returned public result contains only counts, PASS/blocked
-state and artifact/evidence hashes.
+the response. A separate append-only, hash-chained recovery stream is created
+at `<out>.recovery.jsonl` with `wx`. Every accepted checkpoint is fully
+written, fsynced and reread before execution can continue. It retains the exact
+run-scoped Auth/Firestore/audit IDs, planned synthetic Auth UIDs, raw generated
+`createCompany` idempotency material, provider snapshots, safe hashes,
+create/update timestamps, CAS preconditions, dispositions and counters needed
+for later reconciliation or cleanup. A complete `FINAL_MANIFEST` is durable
+before teardown and before the one `--out` write; `RECOVERY_REQUIRED` remains
+available if HEAD drift or output failure prevents the final output from being
+committed. No second `--out` write is attempted. The recovery stream and output
+exclude the mailbox, passwords, raw invitation/OOB/ID/refresh tokens, provider
+bodies and raw errors. The returned public result contains only counts,
+PASS/blocked state and artifact/evidence hashes.
 
 Safe-stop conditions include HEAD/PR/CI/artifact/resource/config drift, active
 maintenance, mailbox or fixture collision, unexpected endpoint/callable/data,
@@ -259,3 +263,38 @@ independent `PASS`, matching PR head and successful exact-head `ci` plus
 `functions` checks are still required before generating the private section-8
 execution package. No live fixture, verification email, cleanup, production,
 merge or Pages action was performed by this remediation.
+
+### Second independent review and durable-recovery correction
+
+Independent review of committed checkpoint HEAD
+`bb5d1ea9350a8f0e0507af6537102b91a356a5ca` returned `CHANGES REQUIRED` on
+four concrete blockers: the held admin callable summarizer rejected
+`inviteMember`/`listInvitations`; the runtime reused unprepared stateful
+readback closures for the replacement admin operations; recovery existed only
+in process memory until final output paths; and an unexpected browser endpoint
+could be aborted without necessarily invalidating otherwise successful UI
+evidence.
+
+The current local remediation gives the admin invitation and post-create list
+operations their own prepare/dispatch/readback lifecycle and exact semantic
+reconciliation. Held admin responses now use their validated sanitized shapes.
+Mailbox, admin and post-fixture browser drivers latch every denied, unexpected
+or classifier-error auxiliary route and refuse successful evidence afterward.
+The runtime passes one durable recovery checkpoint to both the executor and the
+incremental provider reconciler. The CLI proves the deterministic recovery path
+`<out>.recovery.jsonl` is new, outside the checkout, has a real existing
+parent and is distinct from the approval, journal and output paths before
+loading the runtime.
+
+Current local validation after all four corrections: root unit 248/248, Rules
+126/126, migration 570/570, Functions unit 354/354, Functions emulator 224/224,
+aggregate live executor 77/77, core 9/9, adapters 14/14, CLI 5/5, operations
+2/2, runtime 11/11, Playwright 26/26 and loopback 7/7. Staging preflight and Auth
+template discovery remain 5/5 each. Root/Functions lint, typecheck and builds
+pass; root lint retains only the pre-existing `Balance.tsx` warning, and
+`git diff --check` passes.
+
+This corrected tree still requires a clean commit, independent `PASS`, matching
+PR27 head and successful exact-head `ci` plus `functions` checks before the
+private section-8 execution package can be generated. No live fixture,
+verification email, cleanup, production, merge or Pages action was performed.

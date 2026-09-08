@@ -3,7 +3,7 @@ import test from 'node:test'
 import { createHash } from 'node:crypto'
 import { FIXTURE_MUTATION_SLOT_SPECS } from './liveAcceptanceCore.mjs'
 import { READ_ONLY_SLOT_SPECS } from './liveAcceptanceExecutorCore.mjs'
-import { createFixedLiveScenarioOperations } from './liveAcceptanceExecutorOperations.mjs'
+import { createFixedLiveScenarioOperations, createHeldAdminInvitationOperations } from './liveAcceptanceExecutorOperations.mjs'
 
 const h = value => createHash('sha256').update(value).digest('hex')
 const state = { ownerAUid: 'owner_a', ownerBUid: 'owner_b', ownerMailboxUid: 'mailbox_uid',
@@ -58,4 +58,51 @@ test('fixed operation factory covers every slot and keeps secret inputs inside c
   await normal.dispatch({ requestSha256: normalPrepared.requestSha256, binding: normalPrepared.binding })
   await normal.readback({ requestSha256: normalPrepared.requestSha256, outcomeSha256: h('normal-outcome') })
   assert.deepEqual(reconciled, ['denyMailboxResendCooldown', 'acceptMailboxFinalInvite'])
+})
+
+test('held admin operations own prepare, dispatch and semantic readback state', async () => {
+  const mailbox = 'mailbox@example.invalid', mailboxSha256 = h(mailbox), calls = []
+  const inviteSanitized = { disposition: 'SUCCESS', inviteId: 'invite_ui', capabilitySha256: h('capability'),
+    expiresAtUtc: '2026-09-15T12:00:00.000Z' }
+  const listSanitized = { disposition: 'SUCCESS', itemCount: 1, itemsSha256: h('items'), nextCursorPresent: false }
+  const reconciler = {
+    async assertCompanyInvitationsEmpty(companyId) { calls.push(['empty', companyId]); return { empty: true, resultCount: 0,
+      companyIdSha256: h(companyId), querySha256: h('query'), readTime: '2026-09-08T12:00:00.000Z' } },
+    async captureBefore(value) { calls.push(['capture', value.slot]) },
+    async reconcile(value) { calls.push(['reconcile', value.slot, structuredClone(value)]); return { readbackSha256: h(value.slot) } },
+  }
+  const adminDriver = {
+    async open() { calls.push(['open']) },
+    async prepareCancelledInvitation() { calls.push(['prepare-invite']); return { requestSha256: h('invite-request') } },
+    async dispatchCancelledInvitation(permit) { calls.push(['dispatch-invite']); return { requestSha256: permit.requestSha256,
+      outcomeSha256: h('invite-outcome'), sanitized: inviteSanitized } },
+    async takePreparedPostCreateList() { calls.push(['prepare-list']); return { requestSha256: h('list-request') } },
+    async dispatchPostCreateList(permit) { calls.push(['dispatch-list']); return { requestSha256: permit.requestSha256,
+      outcomeSha256: h('list-outcome'), sanitized: listSanitized } },
+  }
+  const operations = createHeldAdminInvitationOperations({ reconciler, adminDriver, mailbox, mailboxSha256 })
+  await assert.rejects(() => operations.invitation.readback({}), /live_executor_operations_blocked/)
+  const snapshot = { state }
+  const preparedInvite = await operations.invitation.prepare(snapshot)
+  const dispatchedInvite = await operations.invitation.dispatch({ requestSha256: preparedInvite.requestSha256,
+    binding: preparedInvite.binding })
+  const inviteReadback = await operations.invitation.readback({ requestSha256: preparedInvite.requestSha256,
+    outcomeSha256: dispatchedInvite.outcomeSha256 })
+  assert.deepEqual(Object.keys(inviteReadback.produced).sort(),
+    ['mailboxCancelledCapabilitySha256', 'mailboxCancelledInviteId', 'mailboxLockId'])
+  const preparedList = await operations.list.prepare({ state: { ...state, ...inviteReadback.produced } })
+  const dispatchedList = await operations.list.dispatch({ requestSha256: preparedList.requestSha256, binding: preparedList.binding })
+  const listReadback = await operations.list.readback({ requestSha256: preparedList.requestSha256,
+    outcomeSha256: dispatchedList.outcomeSha256 })
+  assert.deepEqual(listReadback.produced, {})
+  assert.deepEqual(calls.map(row => row.slice(0, 2)), [
+    ['empty', 'company_a'], ['open'], ['prepare-invite'], ['capture', 'createMailboxCancelledInvite'],
+    ['dispatch-invite'], ['reconcile', 'createMailboxCancelledInvite'], ['prepare-list'],
+    ['capture', 'listCancelledPending'], ['dispatch-list'], ['reconcile', 'listCancelledPending'],
+  ])
+  const inviteReconcile = calls.find(row => row[0] === 'reconcile' && row[1] === 'createMailboxCancelledInvite')[2]
+  assert.equal(inviteReconcile.state.companyAId, state.companyAId)
+  assert.deepEqual(inviteReconcile.sanitized, inviteSanitized)
+  assert.equal(inviteReconcile.produced.mailboxCancelledInviteId, inviteSanitized.inviteId)
+  assert.equal(JSON.stringify({ preparedInvite, dispatchedInvite, inviteReadback, preparedList, dispatchedList, listReadback }).includes(mailbox), false)
 })

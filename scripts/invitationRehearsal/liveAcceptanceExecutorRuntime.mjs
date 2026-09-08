@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { assertNoSecretMaterial, liveAcceptanceTransport, PROJECT, SCENARIO_NAMES } from './liveAcceptanceCore.mjs'
 import { createLiveBrowserRequestBinder } from './liveAcceptanceBrowserCore.mjs'
 import {
-  assertPrivateRecoveryMaterial, createDurableLiveJournal, createLiveStagingExecutor, createVisibleOwnerHandoff,
+  assertPrivateRecoveryMaterial, createDurableLiveJournal, createDurableRecoveryCheckpoint,
+  createLiveStagingExecutor, createVisibleOwnerHandoff,
 } from './liveAcceptanceExecutorCore.mjs'
 import {
   createCallableDispatchPrimitive, createFirebaseReadOnlyPreflightAdapters,
@@ -16,7 +17,7 @@ import {
   createSemanticFirestoreReadbackAdapter, createSyntheticVerifiedAuthAdapter,
   runLiveAcceptanceComposition,
 } from './liveAcceptanceExecutorAdapters.mjs'
-import { createFixedLiveScenarioOperations } from './liveAcceptanceExecutorOperations.mjs'
+import { createFixedLiveScenarioOperations, createHeldAdminInvitationOperations } from './liveAcceptanceExecutorOperations.mjs'
 import {
   createAdminInvitationPlaywrightDriver, createBoundedVisiblePlaywrightSessionFactory,
   createHeldPlaywrightRequestBridge, createPostFixturePlaywrightUiVerifier,
@@ -314,6 +315,8 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
           return { session, transport: providerTransport, close: providerTransport.close }
         },
         createJournal: async ({ filename }) => createDurableLiveJournal({ filename, repoRoot, io }),
+        createRecoveryCheckpoint: async ({ filename, sourceHead }) =>
+          createDurableRecoveryCheckpoint({ filename, repoRoot, sourceHead, io }),
         openPlaywright: async () => {
           const module = await import('playwright-core')
           if (!module.chromium || typeof module.chromium.launch !== 'function') blocked()
@@ -321,7 +324,7 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
           const close = async () => playwrightClose()
           return { browser: Object.freeze({ chromium, close }), close }
         },
-        runScenarios: async ({ sourceHead, loopbackReceipt, journal, providerSession, browser }) => {
+        runScenarios: async ({ sourceHead, loopbackReceipt, journal, recoveryCheckpoint, providerSession, browser }) => {
           if (!exactKeys(loopbackReceipt, ['sourceHead', 'servedFrom', 'stagingFingerprint', 'apiKeySha256',
             'distInventorySha256', 'immutableDistAttestationSha256']) || loopbackReceipt.sourceHead !== sourceHead ||
               loopbackReceipt.servedFrom !== LOOPBACK_ORIGIN || loopbackReceipt.stagingFingerprint !== local.parsed.fingerprint ||
@@ -337,7 +340,7 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
           const executor = createLiveStagingExecutor({ journal, preflightAdapters,
             expectedPreflight: { sourceHead, functionsSha256: approval.functionsSha256,
               authMetadataSha256: approval.authMetadataSha256, stagingFingerprint: approval.stagingFingerprint,
-              mailboxSha256: approval.mailboxSha256 }, initial })
+              mailboxSha256: approval.mailboxSha256 }, initial, recoveryCheckpoint })
           const rawBinder = createLiveBrowserRequestBinder({ stagingFingerprint: local.parsed.fingerprint,
             expectedStagingFingerprint: approval.stagingFingerprint, apiKeySha256: local.parsed.apiKeySha256,
             journalBytes: journal.bytes(), readJournal: journal.bytes })
@@ -395,7 +398,7 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
             return session
           }
           const ownerHandoff = createVisibleOwnerHandoff({ openSession, pause: pauseOwner })
-          incremental = createIncrementalFirestoreReconciler({ session: providerSession })
+          incremental = createIncrementalFirestoreReconciler({ session: providerSession, recoveryCheckpoint })
           const checkedAuth = createSyntheticVerifiedAuthAdapter({ session: providerSession, runId: secrets.runId,
             accounts: { ownerA: secrets.ownerA, ownerB: secrets.ownerB } })
           let firstMutationChecked = false
@@ -423,41 +426,11 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
             summarizeList: (response, meta) => primitive.summarizeHeld('listInvitations', response, meta),
           })
           registerPlaywrightCloser(adminDriver.close)
-          let emptyInvitationPrecondition = null
-          const adminFixture = Object.freeze({
-            mode: 'held-normal-path',
-            async prepare(snapshot) {
-              const state = snapshot?.state
-              if (!record(state) || !safeId(state.companyAId) || emptyInvitationPrecondition) blocked()
-              emptyInvitationPrecondition = await incremental.assertCompanyInvitationsEmpty(state.companyAId)
-              if (!exactKeys(emptyInvitationPrecondition, ['empty', 'resultCount', 'companyIdSha256', 'querySha256', 'readTime']) ||
-                  emptyInvitationPrecondition.empty !== true || emptyInvitationPrecondition.resultCount !== 0 ||
-                  emptyInvitationPrecondition.companyIdSha256 !== sha256(state.companyAId) ||
-                  !hex64(emptyInvitationPrecondition.querySha256) || typeof emptyInvitationPrecondition.readTime !== 'string') blocked()
-              await adminDriver.open()
-              const prepared = await adminDriver.prepareCancelledInvitation({ companyId: state.companyAId })
-              return { requestSha256: prepared.requestSha256,
-                binding: { identity: 'ownerA', actorUid: state.ownerAUid, companyId: state.companyAId,
-                  subjectSha256: approval.mailboxSha256, role: 'accountant' } }
-            },
-            dispatch: permit => adminDriver.dispatchCancelledInvitation(permit),
-            readback: baseOperations.fixtures.createMailboxCancelledInvite.readback,
-          })
-          const adminList = Object.freeze({
-            mode: 'held-normal-path',
-            async prepare(snapshot) {
-              const state = snapshot?.state
-              if (!record(state) || !safeId(state.ownerAUid) || !safeId(state.companyAId) || !emptyInvitationPrecondition) blocked()
-              const prepared = await adminDriver.takePreparedPostCreateList()
-              return { requestSha256: prepared.requestSha256,
-                binding: { identity: 'ownerA', actorUid: state.ownerAUid, companyId: state.companyAId, expectation: 'PENDING' } }
-            },
-            dispatch: permit => adminDriver.dispatchPostCreateList(permit),
-            readback: baseOperations.readOnly.listCancelledPending.readback,
-          })
+          const adminOperations = createHeldAdminInvitationOperations({ reconciler: incremental, adminDriver,
+            mailbox: local.mailbox, mailboxSha256: approval.mailboxSha256 })
           const operations = Object.freeze({
-            fixtures: Object.freeze({ ...baseOperations.fixtures, createMailboxCancelledInvite: adminFixture }),
-            readOnly: Object.freeze({ ...baseOperations.readOnly, listCancelledPending: adminList }),
+            fixtures: Object.freeze({ ...baseOperations.fixtures, createMailboxCancelledInvite: adminOperations.invitation }),
+            readOnly: Object.freeze({ ...baseOperations.readOnly, listCancelledPending: adminOperations.list }),
             clipboard: Object.freeze({ clear: async () => ({ deferred: true }) }),
           })
           const deferredOwnerHandoff = Object.freeze({ ...ownerHandoff, close: async () => ({ deferred: true }) })

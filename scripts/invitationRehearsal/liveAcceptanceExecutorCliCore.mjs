@@ -60,7 +60,15 @@ export function validatePrivateExecutorPaths({ parsed, repoRoot, io }) {
         (existing && (!io.lstatSync(target).isFile() || io.lstatSync(target).isSymbolicLink()))) blocked()
     resolved[name] = target
   }
-  if (new Set(Object.values(resolved).map(value => process.platform === 'win32' ? value.toLowerCase() : value)).size !== 3) blocked()
+  const recoveryInput = `${resolved['--out']}.recovery.jsonl`
+  if (io.existsSync(recoveryInput)) blocked()
+  const recoveryParent = io.realpathSync(path.dirname(recoveryInput))
+  const recoveryTarget = path.join(recoveryParent, path.basename(recoveryInput))
+  const recoveryRelative = path.relative(root, recoveryTarget)
+  if ((!recoveryRelative.startsWith(`..${path.sep}`) && recoveryRelative !== '..' && !path.isAbsolute(recoveryRelative))) blocked()
+  resolved.recovery = recoveryTarget
+  const canonical = Object.values(resolved).map(value => process.platform === 'win32' ? value.toLowerCase() : value)
+  if (new Set(canonical).size !== 4) blocked()
   return Object.freeze(resolved)
 }
 

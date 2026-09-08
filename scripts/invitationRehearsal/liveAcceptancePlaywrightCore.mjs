@@ -13,6 +13,13 @@ const hex64 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value)
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 const frozen = value => Object.freeze(structuredClone(value))
+const pageRouteHealth = new WeakMap()
+const latchRouteFatal = health => { health.fatal = true }
+const assertRouteHealthy = health => { if (health.fatal) blocked() }
+const assertPageRouteHealthy = page => {
+  const health = pageRouteHealth.get(page)
+  if (health) assertRouteHealthy(health)
+}
 
 export const PLAYWRIGHT_OWNER_SELECTORS = Object.freeze({
   email: Object.freeze({ kind: 'label', name: 'Email', exact: true }),
@@ -224,6 +231,7 @@ export function createBoundedVisiblePlaywrightSessionFactory({
       !exactKeys(requestBridge, ['attach', 'prepare', 'release', 'takePreparedNormal', 'confirmVerifiedSession']) || !hex64(mailboxSha256) ||
       Object.values(requestBridge).some(value => typeof value !== 'function') || localStaticOrigin !== 'http://127.0.0.1:5177') blocked()
   let browser = null, context = null, page = null, closed = false, financialModuleLoaded = false
+  const routeHealth = { fatal: false }
   const closeAll = async () => {
     if (closed) return
     closed = true
@@ -266,11 +274,12 @@ export function createBoundedVisiblePlaywrightSessionFactory({
           const request = route.request()
           if (/(?:LegacyApp|authStore)-/.test(request.url())) financialModuleLoaded = true
           const decision = await browserBinder.bind({ method: request.method(), url: request.url(), postData: request.postData() })
-          if (!decision || decision.action === 'abort') return route.abort()
+          if (!decision || decision.action !== 'continue') { latchRouteFatal(routeHealth); return route.abort() }
           return route.continue()
-        } catch { return route.abort() }
+        } catch { latchRouteFatal(routeHealth); return route.abort() }
       })
       page = await context.newPage()
+      pageRouteHealth.set(page, routeHealth)
       page.setDefaultTimeout(20_000)
       const attached = await requestBridge.attach({ page, browserBinder })
       if (!exactKeys(attached, ['attached']) || attached.attached !== true) blocked()
@@ -290,37 +299,49 @@ export function createBoundedVisiblePlaywrightSessionFactory({
               cachedCompanyDataLoaded: Boolean(state?.cachedCompanyDataLoaded), capabilityPersisted: Boolean(state?.capabilityPersisted) }
           })
           if (!exactKeys(result, ['visible', 'persistent', 'fragmentRemovedBeforeInit', 'financialModulesLoaded', 'cachedCompanyDataLoaded', 'capabilityPersisted'])) blocked()
+          assertRouteHealthy(routeHealth)
           return frozen({ ...result, financialModulesLoaded: result.financialModulesLoaded || financialModuleLoaded })
         },
         async confirmCredentialReady() {
-          return frozen(await locator(page, PLAYWRIGHT_OWNER_SELECTORS.password).evaluate(input => ({
+          const result = await locator(page, PLAYWRIGHT_OWNER_SELECTORS.password).evaluate(input => ({
             ready: typeof input.value === 'string' && input.value.length > 0,
             minimumLengthSatisfied: typeof input.value === 'string' && input.value.length >= 6,
-          })))
+          }))
+          assertRouteHealthy(routeHealth)
+          return frozen(result)
         },
         async prepareRegistration() {
           const prepared = await requestBridge.prepare({ operation: 'accounts:signUp', trigger: () => locator(page, PLAYWRIGHT_OWNER_SELECTORS.register).click() })
           if (!exactKeys(prepared, ['requestSha256']) || !hex64(prepared.requestSha256)) blocked()
+          assertRouteHealthy(routeHealth)
           return frozen({ ...prepared, binding: { identity: 'ownerMailbox', subjectSha256: mailboxSha256 } })
         },
         async dispatchRegistration(permit) {
           browserBinder.armMutation()
-          return requestBridge.release({ operation: 'accounts:signUp', permit })
+          const result = await requestBridge.release({ operation: 'accounts:signUp', permit })
+          assertRouteHealthy(routeHealth)
+          return result
         },
         async prepareVerification() {
           const prepared = await requestBridge.prepare({ operation: 'accounts:sendOobCode', trigger: () => locator(page, PLAYWRIGHT_OWNER_SELECTORS.sendVerification).click() })
           if (!exactKeys(prepared, ['requestSha256']) || !hex64(prepared.requestSha256)) blocked()
+          assertRouteHealthy(routeHealth)
           return frozen(prepared)
         },
         async dispatchVerification(permit) {
           browserBinder.armVerificationEmail()
-          return requestBridge.release({ operation: 'accounts:sendOobCode', permit })
+          const result = await requestBridge.release({ operation: 'accounts:sendOobCode', permit })
+          assertRouteHealthy(routeHealth)
+          return result
         },
         async confirmVerifiedSession(challenge) {
-          return requestBridge.confirmVerifiedSession({ challenge, trigger: () => locator(page, PLAYWRIGHT_OWNER_SELECTORS.confirmVerification).click() })
+          const result = await requestBridge.confirmVerifiedSession({ challenge, trigger: () => locator(page, PLAYWRIGHT_OWNER_SELECTORS.confirmVerification).click() })
+          assertRouteHealthy(routeHealth)
+          return result
         },
         close: closeAll,
       }
+      assertRouteHealthy(routeHealth)
       return Object.freeze(session)
     } catch (error) { await closeAll(); throw error }
   }
@@ -389,6 +410,7 @@ export function createAdminInvitationPlaywrightDriver({
   let browser = null, context = null, page = null, routeHandler = null, held = null, heldWaiter = null
   let expectedCompanyId = null, initialListFulfilled = false, postCreateList = null, postCreateListWaiter = null, postCreateListDispatched = false
   let opened = false, prepared = false, dispatched = false, evidence = null, closed = false
+  const routeHealth = { fatal: false }
   const close = async () => {
     if (closed) return
     closed = true
@@ -406,6 +428,7 @@ export function createAdminInvitationPlaywrightDriver({
     try { if (browser) await uiBounded(browser.close(), waitTimeoutMs) } catch { /* best effort */ }
   }
   const failHeld = async route => {
+    latchRouteFatal(routeHealth)
     try { await uiBounded(route.abort(), waitTimeoutMs) } catch { /* best effort */ }
     if (heldWaiter) { heldWaiter.resolve(null); heldWaiter = null }
   }
@@ -421,16 +444,20 @@ export function createAdminInvitationPlaywrightDriver({
           try {
             const request = route.request()
             const decision = await uiBounded(browserBinder.bind({ method: request.method(), url: request.url(), postData: request.postData() }), waitTimeoutMs)
-            if (!decision || decision.action !== 'continue') return route.abort()
+            if (!decision || decision.action !== 'continue') { latchRouteFatal(routeHealth); return route.abort() }
             return route.continue()
-          } catch { return route.abort() }
+          } catch { latchRouteFatal(routeHealth); return route.abort() }
         }), waitTimeoutMs)
         page = await uiBounded(context.newPage(), waitTimeoutMs)
+        pageRouteHealth.set(page, routeHealth)
         page.setDefaultTimeout(waitTimeoutMs)
         routeHandler = async route => {
           const request = route.request()
           let classification
-          try { classification = classifyLiveBrowserRequest(request.method(), request.url()) } catch { return route.fallback() }
+          try { classification = classifyLiveBrowserRequest(request.method(), request.url()) } catch {
+            latchRouteFatal(routeHealth)
+            return route.abort()
+          }
           if (classification.kind === 'callable' && classification.operation === 'listInvitations') {
             let body
             try { body = JSON.parse(request.postData()) } catch { return failHeld(route) }
@@ -461,6 +488,7 @@ export function createAdminInvitationPlaywrightDriver({
         const signedIn = await uiBounded(secretActions.signInOwnerA(page), waitTimeoutMs)
         if (!exactKeys(signedIn, ['signedIn']) || signedIn.signedIn !== true) blocked()
         await uiBounded(page.waitForURL(`${localStaticOrigin}/finapp/#/`, { timeout: waitTimeoutMs }), waitTimeoutMs)
+        assertRouteHealthy(routeHealth)
         return frozen({ opened: true, visible: true, persistent: false })
       } catch { await close(); blocked() }
     },
@@ -484,6 +512,7 @@ export function createAdminInvitationPlaywrightDriver({
         const requestSha256 = await uiBounded(waiting, waitTimeoutMs, () => { heldWaiter = null })
         await click
         if (!hex64(requestSha256) || held?.requestSha256 !== requestSha256) blocked()
+        assertRouteHealthy(routeHealth)
         return frozen({ requestSha256 })
       } catch { if (held) await failHeld(held.route); await close(); blocked() }
     },
@@ -539,6 +568,7 @@ export function createAdminInvitationPlaywrightDriver({
         await uiBounded(dialog.getByRole('button', { name: 'Закрыть', exact: true }).click(), waitTimeoutMs)
         if (await uiBounded(dialog.getByLabel('Ссылка', { exact: true }).count(), waitTimeoutMs) !== 0) blocked()
         held = null
+        assertRouteHealthy(routeHealth)
         return frozen(result)
       } catch {
         try {
@@ -559,6 +589,7 @@ export function createAdminInvitationPlaywrightDriver({
         postCreateListWaiter = { resolve, reject }
       }), waitTimeoutMs, () => { postCreateListWaiter = null })
       if (!hex64(requestSha256)) blocked()
+      assertRouteHealthy(routeHealth)
       return frozen({ requestSha256 })
     },
     async dispatchPostCreateList(permit) {
@@ -577,10 +608,11 @@ export function createAdminInvitationPlaywrightDriver({
             !hex64(result.sanitized.itemsSha256) || result.sanitized.nextCursorPresent !== false) blocked()
         assertNoSecretMaterial(result)
         postCreateList = null
+        assertRouteHealthy(routeHealth)
         return frozen(result)
       } catch { await close(); blocked() }
     },
-    readEvidence() { if (!evidence) blocked(); return frozen(evidence) },
+    readEvidence() { if (!evidence) blocked(); assertRouteHealthy(routeHealth); return frozen(evidence) },
     close,
   }
   return Object.freeze(interfaceValue)
@@ -603,6 +635,7 @@ export function createPostFixturePlaywrightUiVerifier({
       localStaticOrigin !== 'http://127.0.0.1:5177' || !Number.isSafeInteger(waitTimeoutMs) || waitTimeoutMs < 10 || waitTimeoutMs > 60_000) blocked()
   let browser = null, ran = false, closed = false
   const contexts = new Set()
+  const routeHealth = { fatal: false }
   const close = async () => {
     if (closed) return
     closed = true
@@ -614,15 +647,16 @@ export function createPostFixturePlaywrightUiVerifier({
     try {
       const request = route.request()
       const decision = await uiBounded(browserBinder.bind({ method: request.method(), url: request.url(), postData: request.postData() }), waitTimeoutMs)
-      if (!decision || decision.action !== 'continue') return route.abort()
+      if (!decision || decision.action !== 'continue') { latchRouteFatal(routeHealth); return route.abort() }
       return route.continue()
-    } catch { return route.abort() }
+    } catch { latchRouteFatal(routeHealth); return route.abort() }
   }), waitTimeoutMs)
   const openIdentity = async identity => {
     const context = await uiBounded(browser.newContext({ serviceWorkers: 'block', viewport: { width: 1280, height: 900 } }), waitTimeoutMs)
     contexts.add(context)
     await bindContext(context)
     const page = await uiBounded(context.newPage(), waitTimeoutMs)
+    pageRouteHealth.set(page, routeHealth)
     page.setDefaultTimeout(waitTimeoutMs)
     await uiBounded(page.goto(`${localStaticOrigin}/finapp/#/login`, { waitUntil: 'networkidle', timeout: waitTimeoutMs }), waitTimeoutMs)
     const signedIn = await uiBounded(secretActions.signIn(page, identity), waitTimeoutMs)
@@ -630,6 +664,7 @@ export function createPostFixturePlaywrightUiVerifier({
     assertNoSecretMaterial(signedIn)
     await uiBounded(page.waitForURL(`${localStaticOrigin}/finapp/#/`, { timeout: waitTimeoutMs }), waitTimeoutMs)
     await uiBounded(page.getByRole('heading', { name: 'Дашборд', exact: true }).waitFor({ timeout: waitTimeoutMs }), waitTimeoutMs)
+    assertRouteHealthy(routeHealth)
     return { context, page }
   }
   const count = (locatorValue, expected) => uiBounded(locatorValue.count(), waitTimeoutMs).then(value => {
@@ -644,7 +679,10 @@ export function createPostFixturePlaywrightUiVerifier({
     await uiBounded(page.getByRole('button', { name: to, exact: true }).click(), waitTimeoutMs)
   }
   const rows = []
-  const add = (step, observation) => rows.push(uiRow(step, observation))
+  const add = (step, observation) => {
+    assertRouteHealthy(routeHealth)
+    rows.push(uiRow(step, observation))
+  }
   return Object.freeze({
     async run() {
       if (ran || closed) blocked()
@@ -696,6 +734,7 @@ export function createPostFixturePlaywrightUiVerifier({
 
         await goto(ownerB.page, '/')
         const secondTab = await uiBounded(ownerB.context.newPage(), waitTimeoutMs)
+        pageRouteHealth.set(secondTab, routeHealth)
         secondTab.setDefaultTimeout(waitTimeoutMs)
         await goto(secondTab, '/')
         await visible(secondTab.getByRole('heading', { name: 'Дашборд', exact: true }))
@@ -713,6 +752,8 @@ export function createPostFixturePlaywrightUiVerifier({
             typeof mailbox.page.evaluate !== 'function' || typeof mailbox.page.getByRole !== 'function' ||
             typeof mailbox.page.getByText !== 'function' || typeof mailbox.page.setDefaultTimeout !== 'function' ||
             typeof mailbox.page.isClosed !== 'function' || mailbox.page.isClosed()) blocked()
+        assertRouteHealthy(routeHealth)
+        assertPageRouteHealthy(mailbox.page)
         mailbox.page.setDefaultTimeout(waitTimeoutMs)
         if (await uiBounded(mailbox.page.evaluate(expected => location.origin === expected, localStaticOrigin), waitTimeoutMs) !== true) blocked()
         await expectCompanyButton(mailbox.page, companyNames.a)
@@ -721,12 +762,16 @@ export function createPostFixturePlaywrightUiVerifier({
         await goto(mailbox.page, '/transactions')
         await visible(mailbox.page.getByRole('heading', { name: 'Операции', exact: true }))
         if (await uiBounded(mailbox.page.getByRole('button', { name: 'Добавить', exact: true }).count(), waitTimeoutMs) < 1) blocked()
+        assertPageRouteHealthy(mailbox.page)
         add('owner-mailbox-accountant-ui', { identity: 'ownerMailbox', company: 'a', role: 'accountant', readOnlyBanner: false, writeControl: true })
         await uiBounded(mailbox.page.reload({ waitUntil: 'networkidle', timeout: waitTimeoutMs }), waitTimeoutMs)
         await visible(mailbox.page.getByRole('heading', { name: 'Операции', exact: true }))
         await count(mailbox.page.getByText('Режим только для чтения', { exact: false }), 0)
+        assertPageRouteHealthy(mailbox.page)
         add('owner-mailbox-reload-recovered', { identity: 'ownerMailbox', company: 'a', role: 'accountant', reloaded: true })
 
+        assertRouteHealthy(routeHealth)
+        assertPageRouteHealthy(mailbox.page)
         return frozen({ status: 'UI_ACCEPTANCE_RECONCILED', evidence: rows,
           evidenceSha256: sha256(JSON.stringify(rows)) })
       } catch { await close(); blocked() }

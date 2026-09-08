@@ -7,9 +7,10 @@ import { createHash } from 'node:crypto'
 import { CALLABLE_CAPS, FIXTURE_MUTATION_SLOT_SPECS, READBACK_CHECKS, TRANSPORT_CAPS } from './liveAcceptanceCore.mjs'
 import {
   ACTIVE_RULES_SHA256, FIELD_OVERRIDES_SHA256, LIVE_FUNCTIONS, READ_ONLY_SLOT_SPECS,
-  assertPrivateRecoveryMaterial, createDurableLiveJournal, createLiveStagingExecutor, createRealCooldownGate,
+  assertPrivateRecoveryMaterial, createDurableLiveJournal, createDurableRecoveryCheckpoint,
+  createLiveStagingExecutor, createRealCooldownGate,
   createVisibleOwnerHandoff, runFreshLivePreflight, validateAcceptanceObservationBundle,
-  validateExecutorStateAliases, readPrivateExecutorRecovery,
+  validateExecutorStateAliases, readDurableRecoveryCheckpoint, readPrivateExecutorRecovery,
 } from './liveAcceptanceExecutorCore.mjs'
 
 const h = value => createHash('sha256').update(value).digest('hex')
@@ -99,6 +100,78 @@ test('durable journal uses wx, fsyncs every transition and rejects reuse or an i
   const failed = newJournal(t, () => observedAt, failingIo).journal
   assert.throws(() => failed.append('PRECONDITIONS_VERIFIED'))
   assert.throws(() => failed.append('PRECONDITIONS_VERIFIED'))
+})
+
+test('private recovery checkpoint is append-only, fsynced, hash-chained and survives interruption or a torn append', t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'finapp-live-recovery-'))
+  const repoRoot = path.join(base, 'repo'), evidence = path.join(base, 'evidence')
+  fs.mkdirSync(repoRoot); fs.mkdirSync(evidence)
+  t.after(() => { fs.rmSync(base, { recursive: true, force: true }) })
+  const filename = path.join(evidence, 'out.json.recovery.jsonl')
+  let fsyncs = 0, openFlags = null, openMode = null
+  const io = new Proxy(fs, { get(target, property) {
+    if (property === 'openSync') return (name, flags, mode) => {
+      openFlags = flags; openMode = mode; return target.openSync(name, flags, mode)
+    }
+    if (property === 'fsyncSync') return descriptor => { fsyncs++; return target.fsyncSync(descriptor) }
+    return Reflect.get(target, property)
+  } })
+  const checkpoint = createDurableRecoveryCheckpoint({ filename, repoRoot, sourceHead: head, now: () => observedAt, io })
+  checkpoint.append('EXECUTOR_STATE', { lifecycle: 'SCENARIOS_RUNNING', slot: { state: 'MAY_BE_SENT' } })
+  const interrupted = readDurableRecoveryCheckpoint(fs.readFileSync(filename))
+  assert.equal(openFlags, 'wx'); assert.equal(openMode, 0o600); assert.equal(fsyncs, 2)
+  assert.equal(interrupted.eventCount, 2); assert.equal(interrupted.lastKind, 'EXECUTOR_STATE')
+  assert.equal(interrupted.events[1].payload.slot.state, 'MAY_BE_SENT')
+  assert.equal(interrupted.events[1].previousSha256, h(JSON.stringify(interrupted.events[0])))
+  checkpoint.close()
+  assert.equal(fsyncs, 3)
+  assert.throws(() => createDurableRecoveryCheckpoint({ filename, repoRoot, sourceHead: head }))
+
+  const tornFilename = path.join(evidence, 'torn.jsonl')
+  let writes = 0
+  const tornIo = new Proxy(fs, { get(target, property) {
+    if (property === 'writeSync') return (descriptor, bytes, offset, length) => {
+      writes++
+      if (writes < 3) return target.writeSync(descriptor, bytes, offset, length)
+      if (writes === 3) return target.writeSync(descriptor, bytes, offset, Math.max(1, Math.floor(length / 2)))
+      return 0
+    }
+    return Reflect.get(target, property)
+  } })
+  const torn = createDurableRecoveryCheckpoint({ filename: tornFilename, repoRoot, sourceHead: head, now: () => observedAt, io: tornIo })
+  torn.append('EXECUTOR_STATE', { slot: { state: 'MAY_BE_SENT' } })
+  assert.throws(() => torn.append('EXECUTOR_STATE', { slot: { state: 'RECONCILED' } }))
+  const recovered = readDurableRecoveryCheckpoint(fs.readFileSync(tornFilename))
+  assert.equal(recovered.eventCount, 2)
+  assert.equal(recovered.events.at(-1).payload.slot.state, 'MAY_BE_SENT')
+  assert.ok(recovered.trailingBytes > 0)
+})
+
+test('executor fsyncs MAY_BE_SENT before dispatch and persists uncertain recovery after interruption', async t => {
+  const { filename, repoRoot, journal } = newJournal(t)
+  const recoveryFilename = `${filename}.recovery.jsonl`
+  const checkpoint = createDurableRecoveryCheckpoint({ filename: recoveryFilename, repoRoot, sourceHead: head, now: () => observedAt })
+  const executor = createLiveStagingExecutor({ journal, recoveryCheckpoint: checkpoint,
+    preflightAdapters: preflightAdapters(), expectedPreflight,
+    initial: { runId: 'stage8-run-004', mailboxSha256: expectedPreflight.mailboxSha256,
+      ownerASubjectSha256: h('owner-a-subject'), ownerBSubjectSha256: h('owner-b-subject') }, nowMs })
+  await executor.start()
+  const requestSha256 = h('interrupted-request')
+  await assert.rejects(() => executor.executeFixtureSlot({ slot: 'createOwnerAAuth', requestSha256,
+    binding: { identity: 'ownerA', subjectSha256: h('owner-a-subject') },
+    dispatch: async () => {
+      const durable = readDurableRecoveryCheckpoint(fs.readFileSync(recoveryFilename))
+      assert.equal(durable.events.at(-1).payload.fixtureSlots.createOwnerAAuth.state, 'MAY_BE_SENT')
+      throw new Error('synthetic process interruption')
+    }, readback: async () => ({}) }))
+  const durable = readDurableRecoveryCheckpoint(fs.readFileSync(recoveryFilename))
+  assert.equal(durable.events.at(-1).payload.lifecycle, 'RECOVERY_REQUIRED')
+  assert.equal(durable.events.at(-1).payload.fixtureSlots.createOwnerAAuth.state, 'UNCERTAIN')
+  const persisted = fs.readFileSync(recoveryFilename, 'utf8')
+  for (const forbidden of ['owner@example.invalid', 'synthetic-password', 'raw-invite-capability', 'provider body']) {
+    assert.equal(persisted.includes(forbidden), false)
+  }
+  checkpoint.close(); journal.close()
 })
 
 test('real cooldown requires both wall and monotonic clocks to advance by 60 seconds', async () => {

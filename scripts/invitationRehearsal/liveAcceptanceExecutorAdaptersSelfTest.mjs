@@ -58,6 +58,26 @@ function journalBytes(requestSha256, callable = null) {
   return Buffer.from(events.map(event => JSON.stringify(event)).join('\n') + '\n')
 }
 
+function memoryRecoveryCheckpoint(callLog = []) {
+  let events = [], closed = false
+  return {
+    append(kind, payload) {
+      if (closed) throw new Error('closed')
+      events.push({ kind, payload: structuredClone(payload) }); callLog.push(`recovery.${kind}`)
+      return { seq: events.length - 1, kind, eventSha256: h(JSON.stringify(events.at(-1))) }
+    },
+    bytes() { if (closed) throw new Error('closed'); return Buffer.from(events.map(row => JSON.stringify(row)).join('\n') + '\n') },
+    events() { if (closed) throw new Error('closed'); return structuredClone(events) },
+    inspect() { return structuredClone(events) },
+    close() {
+      if (closed) throw new Error('closed')
+      const bytes = this.bytes(); closed = true; callLog.push('recovery.close')
+      return { checkpointSha256: h(bytes), eventCount: events.length, lastKind: events.at(-1).kind,
+        lastEventSha256: h(JSON.stringify(events.at(-1))) }
+    },
+  }
+}
+
 function fakeSessionHarness(overrides = {}) {
   let loads = 0, authorizations = 0
   const requests = []
@@ -311,6 +331,40 @@ test('callable primitive fixes URL, method and body and blocks body/journal drif
   assert.deepEqual(LIVE_EXECUTOR_MISSING_ADAPTERS, [])
 })
 
+test('held admin callables return exact sanitized Playwright shapes and retain capability only in the vault', async () => {
+  const primitive = createCallableDispatchPrimitive({ transport: {
+    authorizeRequest() {}, async fetch() { throw new Error('unused') },
+  }, getIdToken: async () => { throw new Error('unused') } })
+  const rawToken = 'T'.repeat(43), invitationRequest = h('held-invitation')
+  const invited = await primitive.summarizeHeld('inviteMember', {
+    status: () => 200,
+    json: async () => ({ result: { inviteId: 'invite_cancelled', token: rawToken, expiresAtUtc: now } }),
+  }, { requestSha256: invitationRequest })
+  assert.deepEqual(Object.keys(invited).sort(), ['outcomeSha256', 'requestSha256', 'sanitized'])
+  assert.deepEqual(invited.sanitized, { disposition: 'SUCCESS', inviteId: 'invite_cancelled',
+    capabilitySha256: h(rawToken), expiresAtUtc: now })
+  assert.equal(JSON.stringify(invited).includes(rawToken), false)
+  assert.deepEqual(await primitive.withCapability(h(rawToken), async value => ({ completed: value === rawToken })), { completed: true })
+
+  const listed = await primitive.summarizeHeld('listInvitations', {
+    status: () => 200,
+    json: async () => ({ result: { items: [{ inviteId: 'invite_cancelled', emailNormalized: 'mailbox@example.invalid',
+      role: 'accountant', status: 'pending', createdAtUtc: now, expiresAtUtc: now, resendCount: 0,
+      lastSentAtUtc: now, createdBy: 'uid_owner_a' }], nextCursor: null } }),
+  }, { requestSha256: h('held-list') })
+  assert.deepEqual(Object.keys(listed).sort(), ['outcomeSha256', 'requestSha256', 'sanitized'])
+  assert.deepEqual(listed.sanitized, { disposition: 'SUCCESS', itemCount: 1,
+    itemsSha256: h(JSON.stringify([{ inviteId: 'invite_cancelled', emailNormalized: 'mailbox@example.invalid',
+      role: 'accountant', status: 'pending', createdAtUtc: now, expiresAtUtc: now, resendCount: 0,
+      lastSentAtUtc: now, createdBy: 'uid_owner_a' }])), nextCursorPresent: false })
+  assert.equal(JSON.stringify(listed).includes('mailbox@example.invalid'), false)
+
+  const access = await primitive.summarizeHeld('getCompanyAccess', {
+    status: () => 200, json: async () => ({ result: { companyId: 'company_a', uid: 'uid_owner_a', role: 'admin' } }),
+  }, { requestSha256: h('held-access') })
+  assert.deepEqual(Object.keys(access).sort(), ['outcomeSha256', 'producedSha256', 'requestSha256'])
+})
+
 const fsTime = '2026-09-08T12:00:00.123456789Z'
 const fsValue = value => {
   if (value === null) return { nullValue: null }
@@ -524,7 +578,7 @@ test('incremental reconciler proves final replay changed no document, updateTime
 
 test('incremental createCompany proves absent pre-state, exact chronology and exact audit identity', async () => {
   const fixture = semanticFixture(), root = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/documents'
-  const companyId = 'company_new', actorUid = fixture.ids.ownerAUid, idempotencyKey = 'idem-new'
+  const companyId = 'company_new', actorUid = fixture.ids.ownerAUid, idempotencyKey = 'idem-new-1234567890'
   const docs = new Map(), early = '2026-09-08T11:59:59.000000000Z'
   const harness = fakeSessionHarness({
     [`POST ${root}:batchGet`]: ({ body }) => body.documents.map(name => {
@@ -537,10 +591,16 @@ test('incremental createCompany proves absent pre-state, exact chronology and ex
     ],
   })
   const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
-  const reconciler = createIncrementalFirestoreReconciler({ session })
+  const checkpoint = memoryRecoveryCheckpoint()
+  const reconciler = createIncrementalFirestoreReconciler({ session, recoveryCheckpoint: checkpoint })
   const state = { ownerASubjectSha256: h(fixture.emails.ownerA), ownerBSubjectSha256: h(fixture.emails.ownerB) }
   const binding = { identity: 'ownerA', actorUid, idempotencyKeySha256: h(idempotencyKey) }
+  const companyInput = { idempotencyKey, ownerName: 'Owner', companyName: 'Company', legalType: 'ooo' }
+  reconciler.registerIdempotencyMaterial({ slot: 'createCompanyA', identity: 'ownerA', actorUid,
+    requestSha256: h(JSON.stringify({ data: companyInput })), callable: 'createCompany', input: companyInput })
+  assert.equal(checkpoint.events().at(-1).payload.idempotency.createCompanyA.input.idempotencyKey, idempotencyKey)
   await reconciler.captureBefore({ slot: 'createCompanyA', binding, state })
+  assert.equal(checkpoint.events().at(-1).payload.slotSnapshots.createCompanyA.state, 'PREPARED')
   docs.set(`companies/${companyId}`, fsDoc(`companies/${companyId}`, {
     id: companyId, name: 'Company', legalType: 'ooo', currency: 'RUB', createdAt: now, ownerId: actorUid,
   }))
@@ -557,6 +617,11 @@ test('incremental createCompany proves absent pre-state, exact chronology and ex
   const result = await reconciler.reconcile({ slot: 'createCompanyA', binding, state,
     requestSha256: h('company-request'), outcomeSha256: h('company-outcome'), sanitized: { companyId }, produced: { companyAId: companyId } })
   assert.match(result.readbackSha256, /^[a-f0-9]{64}$/)
+  assert.equal(checkpoint.events().at(-1).payload.slotSnapshots.createCompanyA.state, 'RECONCILED')
+  const persisted = JSON.stringify(checkpoint.events())
+  for (const forbidden of [...Object.values(fixture.emails), 'synthetic-password', 'raw-invite-capability', 'provider body']) {
+    assert.equal(persisted.includes(forbidden), false)
+  }
 })
 
 test('incremental company invitation bootstrap proof uses a full exact empty query', async () => {
@@ -688,9 +753,12 @@ function trackedFixtureRows(fixture) {
   ]
 }
 
-async function createTrackedScenario(journal, fixture, sourceHead, { uncertainAt = null, onUncertainReadback = async () => {} } = {}) {
+async function createTrackedScenario(journal, fixture, sourceHead, {
+  uncertainAt = null, onUncertainReadback = async () => {}, recoveryCheckpoint = null,
+} = {}) {
   const preflight = trackedPreflight(fixture, sourceHead)
-  const executor = createLiveStagingExecutor({ journal, preflightAdapters: preflight.adapters, expectedPreflight: preflight.expected,
+  const executor = createLiveStagingExecutor({ journal, recoveryCheckpoint,
+    preflightAdapters: preflight.adapters, expectedPreflight: preflight.expected,
     initial: { runId: fixture.plan.runId, mailboxSha256: h(fixture.emails.mailbox),
       ownerASubjectSha256: h(fixture.emails.ownerA), ownerBSubjectSha256: h(fixture.emails.ownerB) },
     nowMs: () => Date.parse(now), cooldownGate: { start() {}, async wait() { return {} }, isReady: () => true } })
@@ -774,15 +842,19 @@ test('live composition persists complete private recovery state while returning 
         return { journalSha256: h(bytes), eventCount: events.length } } }
   }
   const journal = memoryJournal(calls)
-  let privateOutput
+  const recoveryCheckpoint = memoryRecoveryCheckpoint(calls)
+  let privateOutput, recoveryPath
   const stages = {
     openLoopback: async () => { calls.push('loopback.open'); return { receipt: { sourceHead }, close: async () => calls.push('loopback.close') } },
     openProvider: async () => { calls.push('provider.open'); return { session,
       transport: { close: async () => calls.push('transport.close') }, close: async () => calls.push('provider.close') } },
     createJournal: async () => { calls.push('journal.open'); return journal },
+    createRecoveryCheckpoint: async ({ filename }) => { calls.push('recovery.open'); recoveryPath = filename; return recoveryCheckpoint },
     openPlaywright: async () => { calls.push('playwright.open'); return { browser: { close: async () => calls.push('browser.close') },
       close: async () => calls.push('playwright.close') } },
-    runScenarios: async () => { calls.push('scenarios'); return createTrackedScenario(journal, fixture, sourceHead) },
+    runScenarios: async ({ recoveryCheckpoint: value }) => { calls.push('scenarios');
+      assert.equal(value, recoveryCheckpoint)
+      return createTrackedScenario(journal, fixture, sourceHead, { recoveryCheckpoint: value }) },
     createSemanticReadback: async ({ session: value, plan, state }) => { calls.push('semantic');
       return createSemanticFirestoreReadbackAdapter({ session: value, plan, state,
         ownerASubjectSha256: h(fixture.emails.ownerA), ownerBEmailSha256: h(fixture.emails.ownerB) }) },
@@ -804,9 +876,43 @@ test('live composition persists complete private recovery state while returning 
   const persisted = JSON.stringify(privateOutput)
   for (const forbidden of [...Object.values(fixture.emails), 'synthetic-password', 'raw-invite-capability', 'provider body']) assert.equal(persisted.includes(forbidden), false)
   assert.equal(JSON.stringify(result).includes('idem-a-1234567890'), false)
-  assert.deepEqual(calls.slice(-5), ['playwright.close', 'provider.close', 'loopback.close', 'journal.close', 'output'])
+  assert.equal(recoveryPath, 'D:\\private\\out.json.recovery.jsonl')
+  const recoveryEvents = recoveryCheckpoint.inspect()
+  assert.equal(recoveryEvents.at(-1).kind, 'OUTPUT_COMMITTED')
+  assert.equal(recoveryEvents.some(row => row.kind === 'FINAL_MANIFEST'), true)
+  const finalManifestIndex = calls.lastIndexOf('recovery.FINAL_MANIFEST')
+  assert.ok(finalManifestIndex < calls.lastIndexOf('playwright.close'))
+  assert.ok(calls.lastIndexOf('journal.close') < calls.lastIndexOf('output'))
+  assert.ok(calls.lastIndexOf('output') < calls.lastIndexOf('recovery.OUTPUT_COMMITTED'))
+  assert.equal(calls.at(-1), 'recovery.close')
+
+  for (const failure of ['HEAD_DRIFT', 'OUTPUT_FSYNC_FAILURE']) {
+    const outputCalls = [], caseJournal = memoryJournal(outputCalls), caseRecovery = memoryRecoveryCheckpoint(outputCalls)
+    let writes = 0
+    await assert.rejects(() => runLiveAcceptanceComposition({ context: { sourceHead,
+      journalPath: `D:\\private\\${failure}.journal.jsonl`, outputPath: `D:\\private\\${failure}.json` }, stages: {
+      openLoopback: async () => ({ receipt: { sourceHead }, close: async () => {} }),
+      openProvider: async () => ({ session, transport: { close: async () => {} }, close: async () => {} }),
+      createJournal: async () => caseJournal,
+      createRecoveryCheckpoint: async () => caseRecovery,
+      openPlaywright: async () => ({ browser: { close: async () => {} }, close: async () => {} }),
+      runScenarios: async ({ recoveryCheckpoint: value }) => createTrackedScenario(caseJournal, fixture, sourceHead,
+        { recoveryCheckpoint: value }),
+      createSemanticReadback: stages.createSemanticReadback,
+      writeOutput: async () => { writes++; throw new Error(failure) },
+    }, now: (() => { const values = ['2026-09-08T12:03:00.000Z', '2026-09-08T12:04:00.000Z',
+      '2026-09-08T12:05:00.000Z']; return () => values.shift() })() }))
+    assert.equal(writes, 1)
+    const events = caseRecovery.inspect()
+    assert.equal(events.at(-2).kind, 'FINAL_MANIFEST')
+    assert.equal(events.at(-1).kind, 'RECOVERY_REQUIRED')
+    assert.equal(events.at(-1).payload.reasonCode, 'FINAL_OUTPUT_NOT_COMMITTED')
+    assert.equal(events.at(-1).payload.recoveryManifest.status, 'SUCCESS')
+    assert.equal(outputCalls.filter(value => value === 'recovery.RECOVERY_REQUIRED').length, 1)
+  }
 
   const failedCalls = [], failedJournal = memoryJournal(failedCalls)
+  const failedRecoveryCheckpoint = memoryRecoveryCheckpoint(failedCalls)
   const failedRoot = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/documents'
   const failedReplayPaths = [`invitations/${fixture.ids.mailboxFinalInviteId}`, `invitationLocks/${fixture.ids.mailboxLockId}`,
     `companies/${fixture.ids.companyAId}/members/${fixture.ids.ownerMailboxUid}`, `users/${fixture.ids.ownerMailboxUid}`]
@@ -825,15 +931,17 @@ test('live composition persists complete private recovery state while returning 
     failedReconciler.registerIdempotencyMaterial({ slot, identity, actorUid,
       requestSha256: h(JSON.stringify({ data: input })), callable: 'createCompany', input })
   }
-  let recoveryOutput, failureProbe = {}
+  let failureProbe = {}
   await assert.rejects(() => runLiveAcceptanceComposition({ context: { sourceHead,
     journalPath: 'D:\\private\\journal2.jsonl', outputPath: 'D:\\private\\out2.json' }, stages: {
     ...stages,
     openLoopback: async () => ({ receipt: {}, close: async () => failedCalls.push('loopback.close') }),
     openProvider: async () => ({ session: failedSession, transport: { close: async () => {} }, close: async () => failedCalls.push('provider.close') }),
     createJournal: async () => failedJournal,
+    createRecoveryCheckpoint: async () => failedRecoveryCheckpoint,
     openPlaywright: async () => ({ browser: { close: async () => {} }, close: async () => failedCalls.push('playwright.close') }),
-    runScenarios: async () => createTrackedScenario(failedJournal, fixture, sourceHead, { uncertainAt: 'replayMailboxFinalInvite',
+    runScenarios: async ({ recoveryCheckpoint: value }) => createTrackedScenario(failedJournal, fixture, sourceHead, {
+      recoveryCheckpoint: value, uncertainAt: 'replayMailboxFinalInvite',
       onUncertainReadback: async input => {
         failureProbe.started = true
         await failedReconciler.captureBefore(input)
@@ -843,15 +951,21 @@ test('live composition persists complete private recovery state while returning 
         failureProbe.resources = buildPrivateLiveRecoveryManifest({ sourceHead, journal: failedJournal, session: failedSession,
           status: 'RECOVERY_REQUIRED', generatedAt: now }).resources.length
       } }),
-    writeOutput: async ({ value }) => { failedCalls.push('output'); recoveryOutput = value },
+    writeOutput: async () => { failedCalls.push('output'); throw new Error('must not write recovery through success output') },
   }, now: () => '2026-09-08T12:02:00.000Z' }))
-  assert.equal(recoveryOutput.status, 'RECOVERY_REQUIRED')
   assert.deepEqual(failureProbe, { started: true, captured: true, reconciled: true, resources: 13 })
-  assert.equal(recoveryOutput.recoveryManifest.fixtureSlots.acceptOwnerBInvite.state, 'RECONCILED')
-  assert.equal(recoveryOutput.recoveryManifest.fixtureSlots.replayMailboxFinalInvite.state, 'UNCERTAIN')
-  assert.equal(recoveryOutput.recoveryManifest.identifiers.companyAId, fixture.ids.companyAId)
-  assert.equal(recoveryOutput.recoveryManifest.idempotency.createCompanyA.input.idempotencyKey, 'failed-idem-a-1234567890')
-  assert.equal(recoveryOutput.recoveryManifest.resources.length, 13)
-  assert.equal(recoveryOutput.recoveryManifest.resources.filter(row => row.cleanupDisposition === 'CAS_REQUIRED').length, 2)
-  assert.deepEqual(failedCalls, ['playwright.close', 'provider.close', 'loopback.close', 'journal.close', 'output'])
+  const failedEvents = failedRecoveryCheckpoint.inspect()
+  const required = failedEvents.at(-1)
+  assert.equal(required.kind, 'RECOVERY_REQUIRED')
+  assert.equal(required.payload.reasonCode, 'EXECUTION_INTERRUPTED')
+  assert.equal(required.payload.recoveryManifest.fixtureSlots.acceptOwnerBInvite.state, 'RECONCILED')
+  assert.equal(required.payload.recoveryManifest.fixtureSlots.replayMailboxFinalInvite.state, 'UNCERTAIN')
+  assert.equal(required.payload.recoveryManifest.identifiers.companyAId, fixture.ids.companyAId)
+  assert.equal(required.payload.recoveryManifest.idempotency.createCompanyA.input.idempotencyKey, 'failed-idem-a-1234567890')
+  assert.equal(required.payload.recoveryManifest.resources.length, 13)
+  assert.equal(required.payload.recoveryManifest.resources.filter(row => row.cleanupDisposition === 'CAS_REQUIRED').length, 2)
+  const requiredCall = failedCalls.lastIndexOf('recovery.RECOVERY_REQUIRED')
+  assert.ok(requiredCall > failedCalls.lastIndexOf('loopback.close'))
+  assert.equal(failedCalls.includes('output'), false)
+  assert.equal(failedCalls.at(-1), 'recovery.close')
 })

@@ -308,3 +308,39 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   live execution package. Live staging fixture writes, the verification email,
   cleanup, production, PR27 merge and Pages remain unperformed and are not
   authorized by this checkpoint.
+
+## 2026-09-08 second Stage 8 review remediation checkpoint
+
+- Independent review of clean HEAD
+  `bb5d1ea9350a8f0e0507af6537102b91a356a5ca` returned `CHANGES REQUIRED` for
+  four blockers: held admin response-shape incompatibility, replacement admin
+  readbacks whose stateful prepare closures had not run, recovery state that
+  could be lost before final output, and unexpected browser routes that did not
+  always invalidate successful evidence.
+- The current tree gives the real owner-A admin invitation and following list
+  request their own complete operation lifecycle and semantic Firestore
+  reconciliation. The held callable summarizer now accepts their exact safe
+  shapes. Mailbox, admin and post-fixture Playwright drivers maintain a fatal
+  route latch, so a denied, unexpected or classifier-error auxiliary request
+  prevents a successful result.
+- A new private `<out>.recovery.jsonl` stream is append-only, hash-chained,
+  opened with `wx`, and fully written, fsynced and reread after every event. It
+  receives executor state before each possible dispatch, provider snapshots
+  after capture/reconciliation, generated create-company idempotency inputs,
+  planned synthetic UIDs, `FINAL_MANIFEST` before teardown/output, and
+  `RECOVERY_REQUIRED` after interruption, HEAD drift or output failure. The
+  final `--out` path is attempted only once.
+- CLI validation proves that deterministic recovery path is new, outside the
+  checkout, has an existing real parent and is distinct from approval, journal
+  and output before runtime loading.
+- Current full local matrix PASS: root unit 248/248; Rules 126/126; migration
+  570/570; Functions unit 354/354; Functions emulator 224/224; aggregate live
+  executor 77/77; core 9/9; adapters 14/14; CLI 5/5; operations 2/2; runtime
+  11/11; Playwright 26/26; loopback 7/7; staging preflight 5/5; Auth template
+  discovery 5/5. Root/Functions lint, typecheck and builds PASS; root lint has
+  only the unchanged `Balance.tsx` warning; `git diff --check` PASS.
+- No live staging credential read, Auth/Firestore fixture, callable scenario,
+  verification email, cleanup, production, merge or Pages action occurred.
+  Next gates remain clean commit, independent PASS, push, exact PR-head
+  equality and exact-head `ci`/`functions` SUCCESS before preparing the private
+  section-8 execution package.
