@@ -14,6 +14,7 @@ const exactKeys = (value, keys) => record(value) &&
 const hex64 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 const iso = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value
+const EXECUTION_APPROVAL_TTL_MS = 60 * 60 * 1000
 
 export function parseExecutorCliArgs(args) {
   if (!Array.isArray(args) || args[0] !== '--execute' || args.length !== 1 + EXECUTOR_ARGUMENTS.length * 2) blocked()
@@ -91,7 +92,8 @@ export function validateExecutionApproval({ parsed, bytes, now = () => Date.now(
       value.limits.verificationEmails !== LIVE_LIMITS.verificationEmails || value.limits.cleanupAuthorized !== false ||
       value.limits.productionAuthorized !== false) blocked()
   const instant = now(), approvedAt = Date.parse(value.approvedAt), expiresAt = Date.parse(value.expiresAt)
-  if (!Number.isSafeInteger(instant) || approvedAt > instant || expiresAt < instant || expiresAt <= approvedAt || expiresAt - approvedAt > 24 * 60 * 60 * 1000) blocked()
+  if (!Number.isSafeInteger(instant) || approvedAt > instant || expiresAt < instant ||
+      expiresAt - approvedAt !== EXECUTION_APPROVAL_TTL_MS) blocked()
   return Object.freeze(structuredClone(value))
 }
 

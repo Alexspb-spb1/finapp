@@ -375,3 +375,12 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   sandbox attempt hit the known Vite native-binding/spawn restriction; the
   unrestricted local rerun passed). A new review, clean HEAD and exact-head CI
   are required before generating the private package.
+- The first private execution package review returned `CHANGES REQUIRED` before
+  live use: its command commitment still named the prior output paths; it
+  promised a one-hour approval while the executor accepted any duration up to
+  24 hours; and freshness/approval/postflight steps were prose rather than
+  exact executable commands. The current CLI now requires `expiresAt` to be
+  exactly one hour after `approvedAt`, with a regression test rejecting a
+  correctly rehashed two-hour approval. A new reviewed HEAD/CI is required;
+  then recreate the private package and its fixed local approval helper. The
+  rejected package is not authorization and must never be executed.

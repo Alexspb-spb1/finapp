@@ -329,3 +329,13 @@ the retained config/mailbox, and `build:staging` passes with that same canonical
 fingerprint (after repeating outside the known sandbox Vite spawn/native-binding
 restriction). A fresh independent review and exact-head CI remain required
 before emitting the private execution artifact.
+
+The first generated private package was rejected by independent review before
+execution. Its command commitment used prior output names, the described
+one-hour authorization was not enforced by the executor's former 24-hour upper
+bound, and several procedural steps lacked exact commands. The executor now
+requires an approval lifetime of exactly one hour and tests that even a
+correctly rehashed two-hour artifact is rejected. After new review and
+exact-head CI, the package must be regenerated with a reviewed fixed-path local
+helper plus exact freshness, execution and postflight commands. The rejected
+package does not authorize live work.

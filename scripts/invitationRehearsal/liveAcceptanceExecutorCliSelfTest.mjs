@@ -53,6 +53,11 @@ test('CLI approval binds exact bytes, clean HEAD and new external output paths',
     assert.equal(validateExecutionApproval({ parsed, bytes, now: () => Date.parse('2026-09-08T12:30:00.000Z') }).status, 'APPROVED')
     assert.equal(validateCleanExecutorHead({ parsed, gitState: { head, status: '' } }), true)
     assert.throws(() => validateExecutionApproval({ parsed, bytes: Buffer.concat([bytes, Buffer.from(' ')]), now: () => Date.parse('2026-09-08T12:30:00.000Z') }))
+    const twoHourBytes = Buffer.from(`${JSON.stringify({ ...approval, expiresAt: '2026-09-08T14:00:00.000Z' }, null, 2)}\n`)
+    const twoHourArgs = [...args]
+    twoHourArgs[twoHourArgs.indexOf('--approval-sha256') + 1] = h(twoHourBytes)
+    assert.throws(() => validateExecutionApproval({ parsed: parseExecutorCliArgs(twoHourArgs), bytes: twoHourBytes,
+      now: () => Date.parse('2026-09-08T12:30:00.000Z') }))
     assert.throws(() => validateCleanExecutorHead({ parsed, gitState: { head, status: ' M file' } }))
     fs.writeFileSync(fixture.journal, '')
     assert.throws(() => validatePrivateExecutorPaths({ parsed, repoRoot: fixture.repoRoot, io: fs }))
