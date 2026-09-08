@@ -12,6 +12,8 @@ const rootRequire = createRequire(path.join(root, 'package.json'));
 const browserRequire = process.env.FINAPP_BROWSER_TOOLS
   ? createRequire(path.resolve(process.env.FINAPP_BROWSER_TOOLS, 'package.json')) : rootRequire;
 const {chromium} = browserRequire('playwright');
+const {createEndpointShapeRecorder, writeEndpointShapeReceipt} = require('./stage8-endpoint-shapes.cjs');
+const endpointShapeRecorder = process.env.FINAPP_ENDPOINT_SHAPES_OUT ? createEndpointShapeRecorder() : null;
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8080';
 process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9099';
 const {initializeApp, deleteApp} = rootRequire('firebase-admin/app');
@@ -55,6 +57,7 @@ async function fresh() {
     const request = route.request(), url = new URL(request.url());
     // Inspect the entire URL before classifying origins; never persist a capability-bearing host.
     if ([...tokens].some(token => request.url().includes(token))) {capabilityUrlAttempts++; return route.abort();}
+    if (endpointShapeRecorder) endpointShapeRecorder.observe(request.url(), request.method());
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !['5176','9099','8080','5001'].includes(url.port)) {
       blockedOrigins.add(url.origin);
       externalAttempts++; return route.abort();
@@ -367,6 +370,11 @@ async function mutationSnapshot(inviteId,uid) {
     contexts:contexts.length,externalAttempts,blockedOriginKinds:[...blockedOrigins].map(value=>value==='https://api.exchangerate-api.com'?'legacy-exchange-rate':'unexpected-origin'),capabilityUrlAttempts,pageErrors,liveActions:0,realEmailDeliveryVerified:false},null,2)+'\n');
   const failedEvidence=path.join(artifacts,'failure.json');
   if(fs.existsSync(failedEvidence)) fs.unlinkSync(failedEvidence);
+  if(endpointShapeRecorder) {
+    const receipt=endpointShapeRecorder.receipt();
+    writeEndpointShapeReceipt(process.env.FINAPP_ENDPOINT_SHAPES_OUT,receipt,root);
+    say(`PASS endpoint-shape discovery ${receipt.shapes.length} sanitized shapes; live requests 0`);
+  }
   say('PASS integrated rehearsal; real email delivery remains external');
 })().catch(error => {
   // Safe step/line evidence only. Never print a Playwright error containing link values.

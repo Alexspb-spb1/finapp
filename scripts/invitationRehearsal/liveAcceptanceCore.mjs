@@ -12,28 +12,38 @@ export const LIVE_LIMITS = Object.freeze({
   memberships: 4, invitations: 3, invitationLocks: 2, auditEvents: 9, verificationEmails: 1,
 })
 export const FIXTURE_MUTATION_SLOT_SPECS = Object.freeze([
-  { slot: 'createOwnerAAuth', disposition: 'WRITE' },
-  { slot: 'createCompanyA', disposition: 'WRITE' },
-  { slot: 'createOwnerBAuth', disposition: 'WRITE' },
-  { slot: 'createCompanyB', disposition: 'WRITE' },
-  { slot: 'createMailboxCancelledInvite', disposition: 'WRITE' },
-  { slot: 'cancelMailboxInvite', disposition: 'WRITE' },
-  { slot: 'createMailboxFinalInvite', disposition: 'WRITE' },
-  { slot: 'denyMailboxResendCooldown', disposition: 'NO_WRITE' },
-  { slot: 'resendMailboxFinalInvite', disposition: 'WRITE' },
-  { slot: 'createOwnerMailboxAuth', disposition: 'WRITE' },
-  { slot: 'denyWrongIdentityAccept', disposition: 'NO_WRITE' },
-  { slot: 'denyUnverifiedMailboxAccept', disposition: 'NO_WRITE' },
-  { slot: 'acceptMailboxFinalInvite', disposition: 'WRITE' },
-  { slot: 'replayMailboxFinalInvite', disposition: 'IDEMPOTENT_READBACK' },
-  { slot: 'createOwnerBInvite', disposition: 'WRITE' },
-  { slot: 'acceptOwnerBInvite', disposition: 'WRITE' },
+  { slot: 'createOwnerAAuth', callable: null, disposition: 'WRITE' },
+  { slot: 'createCompanyA', callable: 'createCompany', disposition: 'WRITE' },
+  { slot: 'createOwnerBAuth', callable: null, disposition: 'WRITE' },
+  { slot: 'createCompanyB', callable: 'createCompany', disposition: 'WRITE' },
+  { slot: 'createMailboxCancelledInvite', callable: 'inviteMember', disposition: 'WRITE' },
+  { slot: 'cancelMailboxInvite', callable: 'cancelInvite', disposition: 'WRITE' },
+  { slot: 'createMailboxFinalInvite', callable: 'inviteMember', disposition: 'WRITE' },
+  { slot: 'denyMailboxResendCooldown', callable: 'resendInvite', disposition: 'NO_WRITE' },
+  { slot: 'resendMailboxFinalInvite', callable: 'resendInvite', disposition: 'WRITE' },
+  { slot: 'createOwnerMailboxAuth', callable: null, disposition: 'WRITE' },
+  { slot: 'denyWrongIdentityAccept', callable: 'acceptInvite', disposition: 'NO_WRITE' },
+  { slot: 'denyUnverifiedMailboxAccept', callable: 'acceptInvite', disposition: 'NO_WRITE' },
+  { slot: 'acceptMailboxFinalInvite', callable: 'acceptInvite', disposition: 'WRITE' },
+  { slot: 'replayMailboxFinalInvite', callable: 'acceptInvite', disposition: 'IDEMPOTENT_READBACK' },
+  { slot: 'createOwnerBInvite', callable: 'inviteMember', disposition: 'WRITE' },
+  { slot: 'acceptOwnerBInvite', callable: 'acceptInvite', disposition: 'WRITE' },
 ].map(Object.freeze))
 export const FIXTURE_MUTATION_SLOTS = Object.freeze(FIXTURE_MUTATION_SLOT_SPECS.map(row => row.slot))
 export const CALLABLE_CAPS = Object.freeze({
-  createCompany: 2, inviteMember: 3, listInvitations: 6, cancelInvite: 1,
-  resendInvite: 2, previewInvite: 4, acceptInvite: 6, getCompanyAccess: 4,
+  createCompany: 2, inviteMember: 3, listInvitations: 10, cancelInvite: 1,
+  resendInvite: 2, previewInvite: 8, acceptInvite: 6, getCompanyAccess: 7,
 })
+export const TOTAL_CALLABLE_CAP = 40
+export const READ_ONLY_CALLABLES = Object.freeze(['listInvitations', 'previewInvite', 'getCompanyAccess'])
+export const SCENARIO_NAMES = Object.freeze([
+  'mailbox-cancelled-invitation',
+  'mailbox-resend-token-rotation',
+  'wrong-identity-denial',
+  'owner-mailbox-verification-acceptance',
+  'existing-user-company-isolation',
+  'same-uid-replay-session-recovery',
+])
 export const READBACK_CHECKS = Object.freeze([
   'company-a', 'company-b', 'mailbox-membership', 'owner-b-membership',
   'mailbox-final-invitation', 'owner-b-invitation', 'mailbox-lock',
@@ -233,12 +243,16 @@ const ALLOWED_TRANSITIONS = Object.freeze({
   START: ['PRECONDITIONS_VERIFIED'],
   PRECONDITIONS_VERIFIED: ['PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED', 'FAILED'],
   PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED: ['SCENARIOS_RUNNING', 'FAILED'],
-  SCENARIOS_RUNNING: ['FIXTURE_MUTATION_MAY_BE_SENT', 'FAILED'],
+  SCENARIOS_RUNNING: ['FIXTURE_MUTATION_MAY_BE_SENT', 'CALLABLE_REQUEST_MAY_BE_SENT', 'FAILED'],
   FIXTURE_MUTATION_MAY_BE_SENT: ['FIXTURE_MUTATION_RECONCILED', 'FIXTURE_MUTATION_UNCERTAIN', 'FAILED'],
-  FIXTURE_MUTATION_RECONCILED: ['FIXTURE_MUTATION_MAY_BE_SENT', 'EMAIL_REQUEST_MAY_BE_SENT', 'MATERIALIZED_FIXTURE_PLAN_COMMITTED', 'FAILED'],
+  FIXTURE_MUTATION_RECONCILED: ['FIXTURE_MUTATION_MAY_BE_SENT', 'CALLABLE_REQUEST_MAY_BE_SENT', 'EMAIL_REQUEST_MAY_BE_SENT', 'MATERIALIZED_FIXTURE_PLAN_COMMITTED', 'FAILED'],
   FIXTURE_MUTATION_UNCERTAIN: ['FAILED'],
+  CALLABLE_REQUEST_MAY_BE_SENT: ['CALLABLE_REQUEST_RECONCILED', 'CALLABLE_REQUEST_UNCERTAIN', 'FAILED'],
+  CALLABLE_REQUEST_RECONCILED: ['FIXTURE_MUTATION_MAY_BE_SENT', 'CALLABLE_REQUEST_MAY_BE_SENT', 'EMAIL_REQUEST_MAY_BE_SENT', 'MATERIALIZED_FIXTURE_PLAN_COMMITTED', 'FAILED'],
+  CALLABLE_REQUEST_UNCERTAIN: ['FAILED'],
   EMAIL_REQUEST_MAY_BE_SENT: ['EMAIL_SENT', 'EMAIL_UNCERTAIN', 'FAILED'],
-  EMAIL_SENT: ['FIXTURE_MUTATION_MAY_BE_SENT', 'FAILED'],
+  EMAIL_SENT: ['VERIFIED_SESSION_COMMITTED', 'FAILED'],
+  VERIFIED_SESSION_COMMITTED: ['FIXTURE_MUTATION_MAY_BE_SENT', 'CALLABLE_REQUEST_MAY_BE_SENT', 'FAILED'],
   EMAIL_UNCERTAIN: ['FAILED'],
   MATERIALIZED_FIXTURE_PLAN_COMMITTED: ['ACCEPTANCE_VERIFIED', 'FAILED'],
   ACCEPTANCE_VERIFIED: ['CLEANUP_DEFERRED', 'FAILED'],
@@ -270,11 +284,15 @@ function validateEvent(event, expectedSeq) {
     PRECONDITIONS_VERIFIED: [],
     PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED: ['envelopeSha256'],
     SCENARIOS_RUNNING: [],
-    FIXTURE_MUTATION_MAY_BE_SENT: ['index', 'slot', 'callCount', 'requestSha256'],
-    FIXTURE_MUTATION_RECONCILED: ['index', 'slot', 'callCount', 'disposition', 'outcomeSha256', 'readbackSha256'],
-    FIXTURE_MUTATION_UNCERTAIN: ['index', 'slot', 'outcomeSha256'],
+    FIXTURE_MUTATION_MAY_BE_SENT: ['index', 'slot', 'callCount', 'callable', 'callableCount', 'totalCallableCount', 'requestSha256'],
+    FIXTURE_MUTATION_RECONCILED: ['index', 'slot', 'callCount', 'callable', 'callableCount', 'totalCallableCount', 'disposition', 'outcomeSha256', 'readbackSha256'],
+    FIXTURE_MUTATION_UNCERTAIN: ['index', 'slot', 'callable', 'callableCount', 'totalCallableCount', 'outcomeSha256'],
+    CALLABLE_REQUEST_MAY_BE_SENT: ['callable', 'callableCount', 'totalCallableCount', 'requestSha256', 'bindingSha256'],
+    CALLABLE_REQUEST_RECONCILED: ['callable', 'callableCount', 'totalCallableCount', 'outcomeSha256', 'readbackSha256', 'bindingSha256'],
+    CALLABLE_REQUEST_UNCERTAIN: ['callable', 'callableCount', 'totalCallableCount', 'outcomeSha256', 'bindingSha256'],
     EMAIL_REQUEST_MAY_BE_SENT: ['requestSha256'],
     EMAIL_SENT: ['outcomeSha256'],
+    VERIFIED_SESSION_COMMITTED: ['challengeSha256', 'sessionProofSha256'],
     EMAIL_UNCERTAIN: ['outcomeSha256'],
     MATERIALIZED_FIXTURE_PLAN_COMMITTED: ['planSha256'],
     ACCEPTANCE_VERIFIED: ['observationsSha256'],
@@ -285,7 +303,7 @@ function validateEvent(event, expectedSeq) {
   for (const [key, value] of Object.entries(event.details)) {
     if (key.endsWith('Sha256') && !hex64(value)) blocked()
   }
-  if (event.status === 'FAILED' && !['PRECONDITION', 'FIXTURE_MUTATION_UNCERTAIN', 'EMAIL_UNCERTAIN', 'VALIDATION', 'READBACK', 'TRANSPORT'].includes(event.details.failureCode)) blocked()
+  if (event.status === 'FAILED' && !['PRECONDITION', 'FIXTURE_MUTATION_UNCERTAIN', 'CALLABLE_REQUEST_UNCERTAIN', 'EMAIL_UNCERTAIN', 'VALIDATION', 'READBACK', 'TRANSPORT'].includes(event.details.failureCode)) blocked()
   assertNoSecretMaterial(event)
 }
 
@@ -294,9 +312,29 @@ function mutationProgress(events) {
   for (let index = 0; index < reconciled.length; index++) {
     const details = reconciled[index].details
     if (details.index !== index || details.callCount !== index + 1 || details.slot !== FIXTURE_MUTATION_SLOTS[index] ||
+        details.callable !== FIXTURE_MUTATION_SLOT_SPECS[index].callable ||
         details.disposition !== FIXTURE_MUTATION_SLOT_SPECS[index].disposition) blocked()
   }
   return reconciled.length
+}
+
+function callableProgress(events) {
+  const counts = Object.fromEntries(Object.keys(CALLABLE_CAPS).map(name => [name, 0]))
+  let total = 0
+  for (const event of events) {
+    if (!['FIXTURE_MUTATION_MAY_BE_SENT', 'CALLABLE_REQUEST_MAY_BE_SENT'].includes(event.status)) continue
+    const callable = event.details.callable
+    if (callable === null) {
+      if (event.details.callableCount !== null || event.details.totalCallableCount !== total) blocked()
+      continue
+    }
+    if (!Object.hasOwn(counts, callable)) blocked()
+    counts[callable]++
+    total++
+    if (event.details.callableCount !== counts[callable] || event.details.totalCallableCount !== total ||
+        counts[callable] > CALLABLE_CAPS[callable] || total > TOTAL_CALLABLE_CAP) blocked()
+  }
+  return { counts, total }
 }
 
 export function validateJournalTransition(events, nextEvent) {
@@ -314,22 +352,47 @@ export function validateJournalTransition(events, nextEvent) {
     if (combined.filter(event => event.status === status).length > 1) blocked()
   }
   const progress = mutationProgress(events)
+  const callableBefore = callableProgress(events)
   if (nextEvent.status === 'FIXTURE_MUTATION_MAY_BE_SENT') {
+    const spec = FIXTURE_MUTATION_SLOT_SPECS[progress]
+    const expectedCallableCount = spec?.callable === null ? null : callableBefore.counts[spec?.callable] + 1
+    const expectedTotal = callableBefore.total + (spec?.callable === null ? 0 : 1)
     if (nextEvent.details.callCount !== progress + 1 ||
         nextEvent.details.index !== progress || nextEvent.details.slot !== FIXTURE_MUTATION_SLOTS[progress] ||
-        !hex64(nextEvent.details.requestSha256)) blocked()
+        nextEvent.details.callable !== spec?.callable || nextEvent.details.callableCount !== expectedCallableCount ||
+        nextEvent.details.totalCallableCount !== expectedTotal || !hex64(nextEvent.details.requestSha256)) blocked()
+    if (spec?.callable !== null && (expectedCallableCount > CALLABLE_CAPS[spec.callable] || expectedTotal > TOTAL_CALLABLE_CAP)) blocked()
   }
   if (nextEvent.status === 'FIXTURE_MUTATION_RECONCILED') {
     const pendingEvent = events.at(-1)
     if (pendingEvent?.status !== 'FIXTURE_MUTATION_MAY_BE_SENT' || nextEvent.details.callCount !== pendingEvent.details.callCount ||
         nextEvent.details.index !== pendingEvent.details.index || nextEvent.details.slot !== pendingEvent.details.slot ||
+        nextEvent.details.callable !== pendingEvent.details.callable || nextEvent.details.callableCount !== pendingEvent.details.callableCount ||
+        nextEvent.details.totalCallableCount !== pendingEvent.details.totalCallableCount ||
         nextEvent.details.disposition !== FIXTURE_MUTATION_SLOT_SPECS[progress].disposition ||
         !hex64(nextEvent.details.outcomeSha256) || !hex64(nextEvent.details.readbackSha256)) blocked()
   }
   if (nextEvent.status === 'FIXTURE_MUTATION_UNCERTAIN') {
     const pendingEvent = events.at(-1)
     if (pendingEvent?.status !== 'FIXTURE_MUTATION_MAY_BE_SENT' ||
-        nextEvent.details.index !== pendingEvent.details.index || nextEvent.details.slot !== pendingEvent.details.slot) blocked()
+        nextEvent.details.index !== pendingEvent.details.index || nextEvent.details.slot !== pendingEvent.details.slot ||
+        nextEvent.details.callable !== pendingEvent.details.callable || nextEvent.details.callableCount !== pendingEvent.details.callableCount ||
+        nextEvent.details.totalCallableCount !== pendingEvent.details.totalCallableCount) blocked()
+  }
+  if (nextEvent.status === 'CALLABLE_REQUEST_MAY_BE_SENT') {
+    const callable = nextEvent.details.callable
+    if (!READ_ONLY_CALLABLES.includes(callable) || nextEvent.details.callableCount !== callableBefore.counts[callable] + 1 ||
+        nextEvent.details.totalCallableCount !== callableBefore.total + 1 || !hex64(nextEvent.details.requestSha256) || !hex64(nextEvent.details.bindingSha256) ||
+        nextEvent.details.callableCount > CALLABLE_CAPS[callable] || nextEvent.details.totalCallableCount > TOTAL_CALLABLE_CAP) blocked()
+  }
+  if (['CALLABLE_REQUEST_RECONCILED', 'CALLABLE_REQUEST_UNCERTAIN'].includes(nextEvent.status)) {
+    const pendingEvent = events.at(-1)
+    if (pendingEvent?.status !== 'CALLABLE_REQUEST_MAY_BE_SENT' || nextEvent.details.callable !== pendingEvent.details.callable ||
+        nextEvent.details.callableCount !== pendingEvent.details.callableCount ||
+        nextEvent.details.totalCallableCount !== pendingEvent.details.totalCallableCount ||
+        nextEvent.details.bindingSha256 !== pendingEvent.details.bindingSha256 ||
+        !hex64(nextEvent.details.outcomeSha256) ||
+        (nextEvent.status === 'CALLABLE_REQUEST_RECONCILED' && !hex64(nextEvent.details.readbackSha256))) blocked()
   }
   if (nextEvent.status === 'EMAIL_REQUEST_MAY_BE_SENT' && progress !== 12) blocked()
   if (nextEvent.status === 'MATERIALIZED_FIXTURE_PLAN_COMMITTED' &&
@@ -349,6 +412,7 @@ export function validateCompleteJournal(events) {
   if (events.at(-1).status !== 'CLEANUP_DEFERRED' || mutationProgress(events) !== FIXTURE_MUTATION_SLOTS.length ||
       events.filter(event => event.status === 'EMAIL_REQUEST_MAY_BE_SENT').length !== 1 ||
       events.filter(event => event.status === 'EMAIL_SENT').length !== 1 ||
+      events.filter(event => event.status === 'VERIFIED_SESSION_COMMITTED').length !== 1 ||
       events.some(event => event.status === 'EMAIL_UNCERTAIN')) blocked()
   return true
 }
@@ -356,7 +420,7 @@ export function validateCompleteJournal(events) {
 /** Parse only fully newline-terminated JSONL and return resumable counters.
  * Terminal or uncertain/request-in-flight journals are evidence, never replay
  * instructions, and are deliberately rejected for recovery. */
-function parseJournal(bytes, allowEmailInFlight = false) {
+function parseJournal(bytes, allowedPendingStatus = null) {
   if (!(typeof bytes === 'string' || Buffer.isBuffer(bytes) || bytes instanceof Uint8Array)) blocked()
   const text = Buffer.from(bytes).toString('utf8')
   if (!text.endsWith('\n') || text.includes('\0')) blocked()
@@ -369,11 +433,14 @@ function parseJournal(bytes, allowEmailInFlight = false) {
     events = appendJournalEvent(events, event)
   }
   const last = events.at(-1).status
-  if (['FAILED', 'FIXTURE_MUTATION_UNCERTAIN', 'EMAIL_UNCERTAIN', 'CLEANUP_DEFERRED'].includes(last) ||
-      last === 'FIXTURE_MUTATION_MAY_BE_SENT' || (last === 'EMAIL_REQUEST_MAY_BE_SENT' && !allowEmailInFlight)) blocked()
+  if (['FAILED', 'FIXTURE_MUTATION_UNCERTAIN', 'CALLABLE_REQUEST_UNCERTAIN', 'EMAIL_UNCERTAIN', 'CLEANUP_DEFERRED'].includes(last) ||
+      (last === 'FIXTURE_MUTATION_MAY_BE_SENT' && allowedPendingStatus !== last) ||
+      (last === 'CALLABLE_REQUEST_MAY_BE_SENT' && allowedPendingStatus !== last) ||
+      (last === 'EMAIL_REQUEST_MAY_BE_SENT' && allowedPendingStatus !== last)) blocked()
   const emailMay = events.filter(event => event.status === 'EMAIL_REQUEST_MAY_BE_SENT')
   const emailSent = events.filter(event => event.status === 'EMAIL_SENT')
   const reconciled = events.filter(event => event.status === 'FIXTURE_MUTATION_RECONCILED')
+  const callables = callableProgress(events)
   return deepFreeze({
     events, nextSeq: events.length, reconciledMutations: mutationProgress(events),
     mutationDispatchCount: events.filter(event => event.status === 'FIXTURE_MUTATION_MAY_BE_SENT').length,
@@ -382,11 +449,50 @@ function parseJournal(bytes, allowEmailInFlight = false) {
     idempotentReadbackCount: reconciled.filter(event => event.details.disposition === 'IDEMPOTENT_READBACK').length,
     emailRequestMayBeSentCount: emailMay.length, emailSentCount: emailSent.length,
     emailRequestSha256: emailMay[0]?.details.requestSha256 ?? null,
+    callableCounts: callables.counts, totalCallableCount: callables.total,
   })
 }
 
 export function recoverLiveAcceptanceJournal(bytes) {
-  return parseJournal(bytes, false)
+  return parseJournal(bytes)
+}
+
+/** Bind a browser/provider dispatch to the exact, fully persisted JSONL state.
+ * This validates evidence only; it performs no I/O and grants no transport
+ * access by itself. */
+export function authorizePendingDispatchJournal(bytes, kind) {
+  const expectedStatus = kind === 'fixture' ? 'FIXTURE_MUTATION_MAY_BE_SENT'
+    : kind === 'callable' ? 'CALLABLE_REQUEST_MAY_BE_SENT'
+      : kind === 'email' ? 'EMAIL_REQUEST_MAY_BE_SENT' : null
+  if (!expectedStatus) blocked()
+  const state = parseJournal(bytes, expectedStatus)
+  const pending = state.events.at(-1)
+  if (pending.status !== expectedStatus) blocked()
+  const result = {
+    kind,
+    pendingStatus: pending.status,
+    pendingSeq: pending.seq,
+    requestSha256: pending.details.requestSha256,
+    mutationDispatchCount: state.mutationDispatchCount,
+    reconciledMutations: state.reconciledMutations,
+    emailRequestMayBeSentCount: state.emailRequestMayBeSentCount,
+    emailSentCount: state.emailSentCount,
+    callableCounts: state.callableCounts,
+    totalCallableCount: state.totalCallableCount,
+    journalSha256: sha256(bytes),
+    ...(kind === 'fixture' ? {
+      index: pending.details.index,
+      slot: pending.details.slot,
+      callCount: pending.details.callCount,
+      disposition: FIXTURE_MUTATION_SLOT_SPECS[pending.details.index].disposition,
+    } : kind === 'callable' ? {
+      callable: pending.details.callable,
+      callableCount: pending.details.callableCount,
+      bindingSha256: pending.details.bindingSha256,
+    } : {}),
+  }
+  assertNoSecretMaterial(result)
+  return deepFreeze(result)
 }
 
 function bodyHash(body) {
@@ -487,7 +593,7 @@ export function liveAcceptanceTransport(baseFetch, { recoveryJournal, readJourna
       const matches = !active.requestUsed && method === active.method && url.href === active.url && bodyHash(init.body) === active.bodySha256
       if (!matches) blocked()
       if (active.verificationEmail) {
-        const durable = parseJournal(readJournal(), true)
+        const durable = parseJournal(readJournal(), 'EMAIL_REQUEST_MAY_BE_SENT')
         if (emailDispatched || durable.emailRequestMayBeSentCount !== 1 || durable.emailSentCount !== 0 ||
             durable.emailRequestSha256 !== active.bodySha256 || durable.events.at(-1).status !== 'EMAIL_REQUEST_MAY_BE_SENT') blocked()
         emailDispatched = true
@@ -588,11 +694,12 @@ function buildExpectedCleanupTargets(plan, observed) {
 
 export function sanitizePublicResult({ sourceHead, plan, journal, scenarios, observations, startedAt, finishedAt }) {
   if (!/^[a-f0-9]{40}$/.test(sourceHead ?? '') || !iso(startedAt) || !iso(finishedAt) ||
-      !Array.isArray(scenarios) || scenarios.length === 0) blocked()
+      !Array.isArray(scenarios) || scenarios.length !== SCENARIO_NAMES.length) blocked()
   validateFixturePlan(plan)
   validateCompleteJournal(journal)
-  const safeScenarios = scenarios.map(row => {
-    if (!exactKeys(row, ['name', 'status']) || !/^[a-z][a-z0-9-]{2,60}$/.test(row.name) || !['PASS', 'FAIL'].includes(row.status)) blocked()
+  const journalCallables = callableProgress(journal)
+  const safeScenarios = scenarios.map((row, index) => {
+    if (!exactKeys(row, ['name', 'status']) || row.name !== SCENARIO_NAMES[index] || !['PASS', 'FAIL'].includes(row.status)) blocked()
     return { name: row.name, status: row.status }
   })
   if (!exactKeys(observations, ['readbacks', 'callableCounts', 'transportCounts']) ||
@@ -608,8 +715,14 @@ export function sanitizePublicResult({ sourceHead, plan, journal, scenarios, obs
     const count = observations.callableCounts[name]
     if (!Number.isSafeInteger(count) || count < 0 || count > cap) blocked()
   }
-  const requiredCalls = { createCompany: 2, inviteMember: 3, cancelInvite: 1, resendInvite: 2, acceptInvite: 5 }
+  const requiredCalls = {
+    createCompany: 2, inviteMember: 3, listInvitations: 2, cancelInvite: 1,
+    resendInvite: 2, previewInvite: 4, acceptInvite: 5, getCompanyAccess: 2,
+  }
   if (Object.entries(requiredCalls).some(([name, minimum]) => observations.callableCounts[name] < minimum)) blocked()
+  if (Object.values(observations.callableCounts).reduce((sum, count) => sum + count, 0) > TOTAL_CALLABLE_CAP) blocked()
+  if (JSON.stringify(observations.callableCounts) !== JSON.stringify(journalCallables.counts) ||
+      journalCallables.total !== Object.values(observations.callableCounts).reduce((sum, count) => sum + count, 0)) blocked()
   for (const [name, cap] of Object.entries(TRANSPORT_CAPS)) {
     const count = observations.transportCounts[name]
     if (!Number.isSafeInteger(count) || count < 0 || count > cap) blocked()
@@ -635,6 +748,7 @@ export function sanitizePublicResult({ sourceHead, plan, journal, scenarios, obs
     readbacks,
     callableCounts: { ...observations.callableCounts },
     callableCaps: { ...CALLABLE_CAPS },
+    totalCallableCap: TOTAL_CALLABLE_CAP,
     transportCounts: { ...observations.transportCounts },
     transportCaps: { ...TRANSPORT_CAPS },
     verificationDispatch: { requestMayBeSentEvents: 1, sentEvents: 1 },

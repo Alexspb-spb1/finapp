@@ -203,9 +203,29 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   idempotent replay; recovery rejects truncation/in-flight/terminal journals,
   and the email permit cannot be replayed after restart. Its current CLI is
   deliberately preparation-only: live transport, browser automation, Auth/data
-  writes, email and cleanup are disabled. Local self-tests15 PASS and the test
+  writes, email and cleanup are disabled. Local self-tests17 PASS and the test
   is mandatory in CI. This is not READY_FOR_RELEASE_APPROVAL yet.
-- Next: finish and emulator-test a visible-browser live executor or an equally
-  enforceable manual runner, then update docs, commit/push PR27, obtain exact
-  HEAD CI and independent PASS, and create the private section-8 approval
-  artifact. Do not request or perform live staging mutations/email before that.
+- Next: implement and emulator-test the statically allowlisted Firebase/Admin/
+  Playwright adapters and complete six-scenario schedule, then commit/push
+  PR27, obtain exact HEAD CI and independent PASS, and create the private
+  section-8 approval artifact. Do not request or perform live staging
+  mutations/email before that.
+- A local-only browser-security layer now classifies sanitized emulator endpoint
+  shapes and binds live-shaped requests to the six-field staging fingerprint,
+  exact journal slot/body hash and callable budgets before dispatch. It blocks
+  Firestore writes, unknown endpoints and the legacy rates request, and gives
+  the verification request a single durable permit. Browser-core self-tests7
+  PASS and are required in CI. The optional endpoint recorder persists no URL
+  values, headers, bodies, credentials or capabilities. A full emulator/browser
+  capture passed with 19 sanitized shapes and live requests0. Private receipt:
+  `D:/projects/finapp/.runtime/stage8-endpoint-shapes-local-v2-20260908.json`,
+  file SHA256
+  `7d361ad44d108386c92ae5a54257812b952ec2007049f547bceb0ec5c8c51cbb`.
+  A separate live executor core now requires eight fresh preflight adapters,
+  all 16 mutation slots, an exact 14-step read-only scenario schedule, durable
+  callable counters and verified-session proof, dual-clock 60-second cooldown,
+  observation/update-time/audit/replay validation and cleanup-plan-only output.
+  Executor plus CLI self-tests9 PASS. The `--execute` CLI validates exact
+  approval bytes/hash, clean HEAD and new external private paths, then stops
+  before credentials or network because five concrete real adapter groups are
+  still listed as missing. The live execution gate therefore remains open.

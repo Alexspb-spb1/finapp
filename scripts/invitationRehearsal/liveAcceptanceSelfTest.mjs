@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import {
-  FIXTURE_MUTATION_SLOT_SPECS, FIXTURE_MUTATION_SLOTS, OAUTH_REFRESH_URL, PINNED_DISCOVERY_SHA256, PROJECT, appendJournalEvent,
-  buildCleanupTargets, buildFixtureEnvelope, buildFixturePlan, liveAcceptanceGuard, liveAcceptanceTransport,
+  CALLABLE_CAPS, FIXTURE_MUTATION_SLOT_SPECS, FIXTURE_MUTATION_SLOTS, OAUTH_REFRESH_URL, PINNED_DISCOVERY_SHA256, PROJECT, SCENARIO_NAMES, TOTAL_CALLABLE_CAP, appendJournalEvent,
+  authorizePendingDispatchJournal, buildCleanupTargets, buildFixtureEnvelope, buildFixturePlan, liveAcceptanceGuard, liveAcceptanceTransport,
   classifyLiveEndpoint, prepareLiveAcceptance, recoverLiveAcceptanceJournal, sanitizePublicResult, validateCleanupTargets, validateCompleteJournal,
   validateFixturePlan, validateJournalTransition, validateMailboxDiscoveryReceipt,
 } from './liveAcceptanceCore.mjs'
@@ -120,19 +120,34 @@ test('fixture plan rejects unsafe run IDs, malformed or aliased exact IDs', () =
 
 const sequence = ({ planSha256 = h('e'), observationsSha256 = h('e') } = {}) => {
   let events = []
+  const callableCounts = Object.fromEntries(Object.keys(CALLABLE_CAPS).map(name => [name, 0]))
+  let totalCallableCount = 0
   const add = (status, details = {}) => { events = appendJournalEvent(events, { seq: events.length, status, at, details }) }
   add('PRECONDITIONS_VERIFIED')
   add('PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED', { envelopeSha256: h('d') })
   add('SCENARIOS_RUNNING')
+  for (const [callable, count] of [['listInvitations', 6], ['previewInvite', 4], ['getCompanyAccess', 4]]) {
+    for (let call = 0; call < count; call++) {
+      callableCounts[callable]++
+      totalCallableCount++
+      add('CALLABLE_REQUEST_MAY_BE_SENT', { callable, callableCount: callableCounts[callable], totalCallableCount, requestSha256: h('a'), bindingSha256: h('f') })
+      add('CALLABLE_REQUEST_RECONCILED', { callable, callableCount: callableCounts[callable], totalCallableCount, outcomeSha256: h('b'), readbackSha256: h('c'), bindingSha256: h('f') })
+    }
+  }
   FIXTURE_MUTATION_SLOTS.forEach((slot, index) => {
-    add('FIXTURE_MUTATION_MAY_BE_SENT', { index, slot, callCount: index + 1, requestSha256: h('a') })
+    const callable = FIXTURE_MUTATION_SLOT_SPECS[index].callable
+    const callableCount = callable === null ? null : ++callableCounts[callable]
+    if (callable !== null) totalCallableCount++
+    add('FIXTURE_MUTATION_MAY_BE_SENT', { index, slot, callCount: index + 1, callable, callableCount, totalCallableCount, requestSha256: h('a') })
     add('FIXTURE_MUTATION_RECONCILED', {
-      index, slot, callCount: index + 1, disposition: FIXTURE_MUTATION_SLOT_SPECS[index].disposition,
+      index, slot, callCount: index + 1, callable, callableCount, totalCallableCount,
+      disposition: FIXTURE_MUTATION_SLOT_SPECS[index].disposition,
       outcomeSha256: h('b'), readbackSha256: h('c'),
     })
     if (index === 11) {
       add('EMAIL_REQUEST_MAY_BE_SENT', { requestSha256: h('c') })
       add('EMAIL_SENT', { outcomeSha256: h('d') })
+      add('VERIFIED_SESSION_COMMITTED', { challengeSha256: h('f'), sessionProofSha256: h('e') })
     }
   })
   add('MATERIALIZED_FIXTURE_PLAN_COMMITTED', { planSha256 })
@@ -147,7 +162,10 @@ test('journal is append-only, ordered and contains exactly one email dispatch pa
   const firstMay = events.findIndex(row => row.status === 'FIXTURE_MUTATION_MAY_BE_SENT')
   assert.throws(() => validateJournalTransition(events.slice(0, firstMay), {
     seq: firstMay, status: 'FIXTURE_MUTATION_MAY_BE_SENT', at,
-    details: { index: 1, slot: FIXTURE_MUTATION_SLOTS[1], callCount: 2, requestSha256: h('a') },
+    details: {
+      index: 1, slot: FIXTURE_MUTATION_SLOTS[1], callCount: 2,
+      callable: 'createCompany', callableCount: 1, totalCallableCount: 15, requestSha256: h('a'),
+    },
   }))
   assert.throws(() => validateJournalTransition(events, { seq: events.length, status: 'FAILED', at, details: { failureCode: 'VALIDATION' } }))
   assert.throws(() => validateCompleteJournal(events.filter(row => row.status !== 'EMAIL_SENT')))
@@ -159,11 +177,20 @@ test('unknown fixture mutation outcome is terminal until an explicit FAILED reco
   add('PRECONDITIONS_VERIFIED')
   add('PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED', { envelopeSha256: h('d') })
   add('SCENARIOS_RUNNING')
-  add('FIXTURE_MUTATION_MAY_BE_SENT', { index: 0, slot: FIXTURE_MUTATION_SLOTS[0], callCount: 1, requestSha256: h('a') })
-  add('FIXTURE_MUTATION_UNCERTAIN', { index: 0, slot: FIXTURE_MUTATION_SLOTS[0], outcomeSha256: h('b') })
+  add('FIXTURE_MUTATION_MAY_BE_SENT', {
+    index: 0, slot: FIXTURE_MUTATION_SLOTS[0], callCount: 1,
+    callable: null, callableCount: null, totalCallableCount: 0, requestSha256: h('a'),
+  })
+  add('FIXTURE_MUTATION_UNCERTAIN', {
+    index: 0, slot: FIXTURE_MUTATION_SLOTS[0], callable: null,
+    callableCount: null, totalCallableCount: 0, outcomeSha256: h('b'),
+  })
   assert.throws(() => appendJournalEvent(events, {
     seq: events.length, status: 'FIXTURE_MUTATION_MAY_BE_SENT', at,
-    details: { index: 0, slot: FIXTURE_MUTATION_SLOTS[0], callCount: 1, requestSha256: h('a') },
+    details: {
+      index: 0, slot: FIXTURE_MUTATION_SLOTS[0], callCount: 1,
+      callable: null, callableCount: null, totalCallableCount: 0, requestSha256: h('a'),
+    },
   }))
   assert.doesNotThrow(() => appendJournalEvent(events, { seq: events.length, status: 'FAILED', at, details: { failureCode: 'FIXTURE_MUTATION_UNCERTAIN' } }))
 })
@@ -242,6 +269,8 @@ test('recovery rejects truncation, malformed, terminal and unknown request state
   assert.equal(recovered.writeReconciledCount, 12)
   assert.equal(recovered.noWriteReconciledCount, 3)
   assert.equal(recovered.idempotentReadbackCount, 1)
+  assert.equal(recovered.callableCounts.previewInvite, 4)
+  assert.equal(recovered.totalCallableCount, 27)
   assert.equal(recovered.emailRequestMayBeSentCount, 1)
   assert.equal(recovered.emailSentCount, 1)
   assert.throws(() => recoverLiveAcceptanceJournal(bytes.slice(0, -1)))
@@ -254,6 +283,70 @@ test('recovery rejects truncation, malformed, terminal and unknown request state
   const pending = events.slice(0, mayIndex + 1)
   assert.equal(pending.at(-1).status, 'EMAIL_REQUEST_MAY_BE_SENT')
   assert.throws(() => recoverLiveAcceptanceJournal(`${pending.map(JSON.stringify).join('\n')}\n`))
+})
+
+test('pending-dispatch binder replays exact durable fixture/email journals and returns only safe frozen metadata', () => {
+  const events = sequence()
+  const jsonl = rows => `${rows.map(JSON.stringify).join('\n')}\n`
+  const fixtureIndex = events.findIndex(row => row.status === 'FIXTURE_MUTATION_MAY_BE_SENT')
+  const fixtureRows = events.slice(0, fixtureIndex + 1)
+  const fixture = authorizePendingDispatchJournal(jsonl(fixtureRows), 'fixture')
+  assert.deepEqual({ index: fixture.index, slot: fixture.slot, callCount: fixture.callCount, disposition: fixture.disposition }, {
+    index: 0, slot: FIXTURE_MUTATION_SLOTS[0], callCount: 1, disposition: 'WRITE',
+  })
+  assert.equal(fixture.pendingSeq, fixtureRows.length - 1)
+  assert.match(fixture.journalSha256, /^[a-f0-9]{64}$/)
+  assert.equal(Object.isFrozen(fixture), true)
+
+  const emailIndex = events.findIndex(row => row.status === 'EMAIL_REQUEST_MAY_BE_SENT')
+  const emailRows = events.slice(0, emailIndex + 1)
+  const email = authorizePendingDispatchJournal(jsonl(emailRows), 'email')
+  assert.equal(email.reconciledMutations, 12)
+  assert.equal(email.emailRequestMayBeSentCount, 1)
+  assert.equal('slot' in email, false)
+
+  const badAt = structuredClone(fixtureRows)
+  badAt[0].at = 'not-a-time'
+  assert.throws(() => authorizePendingDispatchJournal(jsonl(badAt), 'fixture'))
+  const badSeq = structuredClone(fixtureRows)
+  badSeq.at(-1).seq += 1
+  assert.throws(() => authorizePendingDispatchJournal(jsonl(badSeq), 'fixture'))
+  const badTransition = fixtureRows.filter(row => row.status !== 'SCENARIOS_RUNNING')
+  assert.throws(() => authorizePendingDispatchJournal(jsonl(badTransition), 'fixture'))
+  assert.throws(() => authorizePendingDispatchJournal(jsonl(fixtureRows).slice(0, -1), 'fixture'))
+  assert.throws(() => authorizePendingDispatchJournal(jsonl(events), 'fixture'))
+  assert.throws(() => authorizePendingDispatchJournal(jsonl(fixtureRows), 'unknown'))
+})
+
+test('durable callable counters survive independent binders and block preview or total counter overflow', () => {
+  let events = []
+  const add = (status, details = {}) => { events = appendJournalEvent(events, { seq: events.length, status, at, details }) }
+  const jsonl = rows => `${rows.map(JSON.stringify).join('\n')}\n`
+  add('PRECONDITIONS_VERIFIED')
+  add('PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED', { envelopeSha256: h('d') })
+  add('SCENARIOS_RUNNING')
+  for (let count = 1; count <= 6; count++) {
+    add('CALLABLE_REQUEST_MAY_BE_SENT', { callable: 'previewInvite', callableCount: count, totalCallableCount: count, requestSha256: h('a'), bindingSha256: h('f') })
+    add('CALLABLE_REQUEST_RECONCILED', { callable: 'previewInvite', callableCount: count, totalCallableCount: count, outcomeSha256: h('b'), readbackSha256: h('c'), bindingSha256: h('f') })
+  }
+  add('CALLABLE_REQUEST_MAY_BE_SENT', { callable: 'previewInvite', callableCount: 7, totalCallableCount: 7, requestSha256: h('a'), bindingSha256: h('f') })
+  const binderA = authorizePendingDispatchJournal(jsonl(events), 'callable')
+  assert.equal(binderA.callableCount, 7)
+  assert.equal(binderA.callableCounts.previewInvite, 7)
+  add('CALLABLE_REQUEST_RECONCILED', { callable: 'previewInvite', callableCount: 7, totalCallableCount: 7, outcomeSha256: h('b'), readbackSha256: h('c'), bindingSha256: h('f') })
+  add('CALLABLE_REQUEST_MAY_BE_SENT', { callable: 'previewInvite', callableCount: 8, totalCallableCount: 8, requestSha256: h('a'), bindingSha256: h('f') })
+  const binderB = authorizePendingDispatchJournal(jsonl(events), 'callable')
+  assert.equal(binderB.callableCount, 8)
+  assert.equal(binderB.totalCallableCount, 8)
+  add('CALLABLE_REQUEST_RECONCILED', { callable: 'previewInvite', callableCount: 8, totalCallableCount: 8, outcomeSha256: h('b'), readbackSha256: h('c'), bindingSha256: h('f') })
+  assert.throws(() => appendJournalEvent(events, {
+    seq: events.length, status: 'CALLABLE_REQUEST_MAY_BE_SENT', at,
+    details: { callable: 'previewInvite', callableCount: 9, totalCallableCount: 9, requestSha256: h('a'), bindingSha256: h('f') },
+  }))
+  assert.throws(() => appendJournalEvent(events.slice(0, 3), {
+    seq: 3, status: 'CALLABLE_REQUEST_MAY_BE_SENT', at,
+    details: { callable: 'previewInvite', callableCount: 1, totalCallableCount: 41, requestSha256: h('a'), bindingSha256: h('f') },
+  }))
 })
 
 test('sendOob has one durable process permit and cannot replay after restart', async () => {
@@ -327,21 +420,35 @@ test('public result exposes hashes, counts and safe scenario outcomes only', () 
   const result = sanitizePublicResult({
     sourceHead: 'd'.repeat(40), plan: fixturePlan,
     journal: sequence({ planSha256: sha(JSON.stringify(fixturePlan)), observationsSha256 }), observations,
-    scenarios: [{ name: 'invitation-management', status: 'PASS' }, { name: 'verification-email', status: 'PASS' }],
+    scenarios: SCENARIO_NAMES.map(name => ({ name, status: 'PASS' })),
     startedAt: at, finishedAt: '2026-09-08T12:10:00.000Z',
   })
   assert.equal(result.status, 'LIVE_ACCEPTANCE_VERIFIED')
+  assert.deepEqual(result.callableCaps, CALLABLE_CAPS)
+  assert.equal(result.totalCallableCap, TOTAL_CALLABLE_CAP)
   assert.match(result.planSha256, /^[a-f0-9]{64}$/)
   assert.equal(JSON.stringify(result).includes('uid_owner'), false)
   assert.equal(JSON.stringify(result).includes('@'), false)
   assert.throws(() => sanitizePublicResult({
     sourceHead: 'd'.repeat(40), plan: fixturePlan, journal: sequence(), observations,
-    scenarios: [{ name: 'leak', status: 'PASS', email: 'owner@example.test' }], startedAt: at, finishedAt: at,
+    scenarios: SCENARIO_NAMES.map((name, index) => index === 0 ? { name, status: 'PASS', email: 'owner@example.test' } : { name, status: 'PASS' }), startedAt: at, finishedAt: at,
   }))
   const tooMany = structuredClone(observations)
   tooMany.callableCounts.acceptInvite = 7
   assert.throws(() => sanitizePublicResult({
     sourceHead: 'd'.repeat(40), plan: fixturePlan, journal: sequence(), observations: tooMany,
-    scenarios: [{ name: 'leak', status: 'PASS' }], startedAt: at, finishedAt: at,
+    scenarios: SCENARIO_NAMES.map(name => ({ name, status: 'PASS' })), startedAt: at, finishedAt: at,
+  }))
+  const tooFewReads = structuredClone(observations)
+  tooFewReads.callableCounts.previewInvite = 3
+  assert.throws(() => sanitizePublicResult({
+    sourceHead: 'd'.repeat(40), plan: fixturePlan, journal: sequence(), observations: tooFewReads,
+    scenarios: SCENARIO_NAMES.map(name => ({ name, status: 'PASS' })), startedAt: at, finishedAt: at,
+  }))
+  const wrongScenario = SCENARIO_NAMES.map(name => ({ name, status: 'PASS' }))
+  wrongScenario[2].name = 'unregistered-scenario'
+  assert.throws(() => sanitizePublicResult({
+    sourceHead: 'd'.repeat(40), plan: fixturePlan, journal: sequence(), observations,
+    scenarios: wrongScenario, startedAt: at, finishedAt: at,
   }))
 })

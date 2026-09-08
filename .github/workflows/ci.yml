@@ -73,6 +73,10 @@ jobs:
 
       - run: npm run test:invitation-live-acceptance
 
+      - run: npm run test:invitation-live-browser
+
+      - run: npm run test:invitation-live-executor
+
       - run: npm run test:release-artifact-preflight
 
       - run: npm exec -- tsc --noEmit -p tests/rules/tsconfig.json
