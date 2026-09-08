@@ -303,8 +303,7 @@ test('callable primitive fixes URL, method and body and blocks body/journal drif
     callable: 'listInvitations', identity: 'ownerA', input: { ...input, extra: true }, permit,
     journalKind: 'callable',
   }))
-  assert.ok(LIVE_EXECUTOR_MISSING_ADAPTERS.includes('auth-verification-template-live-shape-confirmation'))
-  assert.equal(LIVE_EXECUTOR_MISSING_ADAPTERS.includes('fresh-loopback-staging-build-and-visible-playwright-driver'), false)
+  assert.deepEqual(LIVE_EXECUTOR_MISSING_ADAPTERS, [])
 })
 
 const fsTime = '2026-09-08T12:00:00.123456789Z'

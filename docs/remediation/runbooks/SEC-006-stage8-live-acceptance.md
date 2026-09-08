@@ -1,6 +1,6 @@
 # SEC-006 Stage 8 — live staging invitation and real-email acceptance
 
-Status: **LOCAL EXECUTOR VALIDATED — AUTH-SHAPE READ-ONLY DISCOVERY AUTHORIZED; LIVE FIXTURES/EMAIL NOT AUTHORIZED**.
+Status: **LOCAL EXECUTOR VALIDATED — AUTH-SHAPE DISCOVERY PASSED; LIVE FIXTURES/EMAIL NOT AUTHORIZED**.
 
 This package is the behavioral staging gate that follows the completed backend
 deployment and the read-only mailbox discovery. It targets only
@@ -200,3 +200,17 @@ node scripts/invitationRehearsal/authVerificationShapeDiscovery.mjs --project fi
 The discovery performs no Auth/data mutation, callable invocation, email,
 cleanup, production, Pages or merge action. A failed or drifting read leaves
 the live executor marker in place.
+
+The authorized discovery completed on clean checkpoint HEAD
+`31c8aed4987c8fdde203744845dd6cdb4d4696de`. Private receipt:
+`D:\projects\finapp\.runtime\stage8-auth-shape-31c8aed.json`, file SHA-256
+`60ddb5305ea431f255abb259f7ad6a5c413f7e7e7abd8c966644085102eee1cc`.
+It confirms enabled email/password signup, user signup not disabled, and the
+required verification method/template/callback metadata. The sanitized
+metadata SHA-256 is
+`18f79f56b79525cf78aba6aa9c73cb310a92fd19ee3f1fa25d665e8ef6ddaa50`.
+The first strict read stopped without a receipt because Firebase omitted a
+protobuf-default `false` field; a sanitized field-presence probe confirmed that
+shape, the validator was narrowed to that documented omission, and the clean
+retry passed. All three invocations were read-only and emitted no provider
+body, domain, mailbox, credentials or token.

@@ -255,7 +255,16 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   Functions emulator 224/224, aggregate live executor 61/61, adapters 12/12,
   runtime 9/9, Playwright 19/19, loopback 7/7, lint with the one pre-existing
   `Balance.tsx` warning, typecheck, both builds and `git diff --check`.
-- The owner authorized the narrow read-only Auth shape discovery. It has not
-  yet run at this checkpoint because the helper requires a committed clean exact
-  HEAD. Live fixture writes, the verification email, cleanup, production,
+- The owner-authorized narrow read-only Auth shape discovery passed on clean
+  checkpoint HEAD `31c8aed4987c8fdde203744845dd6cdb4d4696de`.
+  Private receipt `D:/projects/finapp/.runtime/stage8-auth-shape-31c8aed.json`
+  has file SHA256
+  `60ddb5305ea431f255abb259f7ad6a5c413f7e7e7abd8c966644085102eee1cc`;
+  sanitized metadata SHA256 is
+  `18f79f56b79525cf78aba6aa9c73cb310a92fd19ee3f1fa25d665e8ef6ddaa50`.
+  The first strict read safely stopped because Firebase omitted a
+  protobuf-default false field. A sanitized read-only presence probe confirmed
+  the omission; the validator and test now accept only omitted/boolean
+  `customized`, and a clean retry passed. The final static adapter marker is
+  removed. Live fixture writes, the verification email, cleanup, production,
   merge and Pages remain unexecuted and unauthorized under this checkpoint.

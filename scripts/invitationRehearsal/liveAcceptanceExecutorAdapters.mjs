@@ -32,10 +32,9 @@ export const LIVE_ADAPTER_ALLOWLIST = Object.freeze({
 })
 
 // liveAcceptanceExecutor.mjs refuses credentials while this is non-empty.
-// A locally inferred provider shape is not evidence of the current staging
-// response, so that live shape remains an explicit fail-closed prerequisite.
+// The staging Auth metadata shape was confirmed by the separately authorized
+// read-only discovery receipt; all concrete adapter groups are now present.
 export const LIVE_EXECUTOR_MISSING_ADAPTERS = Object.freeze([
-  'auth-verification-template-live-shape-confirmation',
   ...PLAYWRIGHT_LIVE_MISSING_BINDINGS,
 ])
 

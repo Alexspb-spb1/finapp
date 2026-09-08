@@ -58,10 +58,8 @@ test('CLI approval binds exact bytes, clean HEAD and new external output paths',
   } finally { removeTemporary(fixture.base) }
 })
 
-test('live bindings remain statically allowlisted and explicitly incomplete', () => {
-  assert.deepEqual(LIVE_EXECUTOR_MISSING_ADAPTERS, [
-    'auth-verification-template-live-shape-confirmation',
-  ])
+test('live bindings remain statically allowlisted and complete after Auth shape discovery', () => {
+  assert.deepEqual(LIVE_EXECUTOR_MISSING_ADAPTERS, [])
 })
 
 test('router isolates help, invalid args and self-test before execution', async () => {
