@@ -41,12 +41,15 @@ export function requestSpec(kind, pageToken) {
   return { url: URLS[kind], queryParams }
 }
 
-export function metadataHeaders(target) {
+export function metadataRequestOptions(target) {
   if (!Object.values(URLS).includes(target)) blocked()
   // Charging the Cloud Billing read to the target project can return 403 even
   // for its owner when that API is not enabled there. The authenticated GET is
-  // already scoped to the exact project path; omit only this quota header.
-  return target === URLS.billing ? {} : { 'x-goog-user-project': PROJECT }
+  // already scoped to the exact project path. ignoreQuotaProject also prevents
+  // firebase-tools from restoring the header from GOOGLE_CLOUD_QUOTA_PROJECT.
+  return target === URLS.billing
+    ? { headers: {}, ignoreQuotaProject: true }
+    : { headers: { 'x-goog-user-project': PROJECT }, ignoreQuotaProject: false }
 }
 
 export function deploymentTransport(baseFetch) {

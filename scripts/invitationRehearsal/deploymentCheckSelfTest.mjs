@@ -2,10 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import { PROJECT, DATABASE } from './inventoryCore.mjs'
-import { CALLABLES, URLS, FIELDS, deploymentTransport, metadataHeaders, requestSpec, runDeploymentCheck, checkFunction } from './deploymentCheckCore.mjs'
+import { CALLABLES, URLS, FIELDS, deploymentTransport, metadataRequestOptions, requestSpec, runDeploymentCheck, checkFunction } from './deploymentCheckCore.mjs'
 
 const HEAD = 'a'.repeat(40), SECRET = 'DO_NOT_PERSIST_PRIVATE_CONFIG_TOKEN_OR_PERSONAL_DATA'
+const require = createRequire(import.meta.url)
 const options = { mode: 'preflight', project: PROJECT, expectedHead: HEAD, env: {} }
 const clean = () => ({ head: HEAD, status: '' })
 function providerFunction(name = 'acceptInvite') {
@@ -218,11 +220,35 @@ test('transport allows only exact projected GETs and normal OAuth refresh; disab
 })
 
 test('billing metadata omits target quota header while other fixed reads retain it', () => {
-  assert.deepEqual(metadataHeaders(URLS.billing), {})
+  assert.deepEqual(metadataRequestOptions(URLS.billing), { headers: {}, ignoreQuotaProject: true })
   for (const [kind, target] of Object.entries(URLS)) {
-    if (kind !== 'billing') assert.deepEqual(metadataHeaders(target), { 'x-goog-user-project': PROJECT })
+    if (kind !== 'billing') assert.deepEqual(metadataRequestOptions(target), {
+      headers: { 'x-goog-user-project': PROJECT }, ignoreQuotaProject: false,
+    })
   }
-  assert.throws(() => metadataHeaders('https://cloudbilling.googleapis.com/v1/projects/other/billingInfo'))
+  assert.throws(() => metadataRequestOptions('https://cloudbilling.googleapis.com/v1/projects/other/billingInfo'))
+})
+
+test('firebase-tools cannot restore quota header from environment on exact billing read', async () => {
+  const { Client, GOOG_USER_PROJECT_HEADER } = require('../../node_modules/firebase-tools/lib/apiv2.js')
+  const client = new Client({ urlPrefix: 'https://cloudbilling.googleapis.com', auth: false })
+  const priorQuota = process.env.GOOGLE_CLOUD_QUOTA_PROJECT, priorFetch = globalThis.fetch
+  const calls = []
+  try {
+    process.env.GOOGLE_CLOUD_QUOTA_PROJECT = PROJECT
+    globalThis.fetch = async (_input, init) => {
+      calls.push(init)
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    await client.get('/billing', { ...metadataRequestOptions(URLS.billing), retries: 0, skipLog: true })
+    await client.get('/project', { ...metadataRequestOptions(URLS.project), retries: 0, skipLog: true })
+    assert.equal(calls[0].headers.has(GOOG_USER_PROJECT_HEADER), false)
+    assert.equal(calls[1].headers.get(GOOG_USER_PROJECT_HEADER), PROJECT)
+  } finally {
+    globalThis.fetch = priorFetch
+    if (priorQuota === undefined) delete process.env.GOOGLE_CLOUD_QUOTA_PROJECT
+    else process.env.GOOGLE_CLOUD_QUOTA_PROJECT = priorQuota
+  }
 })
 
 test('transport blocks mutations, activation, records, configuration, source download and unsafe URLs', async () => {
