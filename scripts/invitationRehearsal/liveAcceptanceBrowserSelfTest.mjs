@@ -116,6 +116,16 @@ test('binder consumes one fully validated durable MAY event exactly once', async
     journalBytes: journal, readJournal: () => journal }))
 })
 
+test('binder can be constructed before journal creation and explicitly syncs the started prefix', () => {
+  let journal = ''
+  const binder = createLiveBrowserRequestBinder({ stagingFingerprint: fingerprint, expectedStagingFingerprint: fingerprint,
+    apiKeySha256, journalBytes: journal, readJournal: () => journal })
+  assert.throws(() => binder.armMutation())
+  journal = bytes(stableJournal())
+  binder.syncStarted()
+  binder.syncStarted()
+})
+
 test('binder requires durable read-only callable slots and reconstructed counts block preview nine', async () => {
   assert.equal(CALLABLE_CAPS.listInvitations, 10)
   assert.equal(CALLABLE_CAPS.previewInvite, 8)

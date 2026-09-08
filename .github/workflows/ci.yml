@@ -77,6 +77,20 @@ jobs:
 
       - run: npm run test:invitation-live-executor
 
+      - run: npm run test:invitation-live-adapters
+
+      - run: npm run test:invitation-live-operations
+
+      - run: npm run test:invitation-live-runtime
+
+      - run: npm run test:invitation-live-token-lifecycle
+
+      - run: npm run test:invitation-auth-template-discovery
+
+      - run: npm run test:invitation-live-playwright
+
+      - run: npm run test:invitation-live-loopback
+
       - run: npm run test:release-artifact-preflight
 
       - run: npm exec -- tsc --noEmit -p tests/rules/tsconfig.json

@@ -6,7 +6,7 @@ import test from 'node:test'
 import { createHash } from 'node:crypto'
 import { LIVE_EXECUTOR_MISSING_ADAPTERS } from './liveAcceptanceExecutorAdapters.mjs'
 import {
-  approvalCommandSha256, parseExecutorCliArgs, routeExecutorCli, validateCleanExecutorHead,
+  approvalCommandSha256, executeApprovedLiveRuntime, parseExecutorCliArgs, routeExecutorCli, validateCleanExecutorHead,
   validateExecutionApproval, validatePrivateExecutorPaths,
 } from './liveAcceptanceExecutorCliCore.mjs'
 
@@ -60,11 +60,7 @@ test('CLI approval binds exact bytes, clean HEAD and new external output paths',
 
 test('live bindings remain statically allowlisted and explicitly incomplete', () => {
   assert.deepEqual(LIVE_EXECUTOR_MISSING_ADAPTERS, [
-    'guarded-firebase-cli-session-and-fresh-preflight-composition',
-    'sanitized-auth-template-and-signup-metadata-reader',
-    'exact-admin-auth-and-callable-dispatch-readback-driver',
-    'visible-playwright-selector-driver-with-in-page-credential-submit',
-    'complete-six-scenario-schedule-and-safe-stop-teardown',
+    'auth-verification-template-live-shape-confirmation',
   ])
 })
 
@@ -83,4 +79,31 @@ test('router isolates help, invalid args and self-test before execution', async 
   calls.length = 0
   await assert.rejects(() => routeExecutorCli({ args: ['--execute'], ...handlers }))
   assert.deepEqual(calls, [])
+})
+
+test('approved runtime stays unloaded behind missing marker and runs once when empty', async () => {
+  const fixture = pathsAndArgs()
+  try {
+    const preliminary = parseExecutorCliArgs(fixture.args)
+    const approval = { version: 1, task: 'SEC-006 Stage 8 live acceptance execution', status: 'APPROVED', project: 'finapp-staging',
+      sourceHead: head, prHead: head, reviewStatus: 'PASS', ciStatus: 'PASS', functionsStatus: 'PASS',
+      approvedAt: '2026-09-08T12:00:00.000Z', expiresAt: '2026-09-08T13:00:00.000Z',
+      commandSha256: approvalCommandSha256(preliminary), mailboxSha256: h('subject'), functionsSha256: h('functions'),
+      authMetadataSha256: h('auth'), stagingFingerprint: h('build'), limits: { fixtureMutationSlots: 16,
+        totalCallableRequests: 40, verificationEmails: 1, cleanupAuthorized: false, productionAuthorized: false } }
+    const bytes = Buffer.from(`${JSON.stringify(approval)}\n`)
+    fs.writeFileSync(fixture.approval, bytes, { flag: 'wx', mode: 0o600 })
+    const args = [...fixture.args]; args[args.indexOf('--approval-sha256') + 1] = h(bytes)
+    const parsed = parseExecutorCliArgs(args)
+    let loads = 0, runs = 0
+    let headReads = 0
+    const base = { parsed, repoRoot: fixture.repoRoot, io: fs, gitState: async () => { headReads++; return { head, status: '' } },
+      now: () => Date.parse('2026-09-08T12:30:00.000Z') }
+    const stopped = await executeApprovedLiveRuntime({ ...base, missingAdapters: ['auth-shape'], loadRuntime: async () => { loads++; return {} } })
+    assert.equal(stopped.status, 'ADAPTERS_INCOMPLETE'); assert.equal(loads, 0)
+    const complete = await executeApprovedLiveRuntime({ ...base, missingAdapters: [], loadRuntime: async () => { loads++; return {
+      run: async value => { runs++; assert.equal(value.approval.mailboxSha256, h('subject')); await value.recheckHead(); return { status: 'LIVE_ACCEPTANCE_VERIFIED' } },
+    } } })
+    assert.equal(complete.exitCode, 0); assert.equal(loads, 1); assert.equal(runs, 1); assert.equal(headReads, 4)
+  } finally { removeTemporary(fixture.base) }
 })

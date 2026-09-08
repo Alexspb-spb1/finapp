@@ -229,3 +229,33 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   approval bytes/hash, clean HEAD and new external private paths, then stops
   before credentials or network because five concrete real adapter groups are
   still listed as missing. The live execution gate therefore remains open.
+
+## 2026-09-08 live executor implementation checkpoint
+
+- The five concrete adapter groups are now implemented: guarded Firebase CLI
+  session and eight fresh read-only preflights, synthetic verified Auth owners,
+  callable dispatch and token lifecycle, semantic incremental/final Firestore
+  reconciliation, fixed loopback build serving and visible non-persistent
+  Playwright orchestration. The only remaining static marker is the current
+  staging Auth verification-template response shape.
+- The independent interim review returned CHANGES REQUIRED on six specific
+  points. The implementation now requires a successful exact-UID
+  `emailVerified=true` lookup and successful forced refresh, bounds every
+  Playwright wait, fixes origin to `http://127.0.0.1:5177`, validates each
+  successful write semantically, checks full no-write invitation/lock/member/
+  profile/audit snapshots, and queries one row beyond each expected final audit
+  count so extra events cannot be hidden.
+- Concrete runtime safeguards include immutable in-memory dist attestation,
+  exact system Chrome executable binding, dispatch-attempt accounting before
+  awaiting responses, short-write rejection, the fixed private mailbox path,
+  actual loopback receipt binding and real clipboard clearing. No secret value
+  is emitted by the runtime or tests.
+- Required local checks on the final working tree passed: root unit 248/248,
+  Rules emulator 126/126, migration emulator 570/570, Functions unit 354/354,
+  Functions emulator 224/224, aggregate live executor 61/61, adapters 12/12,
+  runtime 9/9, Playwright 19/19, loopback 7/7, lint with the one pre-existing
+  `Balance.tsx` warning, typecheck, both builds and `git diff --check`.
+- The owner authorized the narrow read-only Auth shape discovery. It has not
+  yet run at this checkpoint because the helper requires a committed clean exact
+  HEAD. Live fixture writes, the verification email, cleanup, production,
+  merge and Pages remain unexecuted and unauthorized under this checkpoint.

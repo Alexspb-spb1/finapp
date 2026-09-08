@@ -125,15 +125,16 @@ function extendsExactly(prefix, events, extra) {
  * metadata that is safe to journal. */
 export function createLiveBrowserRequestBinder({ stagingFingerprint, expectedStagingFingerprint, apiKeySha256, journalBytes, readJournal }) {
   if (!sameFingerprint(stagingFingerprint, expectedStagingFingerprint) || !hex64(apiKeySha256) || typeof readJournal !== 'function') blocked()
-  const recovered = recoverLiveAcceptanceJournal(journalBytes)
-  let stableEvents = [...recovered.events]
-  let stableReconciled = recovered.reconciledMutations
-  let counts = { ...recovered.callableCounts }
-  let total = recovered.totalCallableCount, armedMutation = null, mutationDispatched = false
+  const initialBytes = Buffer.from(journalBytes)
+  const recovered = initialBytes.length === 0 ? null : recoverLiveAcceptanceJournal(initialBytes)
+  let stableEvents = [...(recovered?.events ?? [])]
+  let stableReconciled = recovered?.reconciledMutations ?? 0
+  let counts = { ...(recovered?.callableCounts ?? Object.fromEntries(Object.keys(CALLABLE_CAPS).map(name => [name, 0]))) }
+  let total = recovered?.totalCallableCount ?? 0, startedSynced = Boolean(recovered), armedMutation = null, mutationDispatched = false
   let armedCallable = null, callableDispatched = false
-  let reservedEmailSha256 = null, armedEmailSha256 = null, emailDispatched = recovered.emailRequestMayBeSentCount > 0
+  let reservedEmailSha256 = null, armedEmailSha256 = null, emailDispatched = (recovered?.emailRequestMayBeSentCount ?? 0) > 0
   let emailSentSynced = false, verifiedSessionSynced = false
-  const emailPermit = liveAcceptanceTransport(async () => ({ permitConsumed: true }), { recoveryJournal: journalBytes, readJournal })
+  let emailPermit = recovered ? liveAcceptanceTransport(async () => ({ permitConsumed: true }), { recoveryJournal: initialBytes, readJournal }) : null
   const consumeMutation = (classification, bodySha256) => {
     const event = armedMutation
     if (!event || mutationDispatched || event.details.requestSha256 !== bodySha256) blocked()
@@ -160,8 +161,17 @@ export function createLiveBrowserRequestBinder({ stagingFingerprint, expectedSta
     return { bindingSha256: pending.bindingSha256 }
   }
   return {
+    syncStarted() {
+      if (startedSynced) return
+      const next = recoverLiveAcceptanceJournal(readJournal())
+      if (next.events.length !== 3 || next.events[0].status !== 'PRECONDITIONS_VERIFIED' ||
+          next.events[1].status !== 'PROVISIONAL_FIXTURE_ENVELOPE_COMMITTED' || next.events[2].status !== 'SCENARIOS_RUNNING' ||
+          next.reconciledMutations !== 0 || next.totalCallableCount !== 0) blocked()
+      stableEvents = [...next.events]; stableReconciled = 0; counts = { ...next.callableCounts }; total = 0; startedSynced = true
+      emailPermit = liveAcceptanceTransport(async () => ({ permitConsumed: true }), { recoveryJournal: readJournal(), readJournal })
+    },
     armMutation() {
-      if (armedMutation || mutationDispatched || armedCallable || callableDispatched) blocked()
+      if (!startedSynced || armedMutation || mutationDispatched || armedCallable || callableDispatched) blocked()
       const pending = authorizePendingDispatchJournal(readJournal(), 'fixture')
       const spec = FIXTURE_MUTATION_SLOT_SPECS[pending.index]
       const expectedCounts = { ...counts }
@@ -186,6 +196,17 @@ export function createLiveBrowserRequestBinder({ stagingFingerprint, expectedSta
       stableEvents = [...next.events]; stableReconciled = next.reconciledMutations
       counts = { ...next.callableCounts }; total = next.totalCallableCount; mutationDispatched = false
     },
+    syncProviderMutationReconciled() {
+      if (!startedSynced || armedMutation || mutationDispatched || armedCallable || callableDispatched) blocked()
+      const next = recoverLiveAcceptanceJournal(readJournal())
+      const may = next.events.at(-2), reconciled = next.events.at(-1)
+      const spec = FIXTURE_MUTATION_SLOT_SPECS[stableReconciled]
+      if (!extendsExactly(stableEvents, next.events, 2) || may?.status !== 'FIXTURE_MUTATION_MAY_BE_SENT' ||
+          reconciled?.status !== 'FIXTURE_MUTATION_RECONCILED' || spec?.callable !== null ||
+          may.details.slot !== spec.slot || reconciled.details.slot !== spec.slot ||
+          next.totalCallableCount !== total || JSON.stringify(next.callableCounts) !== JSON.stringify(counts)) blocked()
+      stableEvents = [...next.events]; stableReconciled = next.reconciledMutations
+    },
     armCallable() {
       if (armedMutation || mutationDispatched || armedCallable || callableDispatched) blocked()
       const pending = authorizePendingDispatchJournal(readJournal(), 'callable')
@@ -208,7 +229,7 @@ export function createLiveBrowserRequestBinder({ stagingFingerprint, expectedSta
       counts = { ...next.callableCounts }; total = next.totalCallableCount; callableDispatched = false
     },
     reserveVerificationEmail(bodySha256) {
-      if (!hex64(bodySha256) || reservedEmailSha256 || armedEmailSha256 || emailDispatched || mutationDispatched || armedMutation) blocked()
+      if (!startedSynced || !emailPermit || !hex64(bodySha256) || reservedEmailSha256 || armedEmailSha256 || emailDispatched || mutationDispatched || armedMutation) blocked()
       emailPermit.reserveVerificationEmail(bodySha256)
       reservedEmailSha256 = bodySha256
     },

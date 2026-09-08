@@ -91,3 +91,22 @@ export function validateCleanExecutorHead({ parsed, gitState }) {
   if (!exactKeys(gitState, ['head', 'status']) || gitState.head !== parsed['--expected-head'] || gitState.status !== '') blocked()
   return true
 }
+
+/** Keep the runtime module entirely unloaded until every local gate passes. */
+export async function executeApprovedLiveRuntime({ parsed, repoRoot, io, gitState, missingAdapters, loadRuntime, now = () => Date.now() }) {
+  if (!Array.isArray(missingAdapters) || missingAdapters.some(value => typeof value !== 'string' || !value) ||
+      typeof loadRuntime !== 'function' || typeof gitState !== 'function') blocked()
+  const paths = validatePrivateExecutorPaths({ parsed, repoRoot, io })
+  const stat = io.statSync(paths['--approval'])
+  if (!stat.isFile() || stat.size < 1 || stat.size > 64 * 1024) blocked()
+  const approval = validateExecutionApproval({ parsed, bytes: io.readFileSync(paths['--approval']), now })
+  const recheckHead = async () => validateCleanExecutorHead({ parsed, gitState: await gitState() })
+  await recheckHead()
+  if (missingAdapters.length) return Object.freeze({ status: 'ADAPTERS_INCOMPLETE', exitCode: 2, missing: Object.freeze([...missingAdapters]) })
+  const runtime = await loadRuntime()
+  if (!exactKeys(runtime, ['run']) || typeof runtime.run !== 'function') blocked()
+  await recheckHead()
+  const value = await runtime.run(Object.freeze({ parsed, paths, approval, recheckHead }))
+  if (!exactKeys(value, ['status']) || value.status !== 'LIVE_ACCEPTANCE_VERIFIED') blocked()
+  return Object.freeze({ status: value.status, exitCode: 0, missing: Object.freeze([]) })
+}

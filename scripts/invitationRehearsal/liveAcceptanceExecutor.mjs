@@ -7,28 +7,25 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { LIVE_EXECUTOR_MISSING_ADAPTERS } from './liveAcceptanceExecutorAdapters.mjs'
 import {
-  EXECUTOR_HELP, routeExecutorCli, validateCleanExecutorHead,
-  validateExecutionApproval, validatePrivateExecutorPaths,
+  EXECUTOR_HELP, executeApprovedLiveRuntime, routeExecutorCli,
 } from './liveAcceptanceExecutorCliCore.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 async function execute(parsed) {
-  const paths = validatePrivateExecutorPaths({ parsed, repoRoot: root, io: fs })
-  const stat = fs.statSync(paths['--approval'])
-  if (!stat.isFile() || stat.size < 1 || stat.size > 64 * 1024) throw new Error('approval')
-  const approvalBytes = fs.readFileSync(paths['--approval'])
-  validateExecutionApproval({ parsed, bytes: approvalBytes })
   const git = command => execFileSync('git', command, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-  validateCleanExecutorHead({ parsed, gitState: {
+  const outcome = await executeApprovedLiveRuntime({ parsed, repoRoot: root, io: fs, missingAdapters: LIVE_EXECUTOR_MISSING_ADAPTERS,
+    gitState: async () => ({
     head: git(['rev-parse', 'HEAD']), status: git(['status', '--porcelain', '--untracked-files=all']),
-  } })
-  if (LIVE_EXECUTOR_MISSING_ADAPTERS.length) {
-    console.error(`LIVE_ACCEPTANCE_EXECUTOR_STOPPED reason=adapters_incomplete missing=${LIVE_EXECUTOR_MISSING_ADAPTERS.join(',')}; credentials and network were not loaded; journal/output were not created.`)
-    process.exitCode = 2
+  }), loadRuntime: async () => {
+      const module = await import('./liveAcceptanceExecutorRuntime.mjs')
+      return module.createConcreteLiveAcceptanceRuntime({ repoRoot: root, io: fs })
+    } })
+  if (outcome.status === 'ADAPTERS_INCOMPLETE') {
+    console.error(`LIVE_ACCEPTANCE_EXECUTOR_STOPPED reason=adapters_incomplete missing=${outcome.missing.join(',')}; credentials and network were not loaded; journal/output were not created.`)
   } else {
-    throw new Error('executor_not_wired')
+    console.log('LIVE_ACCEPTANCE_VERIFIED: private journal and sanitized output saved; cleanup remains deferred.')
   }
-  return process.exitCode ?? 0
+  return outcome.exitCode
 }
 
 try {
@@ -36,12 +33,18 @@ try {
     args: process.argv.slice(2),
     writeHelp: async () => {
       console.log(EXECUTOR_HELP)
-      console.log('Current status: fail-closed CLI wiring only. Live execution remains disabled until every statically listed adapter is implemented and independently reviewed.')
+      console.log('Current status: concrete fail-closed runtime implemented. Execution remains disabled while any explicit live-shape marker is listed and until an exact private approval is supplied.')
     },
     runSelfTests: async () => {
       const result = spawnSync(process.execPath, [...process.execArgv, '--test', '--test-isolation=none',
         path.join(root, 'scripts/invitationRehearsal/liveAcceptanceExecutorSelfTest.mjs'),
-        path.join(root, 'scripts/invitationRehearsal/liveAcceptanceExecutorCliSelfTest.mjs')], { stdio: 'inherit' })
+        path.join(root, 'scripts/invitationRehearsal/liveAcceptanceExecutorCliSelfTest.mjs'),
+        path.join(root, 'scripts/invitationRehearsal/liveAcceptanceExecutorAdaptersSelfTest.mjs'),
+        path.join(root, 'scripts/invitationRehearsal/liveAcceptanceExecutorOperationsSelfTest.mjs'),
+        path.join(root, 'scripts/invitationRehearsal/liveAcceptanceExecutorRuntimeSelfTest.mjs'),
+        path.join(root, 'scripts/invitationRehearsal/liveAcceptanceTokenLifecycleSelfTest.mjs'),
+        path.join(root, 'scripts/invitationRehearsal/liveAcceptanceLoopbackSelfTest.mjs'),
+        path.join(root, 'scripts/invitationRehearsal/liveAcceptancePlaywrightSelfTest.mjs')], { stdio: 'inherit' })
       return result.status ?? 1
     },
     execute,

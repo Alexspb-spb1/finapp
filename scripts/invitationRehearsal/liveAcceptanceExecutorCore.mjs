@@ -28,9 +28,9 @@ export const READ_ONLY_SLOT_SPECS = Object.freeze([
   { slot: 'mailboxCompanyBDenied', afterFixtureCount: 13, callable: 'getCompanyAccess', identity: 'ownerMailbox', entity: 'companyB', expectation: 'DENIED' },
   { slot: 'ownerBCompanyBAdmin', afterFixtureCount: 14, callable: 'getCompanyAccess', identity: 'ownerB', entity: 'companyB', expectation: 'ALLOWED_ADMIN' },
   { slot: 'ownerBCompanyADenied', afterFixtureCount: 14, callable: 'getCompanyAccess', identity: 'ownerB', entity: 'companyA', expectation: 'DENIED' },
-  { slot: 'listOwnerBPending', afterFixtureCount: 15, callable: 'listInvitations', identity: 'ownerA', entity: 'companyA', expectation: 'PENDING' },
-  { slot: 'ownerBCompanyAViewer', afterFixtureCount: 16, callable: 'getCompanyAccess', identity: 'ownerB', entity: 'companyA', expectation: 'ALLOWED_VIEWER' },
-  { slot: 'ownerBCompanyBStillAdmin', afterFixtureCount: 16, callable: 'getCompanyAccess', identity: 'ownerB', entity: 'companyB', expectation: 'ALLOWED_ADMIN' },
+  { slot: 'listOwnerBPending', afterFixtureCount: 14, callable: 'listInvitations', identity: 'ownerA', entity: 'companyA', expectation: 'PENDING' },
+  { slot: 'ownerBCompanyAViewer', afterFixtureCount: 15, callable: 'getCompanyAccess', identity: 'ownerB', entity: 'companyA', expectation: 'ALLOWED_VIEWER' },
+  { slot: 'ownerBCompanyBStillAdmin', afterFixtureCount: 15, callable: 'getCompanyAccess', identity: 'ownerB', entity: 'companyB', expectation: 'ALLOWED_ADMIN' },
   { slot: 'ownerBCompanyARecovery', afterFixtureCount: 16, callable: 'getCompanyAccess', identity: 'ownerB', entity: 'companyA', expectation: 'ALLOWED_VIEWER' },
 ].map(Object.freeze))
 
@@ -476,7 +476,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       let dispatched
       try {
         dispatched = safeDispatchResult(await dispatch(frozen({ ...may, binding: clone(binding), journalBytes: journal.bytes() })), requestSha256)
-        const reconciled = safeReadback(await readback(frozen({ slot, binding: clone(binding), outcomeSha256: dispatched.outcomeSha256 })),
+        const reconciled = safeReadback(await readback(frozen({ slot, binding: clone(binding), requestSha256, outcomeSha256: dispatched.outcomeSha256 })),
           requestSha256, dispatched.outcomeSha256, dispatched.producedSha256)
         applyProduced(slot, reconciled.produced, state)
         journal.append('FIXTURE_MUTATION_RECONCILED', {
@@ -513,7 +513,7 @@ export function createLiveStagingExecutor({ journal, preflightAdapters, expected
       let dispatched
       try {
         dispatched = safeDispatchResult(await dispatch(frozen({ ...may, slot, binding: clone(validatedBinding), journalBytes: journal.bytes() })), requestSha256)
-        const reconciled = safeReadback(await readback(frozen({ slot, callable, binding: clone(validatedBinding), outcomeSha256: dispatched.outcomeSha256 })),
+        const reconciled = safeReadback(await readback(frozen({ slot, callable, binding: clone(validatedBinding), requestSha256, outcomeSha256: dispatched.outcomeSha256 })),
           requestSha256, dispatched.outcomeSha256, dispatched.producedSha256)
         if (Object.keys(reconciled.produced).length !== 0) blocked()
         journal.append('CALLABLE_REQUEST_RECONCILED', { callable, callableCount, totalCallableCount, bindingSha256,

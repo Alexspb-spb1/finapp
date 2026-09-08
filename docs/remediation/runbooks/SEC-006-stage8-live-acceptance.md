@@ -1,6 +1,6 @@
 # SEC-006 Stage 8 — live staging invitation and real-email acceptance
 
-Status: **LOCAL PREPARATION IN PROGRESS — NOT AUTHORIZED OR EXECUTED**.
+Status: **LOCAL EXECUTOR VALIDATED — AUTH-SHAPE READ-ONLY DISCOVERY AUTHORIZED; LIVE FIXTURES/EMAIL NOT AUTHORIZED**.
 
 This package is the behavioral staging gate that follows the completed backend
 deployment and the read-only mailbox discovery. It targets only
@@ -186,3 +186,17 @@ receipt hashes. The exact invocation is emitted into a private approval file
 only after the implementation self-tests, emulator rehearsal, independent PASS
 and exact-head CI succeed. Until then this runbook is preparation, not owner
 authorization and not evidence of a live email or completed SEC-006.
+
+Before that package is generated, the owner has authorized one narrow
+read-only Auth verification-template shape discovery against `finapp-staging`.
+It runs only from a clean checkpoint HEAD, reads the Firebase project identity
+and selected Auth configuration fields, omits template content and provider
+credentials, and writes a new private sanitized receipt outside the checkout:
+
+```text
+node scripts/invitationRehearsal/authVerificationShapeDiscovery.mjs --project finapp-staging --expected-head <CHECKPOINT_HEAD> --out D:\projects\finapp\.runtime\stage8-auth-shape-<SHORT_HEAD>.json
+```
+
+The discovery performs no Auth/data mutation, callable invocation, email,
+cleanup, production, Pages or merge action. A failed or drifting read leaves
+the live executor marker in place.

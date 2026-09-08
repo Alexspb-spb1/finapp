@@ -25,9 +25,9 @@ export const FIXTURE_MUTATION_SLOT_SPECS = Object.freeze([
   { slot: 'denyWrongIdentityAccept', callable: 'acceptInvite', disposition: 'NO_WRITE' },
   { slot: 'denyUnverifiedMailboxAccept', callable: 'acceptInvite', disposition: 'NO_WRITE' },
   { slot: 'acceptMailboxFinalInvite', callable: 'acceptInvite', disposition: 'WRITE' },
-  { slot: 'replayMailboxFinalInvite', callable: 'acceptInvite', disposition: 'IDEMPOTENT_READBACK' },
   { slot: 'createOwnerBInvite', callable: 'inviteMember', disposition: 'WRITE' },
   { slot: 'acceptOwnerBInvite', callable: 'acceptInvite', disposition: 'WRITE' },
+  { slot: 'replayMailboxFinalInvite', callable: 'acceptInvite', disposition: 'IDEMPOTENT_READBACK' },
 ].map(Object.freeze))
 export const FIXTURE_MUTATION_SLOTS = Object.freeze(FIXTURE_MUTATION_SLOT_SPECS.map(row => row.slot))
 export const CALLABLE_CAPS = Object.freeze({

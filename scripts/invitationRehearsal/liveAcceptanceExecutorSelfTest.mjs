@@ -183,10 +183,10 @@ function fixtureRows() {
     ['denyWrongIdentityAccept', { identity: 'ownerB', actorUid: ownerB, invitationId: final, capabilitySha256: finalCapability }, {}],
     ['denyUnverifiedMailboxAccept', { identity: 'ownerMailbox', actorUid: ownerSubject, invitationId: final, capabilitySha256: finalCapability }, {}],
     ['acceptMailboxFinalInvite', { identity: 'ownerMailbox', actorUid: ownerSubject, invitationId: final, capabilitySha256: finalCapability }, {}],
-    ['replayMailboxFinalInvite', { identity: 'ownerMailbox', actorUid: ownerSubject, invitationId: final, capabilitySha256: finalCapability }, {}],
     ['createOwnerBInvite', { identity: 'ownerA', actorUid: ownerA, companyId: companyA, subjectSha256: h('owner-b-subject'), role: 'viewer' },
     { ownerBInviteId: existing, ownerBCapabilitySha256: existingCapability, ownerBLockId: existingLock }],
     ['acceptOwnerBInvite', { identity: 'ownerB', actorUid: ownerB, invitationId: existing, capabilitySha256: existingCapability }, {}],
+    ['replayMailboxFinalInvite', { identity: 'ownerMailbox', actorUid: ownerSubject, invitationId: final, capabilitySha256: finalCapability }, {}],
   ]
 }
 
@@ -326,6 +326,9 @@ test('executor orders exact slot commitments, enforces cooldown and emits cleanu
   const rawBundle = observationBundle(counts, executor.snapshot().state)
   const { state: ignoredState, ...bundle } = rawBundle
   assert.ok(ignoredState)
+  assert.throws(() => validateAcceptanceObservationBundle(plan, {
+    ...bundle, replay: { ...bundle.replay, auditCountBefore: 7, auditCountAfter: 7 },
+  }, executor.snapshot().state, journal.events()))
   const validated = executor.verifyAcceptance(bundle)
   assert.match(validated.observationsSha256, /^[a-f0-9]{64}$/)
   const cleanup = executor.buildCleanupPlanOnly(bundle)
