@@ -110,6 +110,7 @@ function appendJournal(descriptor, event) {
 }
 
 let journalDescriptor
+let failureStage = 'arguments_and_paths'
 try {
   const parsed = parseArgs(args)
   const mailboxFile = privatePath(parsed['--mailbox-file'], true)
@@ -122,6 +123,7 @@ try {
 
   // Reserve every output before doing substantive work. `wx` prevents an old
   // live artifact from being truncated or silently reused.
+  failureStage = 'reserve_outputs'
   journalDescriptor = fs.openSync(journalFile, 'wx', 0o600)
   appendJournal(journalDescriptor, {
     task: 'SEC-006 Stage 8 live acceptance',
@@ -133,6 +135,7 @@ try {
     emailsMayBeSent: 0,
   })
 
+  failureStage = 'prepare_contract'
   const stateBefore = gitState()
   const discoveryReceipt = fs.readFileSync(discoveryFile)
   if (discoveryReceipt.length < 1 || discoveryReceipt.length > 64 * 1024) throw new Error('private_input')
@@ -150,9 +153,12 @@ try {
     now: () => new Date().toISOString(),
   })
 
+  failureStage = 'verify_git_state'
   const stateAfter = gitState()
   if (stateAfter.head !== stateBefore.head || stateAfter.status !== stateBefore.status) throw new Error('git_drift')
+  failureStage = 'write_manifest'
   const manifestSha256 = durableWrite(manifestFile, preparation)
+  failureStage = 'write_journal'
   appendJournal(journalDescriptor, {
     task: preparation.task,
     status: preparation.status,
@@ -176,6 +182,7 @@ try {
     cleanupPerformed: false,
     nextAction: 'Implement and independently review the complete fail-closed live UI runner before requesting separate owner approval.',
   }
+  failureStage = 'write_result'
   durableWrite(outputFile, result)
   console.log('LIVE_ACCEPTANCE_PREPARED: private sanitized manifest, journal and outcome saved; live execution disabled; cloud requests 0, mutations 0, emails 0.')
 } catch {
@@ -190,7 +197,7 @@ try {
       })
     } catch { /* retain any evidence already synced */ }
   }
-  console.error('LIVE_ACCEPTANCE_STOPPED: arguments, exact clean HEAD, private paths, discovery evidence, staging dist or durable output check failed. Live execution is disabled; provider details suppressed; no cloud request, mutation, email or cleanup was attempted.')
+  console.error(`LIVE_ACCEPTANCE_STOPPED stage=${failureStage}: arguments, exact clean HEAD, private paths, discovery evidence, staging dist or durable output check failed. Live execution is disabled; provider details suppressed; no cloud request, mutation, email or cleanup was attempted.`)
   process.exitCode = 2
 } finally {
   if (journalDescriptor !== undefined) fs.closeSync(journalDescriptor)
