@@ -20,6 +20,7 @@ import { LIVE_PLAYWRIGHT_UI_STEPS } from './liveAcceptancePlaywrightCore.mjs'
 const h = value => createHash('sha256').update(value).digest('hex')
 const now = '2026-09-08T12:00:00.000Z'
 const callables = ['acceptInvite', 'cancelInvite', 'createCompany', 'getCompanyAccess', 'inviteMember', 'listInvitations', 'previewInvite', 'resendInvite']
+const privatePath = name => path.resolve(path.parse(path.resolve('.')).root, 'private', name)
 
 function providerFunction(name) {
   return {
@@ -861,8 +862,9 @@ test('live composition persists complete private recovery state while returning 
         ownerASubjectSha256: h(fixture.emails.ownerA), ownerBEmailSha256: h(fixture.emails.ownerB) }) },
     writeOutput: async ({ value }) => { calls.push('output'); privateOutput = value },
   }
+  const outputPath = privatePath('out.json')
   const result = await runLiveAcceptanceComposition({ context: { sourceHead,
-    journalPath: 'D:\\private\\journal.jsonl', outputPath: 'D:\\private\\out.json' }, stages,
+    journalPath: privatePath('journal.jsonl'), outputPath }, stages,
   now: (() => { const values = ['2026-09-08T12:00:00.000Z', '2026-09-08T12:01:00.000Z']; return () => values.shift() })() })
   assert.equal(result.status, 'LIVE_ACCEPTANCE_VERIFIED'); assert.equal('recoveryManifest' in result, false)
   assert.equal(privateOutput.recoveryManifest.status, 'SUCCESS')
@@ -877,7 +879,7 @@ test('live composition persists complete private recovery state while returning 
   const persisted = JSON.stringify(privateOutput)
   for (const forbidden of [...Object.values(fixture.emails), 'synthetic-password', 'raw-invite-capability', 'provider body']) assert.equal(persisted.includes(forbidden), false)
   assert.equal(JSON.stringify(result).includes('idem-a-1234567890'), false)
-  assert.equal(recoveryPath, 'D:\\private\\out.json.recovery.jsonl')
+  assert.equal(recoveryPath, `${outputPath}.recovery.jsonl`)
   const recoveryEvents = recoveryCheckpoint.inspect()
   assert.equal(recoveryEvents.at(-1).kind, 'OUTPUT_COMMITTED')
   assert.equal(recoveryEvents.some(row => row.kind === 'FINAL_MANIFEST'), true)
@@ -891,7 +893,7 @@ test('live composition persists complete private recovery state while returning 
     const outputCalls = [], caseJournal = memoryJournal(outputCalls), caseRecovery = memoryRecoveryCheckpoint(outputCalls)
     let writes = 0
     await assert.rejects(() => runLiveAcceptanceComposition({ context: { sourceHead,
-      journalPath: `D:\\private\\${failure}.journal.jsonl`, outputPath: `D:\\private\\${failure}.json` }, stages: {
+      journalPath: privatePath(`${failure}.journal.jsonl`), outputPath: privatePath(`${failure}.json`) }, stages: {
       openLoopback: async () => ({ receipt: { sourceHead }, close: async () => {} }),
       openProvider: async () => ({ session, transport: { close: async () => {} }, close: async () => {} }),
       createJournal: async () => caseJournal,
@@ -934,7 +936,7 @@ test('live composition persists complete private recovery state while returning 
   }
   let failureProbe = {}
   await assert.rejects(() => runLiveAcceptanceComposition({ context: { sourceHead,
-    journalPath: 'D:\\private\\journal2.jsonl', outputPath: 'D:\\private\\out2.json' }, stages: {
+    journalPath: privatePath('journal2.jsonl'), outputPath: privatePath('out2.json') }, stages: {
     ...stages,
     openLoopback: async () => ({ receipt: {}, close: async () => failedCalls.push('loopback.close') }),
     openProvider: async () => ({ session: failedSession, transport: { close: async () => {} }, close: async () => failedCalls.push('provider.close') }),

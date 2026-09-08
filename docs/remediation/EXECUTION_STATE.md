@@ -351,3 +351,11 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   `path.resolve('.')`, and the aggregate executor passes 77/77 locally again.
   This requires a new clean HEAD, independent review and fresh exact-head CI;
   the failed run is not accepted as a release gate.
+- Exact-head run `34270362756` proved the first fix but found four more source
+  locations with Windows-only journal/output paths in the composition test.
+  `functions` passed;
+  root `ci` had 76/77 aggregate executor tests pass and stopped on that one
+  composition case. All composition paths now derive from the native
+  filesystem root. A scan finds no remaining drive-letter literals in the
+  invitation self-tests, and aggregate executor remains 77/77 locally. This
+  second run is also failed evidence and does not satisfy the gate.

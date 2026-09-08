@@ -306,3 +306,11 @@ correctly rejected on the Linux runner. The `functions` job passed, while `ci`
 stopped at the aggregate executor before later checks. The fixture now uses
 `path.resolve('.')`; the aggregate executor again passes 77/77 locally. A new
 clean HEAD, independent review and both exact-head jobs are required.
+
+The next exact-head run, `34270362756`, confirmed the loader fixture fix and
+again passed `functions`, but found four remaining source locations with
+Windows-only literals in the
+composition test's journal/output paths. They are now derived from the native
+filesystem root with `node:path`; a full scan finds no drive-letter literals in
+the invitation self-tests, and the aggregate executor passes 77/77 locally.
+This second failed run is also not a release gate.
