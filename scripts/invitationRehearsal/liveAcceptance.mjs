@@ -137,8 +137,14 @@ try {
 
   failureStage = 'prepare_contract'
   const stateBefore = gitState()
+  failureStage = 'read_discovery'
   const discoveryReceipt = fs.readFileSync(discoveryFile)
   if (discoveryReceipt.length < 1 || discoveryReceipt.length > 64 * 1024) throw new Error('private_input')
+  failureStage = 'read_mailbox'
+  const mailboxText = readPrivate(mailboxFile, 512)
+  failureStage = 'inventory_dist'
+  const distFiles = distInventory()
+  failureStage = 'validate_preparation'
   const preparation = await prepareLiveAcceptance({
     options: {
       project: parsed['--project'],
@@ -147,9 +153,9 @@ try {
       env: process.env,
     },
     gitState: stateBefore,
-    mailboxText: readPrivate(mailboxFile, 512),
+    mailboxText,
     discoveryReceipt,
-    distFiles: distInventory(),
+    distFiles,
     now: () => new Date().toISOString(),
   })
 
