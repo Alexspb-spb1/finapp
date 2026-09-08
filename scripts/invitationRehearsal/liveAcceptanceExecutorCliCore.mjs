@@ -92,7 +92,7 @@ export function validateExecutionApproval({ parsed, bytes, now = () => Date.now(
       value.limits.verificationEmails !== LIVE_LIMITS.verificationEmails || value.limits.cleanupAuthorized !== false ||
       value.limits.productionAuthorized !== false) blocked()
   const instant = now(), approvedAt = Date.parse(value.approvedAt), expiresAt = Date.parse(value.expiresAt)
-  if (!Number.isSafeInteger(instant) || approvedAt > instant || expiresAt < instant ||
+  if (!Number.isSafeInteger(instant) || approvedAt > instant || expiresAt <= instant ||
       expiresAt - approvedAt !== EXECUTION_APPROVAL_TTL_MS) blocked()
   return Object.freeze(structuredClone(value))
 }

@@ -384,3 +384,7 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   correctly rehashed two-hour approval. A new reviewed HEAD/CI is required;
   then recreate the private package and its fixed local approval helper. The
   rejected package is not authorization and must never be executed.
+- Independent review of the exact one-hour change found one remaining boundary:
+  `now === expiresAt` was accepted. The current tree changes the expiry check
+  to `expiresAt <= now` and adds that exact-instant rejection case. Review and
+  CI must be repeated; no live action followed the finding.

@@ -51,6 +51,7 @@ test('CLI approval binds exact bytes, clean HEAD and new external output paths',
     assert.equal(resolved['--journal'], fixture.journal)
     assert.equal(resolved.recovery, `${fixture.out}.recovery.jsonl`)
     assert.equal(validateExecutionApproval({ parsed, bytes, now: () => Date.parse('2026-09-08T12:30:00.000Z') }).status, 'APPROVED')
+    assert.throws(() => validateExecutionApproval({ parsed, bytes, now: () => Date.parse(expiresAt) }))
     assert.equal(validateCleanExecutorHead({ parsed, gitState: { head, status: '' } }), true)
     assert.throws(() => validateExecutionApproval({ parsed, bytes: Buffer.concat([bytes, Buffer.from(' ')]), now: () => Date.parse('2026-09-08T12:30:00.000Z') }))
     const twoHourBytes = Buffer.from(`${JSON.stringify({ ...approval, expiresAt: '2026-09-08T14:00:00.000Z' }, null, 2)}\n`)

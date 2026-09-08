@@ -339,3 +339,8 @@ correctly rehashed two-hour artifact is rejected. After new review and
 exact-head CI, the package must be regenerated with a reviewed fixed-path local
 helper plus exact freshness, execution and postflight commands. The rejected
 package does not authorize live work.
+
+The next review found that the one-hour interval was exact but the instant
+`now === expiresAt` still passed. The current CLI rejects at and after expiry,
+with a regression assertion for the exact boundary. It remains subject to a
+fresh review and exact-head CI before package regeneration.
