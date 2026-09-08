@@ -298,3 +298,11 @@ This corrected tree still requires a clean commit, independent `PASS`, matching
 PR27 head and successful exact-head `ci` plus `functions` checks before the
 private section-8 execution package can be generated. No live fixture,
 verification email, cleanup, production, merge or Pages action was performed.
+
+The first exact-head CI attempt for this correction, run `34269739048`, exposed
+one test-fixture portability error: the mock Firebase loader received a
+hard-coded Windows repository path, which its production absolute-path guard
+correctly rejected on the Linux runner. The `functions` job passed, while `ci`
+stopped at the aggregate executor before later checks. The fixture now uses
+`path.resolve('.')`; the aggregate executor again passes 77/77 locally. A new
+clean HEAD, independent review and both exact-head jobs are required.

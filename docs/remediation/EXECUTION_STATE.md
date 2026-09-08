@@ -344,3 +344,10 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   Next gates remain clean commit, independent PASS, push, exact PR-head
   equality and exact-head `ci`/`functions` SUCCESS before preparing the private
   section-8 execution package.
+- Exact-head CI run `34269739048` then found one Linux-only self-test fixture
+  error: `fakeSessionHarness` supplied a hard-coded Windows path to the guarded
+  loader, so 11 adapter cases stopped at the absolute-path guard. The
+  `functions` job passed. The fixture now uses cross-platform
+  `path.resolve('.')`, and the aggregate executor passes 77/77 locally again.
+  This requires a new clean HEAD, independent review and fresh exact-head CI;
+  the failed run is not accepted as a release gate.

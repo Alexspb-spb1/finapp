@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import path from 'node:path'
 import {
   buildPrivateLiveRecoveryManifest, createCallableDispatchPrimitive, createFirebaseReadOnlyPreflightAdapters,
   createGuardedFirebaseToolsSessionLoader, createSafeStopTeardown,
@@ -114,7 +115,7 @@ function fakeSessionHarness(overrides = {}) {
     'apiv2.js': { Client },
   }
   const loader = createGuardedFirebaseToolsSessionLoader({
-    repoRoot: 'D:\\projects\\finapp\\finapp-sec006-stage8',
+    repoRoot: path.resolve('.'),
     loadModule: name => { loads++; return modules[name] },
   })
   return { loader, requests, loads: () => loads, authorizations: () => authorizations }
