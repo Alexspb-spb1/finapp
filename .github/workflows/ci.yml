@@ -71,6 +71,8 @@ jobs:
 
       - run: npm run test:invitation-mailbox-discovery
 
+      - run: npm run test:invitation-live-acceptance
+
       - run: npm run test:release-artifact-preflight
 
       - run: npm exec -- tsc --noEmit -p tests/rules/tsconfig.json

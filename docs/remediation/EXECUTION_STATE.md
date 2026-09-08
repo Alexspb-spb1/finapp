@@ -178,3 +178,34 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
 - Auth users, callable scenarios, Firestore fixture data, real email, financial
   data, maintenance, migration, cleanup, production, merge and Pages actions
   were not performed. Metadata deployment success does not close SEC006.
+
+## 2026-09-08 mailbox discovery and live-package checkpoint
+
+- Owner-approved read-only mailbox discovery ran once on exact reviewed HEAD
+  `5e476df19c5ad3e90184a6191430d94c23fea99a`. Result:
+  `accountExists=false`, `profileExists=false`, cloud mutations0, emails0.
+  Private receipt:
+  `D:/projects/finapp/.runtime/stage8-mailbox-discovery-5e476df.json`, SHA256
+  `b9be2d78de4711406361be6bb4be55b90e9ada3d78275a55dc130719da96ffe6`.
+  The mailbox value remains only in the private runtime file. Repeat the exact
+  lookup immediately before a future authorized first write; do not treat this
+  saved result as fresh indefinitely.
+- Live-acceptance runbook fixes the complete minimum scope: two synthetic
+  verified owners and companies, ownerB viewer access in companyA, owner
+  mailbox accountant acceptance, cancel plus real 60-second resend rotation,
+  wrong/unverified/replay/isolation/switch/two-tab/reload/offline checks.
+  Maximum retained state: Auth3 and 27 unique Firestore documents, including
+  memberships4 and audits9; callable POSTs<=40; real verification emails<=1.
+- New core/preparation helper uses pinned receipt bytes, exact private paths,
+  `wx` plus fsync, sanitized manifests, append-only state validation, one-shot
+  request authorization and an exact cleanup-target planner. The core accounts
+  for all16 mutation-capable dispatches, including expected no-write denials and
+  idempotent replay; recovery rejects truncation/in-flight/terminal journals,
+  and the email permit cannot be replayed after restart. Its current CLI is
+  deliberately preparation-only: live transport, browser automation, Auth/data
+  writes, email and cleanup are disabled. Local self-tests15 PASS and the test
+  is mandatory in CI. This is not READY_FOR_RELEASE_APPROVAL yet.
+- Next: finish and emulator-test a visible-browser live executor or an equally
+  enforceable manual runner, then update docs, commit/push PR27, obtain exact
+  HEAD CI and independent PASS, and create the private section-8 approval
+  artifact. Do not request or perform live staging mutations/email before that.
