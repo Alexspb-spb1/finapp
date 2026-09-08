@@ -1,8 +1,9 @@
 # Execution checkpoint
 
-Updated: 2026-09-06. Status: IN_PROGRESS — SEC-006 Stage 8 staging release
-preparation. Approved dd8f049 API activation and full inventory SUCCEEDED.
-Do not repeat activation; no deployment or real email has occurred.
+Updated: 2026-09-08. Status: IN_PROGRESS — SEC-006 Stage 8 staging backend
+deployed and metadata-verified. The approved API activation, billing link,
+index creation and scoped Functions/Rules deployment have completed. Do not
+repeat them. Real invitation behavior and Firebase email remain unverified.
 
 - Scope: stabilization stages 0–8; stage9 excluded. Engineering, separate
   agents/review and expected-HEAD merges authorized. External actions require
@@ -108,19 +109,13 @@ Do not repeat activation; no deployment or real email has occurred.
   required; no timeout bump or live maintenance.
   Additional local artifact guard now rejects Functions dotenv/secret/runtime
   configuration even when ignored by upload/Git;7 fixture tests added to CI.
-- Next: prepare bounded staging deployment package: private Rules
-  backup+fresh hash before replacement, additive index preserving override,
-  scoped8 Functions, runtime resource caps, staged SDK build and passive
-  metadata verification. Auth fixtures and real-email scenario are deferred
-  to the next concrete package. Owner budget preference requested;
-  no deployment authorized yet. Existing billing must be verified enabled;
-  no billing-plan activation or upgrade is included.
-  Do not blindly repeat the failed inventory or replay Stage7 publication.
-  Resolve current local HEAD and PR headRefOid; they must match reviewed delivery
-  code and green CI. The final approval message supplies exact SHA and new path.
-  Merge triggers Pages and needs its own package approval. Do not run existing
-  stagingVerify live harness under read-only approval (it writes/deletes fixtures).
-  Firebase deploy --dry-run may enable APIs and is not a read-only preflight.
+- Next: prepare a bounded live staging acceptance package with exact synthetic
+  fixture counts, manifest/cleanup procedure and at most one Firebase
+  verification email to the privately supplied mailbox. Do not execute Auth,
+  Firestore fixture, callable, email or cleanup actions until that separate
+  concrete package is approved. Do not run the emulator-only browser helper
+  against staging or replay Stage7 publication. PR27 stays Draft because merge
+  triggers Pages and the live acceptance gate is still open.
 - SEC006 remains OPEN. Phase1 is copy-link with Firebase verification;
   actual mailbox/link and live release criteria remain. General legacy
   Auth/state weaknesses belong to SEC008/009/STATE001 and members Rules SEC011.
@@ -148,3 +143,37 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
 - Current task: review and CI the narrow preflight transport fix, then resume
   package265d552 from a fresh exact-HEAD artifact/preflight sequence. Because
   code HEAD changes, regenerate the private approval bindings before writes.
+
+## 2026-09-08 staging deployment checkpoint
+
+- Exact deployment code: `ab1bd670ad04debd081af542e367c5dfc95e55ab`.
+  PR27 was Draft/Open on that exact HEAD; CI run34219671340 had both `ci` and
+  `functions` SUCCESS. Independent `/root/billing_header_review` returned PASS.
+- The approved package completed against `finapp-staging` only. The Rules
+  baseline was backed up and read back before writes. The invitation composite
+  index create returned a durable operation but timed out locally; read-only
+  reconciliation found the one expected index `CREATING`, then `READY`. No
+  second create request was sent. The pre-existing field override count/hash
+  remained `1` / `af2e9e80c150cc9a6b2f4c5f5bae330dacb214d7a104188fa5ef4fcfad3c6aee`.
+- Exactly eight Gen2 Functions are ACTIVE in `us-central1`: `createCompany`,
+  `inviteMember`, `listInvitations`, `cancelInvite`, `resendInvite`,
+  `previewInvite`, `acceptInvite`, `getCompanyAccess`. Each is Node22,
+  256MiB, CPU1, concurrency1, minInstances0, maxInstances1, timeout60s.
+  `authzProbe` was not deployed. One Functions deploy command was issued.
+- The Functions CLI exited nonzero only after all eight successful creates
+  because non-interactive mode would not configure an Artifact Registry cleanup
+  policy. No retry and no cleanup policy change occurred. Strict postflight
+  independently verified all eight resources and caps.
+- One Rules-only deploy succeeded. Active Rules now reference ruleset
+  `e27fcfcc-ee6d-4ac3-9d8e-b1303f44134b`; canonical hash equals reviewed local
+  `15bbc0050dd1ed2259c921818794b4f234c4457ad3e66ee2d0fa1da6d148f89d`.
+  The prior ruleset/source backup remains private for a separately approved
+  restore if ever required.
+- Final inventory receipt:
+  `D:/projects/finapp/.runtime/stage8-deployment-final-ab1bd67.json`, SHA256
+  `f7b93c7787a0e2f709f57d547eee7abb382322c48d4e576566f9fdd1b0b2267d`.
+  Strict Functions postflight receipt SHA256
+  `db0c2508ff2595a6be62ebd91ea784bcdda7fbd09f62353ddf406c9e3c3592a5`.
+- Auth users, callable scenarios, Firestore fixture data, real email, financial
+  data, maintenance, migration, cleanup, production, merge and Pages actions
+  were not performed. Metadata deployment success does not close SEC006.
