@@ -188,7 +188,8 @@ function sanitizeAuthPreflight(value, expectedHash, projectNumber) {
   const template = send?.verifyEmailTemplate
   if (!record(send) || !['DEFAULT', 'CUSTOM_SMTP'].includes(send.method) ||
       typeof send.callbackUri !== 'string' || !send.callbackUri || !record(template) ||
-      !['PLAIN_TEXT', 'HTML'].includes(template.bodyFormat) || typeof template.customized !== 'boolean' ||
+      !['PLAIN_TEXT', 'HTML'].includes(template.bodyFormat) ||
+      (template.customized !== undefined && typeof template.customized !== 'boolean') ||
       typeof template.senderLocalPart !== 'string' || !template.senderLocalPart ||
       typeof template.subject !== 'string' || !template.subject) blocked()
   let callback
@@ -198,7 +199,7 @@ function sanitizeAuthPreflight(value, expectedHash, projectNumber) {
   const metadata = {
     emailPasswordEnabled: true, userSignupDisabled: false, verificationMethod: send.method,
     callbackDomain: callback.hostname, template: {
-      bodyFormat: template.bodyFormat, customized: template.customized,
+      bodyFormat: template.bodyFormat, customized: template.customized ?? false,
       senderLocalPartPresent: true, subjectPresent: true,
     },
   }

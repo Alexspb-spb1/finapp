@@ -224,9 +224,9 @@ test('narrow Auth template discovery returns hashes and booleans without templat
     [`GET ${project}`]: { projectId: 'finapp-staging', projectNumber: '123456789' },
     [`GET ${auth}`]: {
       name: 'projects/123456789/config', authorizedDomains: ['finapp-staging.firebaseapp.com'],
-      signIn: { email: { enabled: true, passwordRequired: true } }, client: { permissions: { disabledUserSignup: false } },
+      signIn: { email: { enabled: true, passwordRequired: true } }, client: { permissions: {} },
       notification: { sendEmail: { method: 'DEFAULT', callbackUri: 'https://finapp-staging.firebaseapp.com/__/auth/action',
-        verifyEmailTemplate: { bodyFormat: 'HTML', customized: false, senderLocalPart: 'noreply', subject: 'Private subject' } } },
+        verifyEmailTemplate: { bodyFormat: 'HTML', senderLocalPart: 'noreply', subject: 'Private subject' } } },
     },
   })
   const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
