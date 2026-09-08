@@ -359,3 +359,19 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   filesystem root. A scan finds no remaining drive-letter literals in the
   invitation self-tests, and aggregate executor remains 77/77 locally. This
   second run is also failed evidence and does not satisfy the gate.
+- Independently reviewed HEAD `628bc8945dd5184cf495958e0157c4455e700af0`
+  then passed exact-head run `34271204957` (`ci` and `functions`). While deriving
+  the private execution pins, a local zero-network check found that the new
+  runtime and loopback guards hashed the six staging fields as JSON, while the
+  existing BASE-002 guard and retained `.env.staging.local` use the canonical
+  `key=value` newline serialization. The mismatch would have stopped before
+  credentials or network, but it also made the approved live path impossible.
+  The current tree reuses `computeFirebaseConfigFingerprint()` in both guards
+  and adds regression assertions that the canonical digest differs from the
+  obsolete JSON digest. Runtime 11/11, loopback 7/7, aggregate executor 77/77,
+  staging preflight 5/5 and `git diff --check` pass. The local prerequisite
+  validator accepts the retained config/mailbox by hashes only, and
+  `build:staging` passes with the existing canonical fingerprint (the first
+  sandbox attempt hit the known Vite native-binding/spawn restriction; the
+  unrestricted local rerun passed). A new review, clean HEAD and exact-head CI
+  are required before generating the private package.

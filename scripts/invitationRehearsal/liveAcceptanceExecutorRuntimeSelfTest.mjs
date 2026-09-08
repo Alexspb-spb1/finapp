@@ -11,6 +11,7 @@ import {
 } from './liveAcceptanceExecutorRuntime.mjs'
 import { SCENARIO_NAMES } from './liveAcceptanceCore.mjs'
 import { LIVE_PLAYWRIGHT_UI_STEPS } from './liveAcceptancePlaywrightCore.mjs'
+import { computeFirebaseConfigFingerprint } from '../lib/firebaseConfigFingerprint.mjs'
 
 const h = value => createHash('sha256').update(value).digest('hex')
 const config = {
@@ -21,7 +22,7 @@ const envBytes = () => Buffer.from([
   'VITE_APP_ENV=staging', `VITE_FIREBASE_API_KEY=${config.apiKey}`, `VITE_FIREBASE_AUTH_DOMAIN=${config.authDomain}`,
   `VITE_FIREBASE_PROJECT_ID=${config.projectId}`, `VITE_FIREBASE_STORAGE_BUCKET=${config.storageBucket}`,
   `VITE_FIREBASE_MESSAGING_SENDER_ID=${config.messagingSenderId}`, `VITE_FIREBASE_APP_ID=${config.appId}`,
-  `STAGING_FIREBASE_CONFIG_FINGERPRINT=${h(JSON.stringify(config))}`, '',
+  `STAGING_FIREBASE_CONFIG_FINGERPRINT=${computeFirebaseConfigFingerprint(config)}`, '',
 ].join('\n'))
 
 test('scenario PASS rows require backend evidence and every validated live UI observation', () => {
@@ -62,7 +63,7 @@ function fixture(t) {
     assert.equal(resolved.startsWith(path.resolve(os.tmpdir())), true)
     fs.rmSync(resolved, { recursive: true, force: true })
   })
-  return { repoRoot, mailbox, mailboxFile, approval: { mailboxSha256: h(mailbox), stagingFingerprint: h(JSON.stringify(config)) } }
+  return { repoRoot, mailbox, mailboxFile, approval: { mailboxSha256: h(mailbox), stagingFingerprint: computeFirebaseConfigFingerprint(config) } }
 }
 
 test('runtime prerequisites bind the private mailbox path and exact six-field config without exposing values', t => {
@@ -70,6 +71,7 @@ test('runtime prerequisites bind the private mailbox path and exact six-field co
   const fakeIo = withFixedChrome()
   const receipt = validateConcreteRuntimePrerequisites({ repoRoot: value.repoRoot, approval: value.approval, io: fakeIo,
     environment: { [LIVE_MAILBOX_FILE_ENV]: value.mailboxFile } })
+  assert.notEqual(value.approval.stagingFingerprint, h(JSON.stringify(config)))
   assert.deepEqual(Object.keys(receipt).sort(), ['apiKeySha256', 'chromeExecutablePresent', 'configPresent',
     'mailboxSha256', 'project', 'stagingFingerprint'].sort())
   assert.equal(receipt.mailboxSha256, h(value.mailbox))
@@ -90,6 +92,12 @@ test('runtime prerequisites fail closed on missing mailbox and missing or altere
     environment: { [LIVE_MAILBOX_FILE_ENV]: value.mailboxFile }, io: fakeIo }))
   fs.writeFileSync(path.join(value.repoRoot, '.env.staging.local'), Buffer.from(envBytes().toString().replace('finapp-staging.firebaseapp.com', 'foreign.example')))
   assert.throws(() => validateConcreteRuntimePrerequisites({ repoRoot: value.repoRoot, approval: value.approval,
+    environment: { [LIVE_MAILBOX_FILE_ENV]: value.mailboxFile }, io: fakeIo }))
+  const legacyJsonFingerprint = h(JSON.stringify(config))
+  fs.writeFileSync(path.join(value.repoRoot, '.env.staging.local'), Buffer.from(envBytes().toString()
+    .replace(computeFirebaseConfigFingerprint(config), legacyJsonFingerprint)))
+  assert.throws(() => validateConcreteRuntimePrerequisites({ repoRoot: value.repoRoot,
+    approval: { ...value.approval, stagingFingerprint: legacyJsonFingerprint },
     environment: { [LIVE_MAILBOX_FILE_ENV]: value.mailboxFile }, io: fakeIo }))
 })
 

@@ -5,8 +5,9 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import {
-  LOOPBACK_ORIGIN, STAGING_CONFIG_KEYS, openFreshStagingLoopbackGate,
+  LOOPBACK_ORIGIN, openFreshStagingLoopbackGate,
 } from './liveAcceptanceLoopbackCore.mjs'
+import { computeFirebaseConfigFingerprint } from '../lib/firebaseConfigFingerprint.mjs'
 
 const h = value => createHash('sha256').update(value).digest('hex')
 const head = 'a'.repeat(40)
@@ -16,7 +17,8 @@ const config = Object.freeze({
   storageBucket: 'finapp-staging.appspot.com', messagingSenderId: '111111111111',
   appId: '1:111111111111:web:testfixture0000000000',
 })
-const fingerprint = h(JSON.stringify(Object.fromEntries(STAGING_CONFIG_KEYS.map(key => [key, config[key]]))))
+const fingerprint = computeFirebaseConfigFingerprint(config)
+assert.notEqual(fingerprint, h(JSON.stringify(config)))
 
 function removeTemporary(base) {
   const resolved = fs.realpathSync(base), temp = fs.realpathSync(os.tmpdir())

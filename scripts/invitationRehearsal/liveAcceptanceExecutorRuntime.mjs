@@ -26,6 +26,7 @@ import {
 import { openFreshStagingLoopbackGate, LOOPBACK_ORIGIN, STAGING_CONFIG_KEYS } from './liveAcceptanceLoopbackCore.mjs'
 import { createFixedIdentityTokenLifecycle } from './liveAcceptanceTokenLifecycle.mjs'
 import { normalizeMailbox } from './mailboxDiscoveryCore.mjs'
+import { computeFirebaseConfigFingerprint, fingerprintsMatch } from '../lib/firebaseConfigFingerprint.mjs'
 
 export const FIXED_CHROME_EXECUTABLE = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
 export const LIVE_MAILBOX_FILE_ENV = 'FINAPP_STAGE8_MAILBOX_FILE'
@@ -95,8 +96,8 @@ function parseStagingConfig(bytes) {
   const config = Object.fromEntries(STAGING_CONFIG_KEYS.map(key => [key, entries.get(names[key])]))
   if (entries.get('VITE_APP_ENV') !== 'staging' || entries.get('STAGING_FIREBASE_CONFIG_FINGERPRINT') === undefined ||
       Object.values(config).some(value => typeof value !== 'string' || !value) || config.projectId !== PROJECT) blocked()
-  const fingerprint = sha256(JSON.stringify(config))
-  if (fingerprint !== entries.get('STAGING_FIREBASE_CONFIG_FINGERPRINT')) blocked()
+  const fingerprint = computeFirebaseConfigFingerprint(config)
+  if (!fingerprintsMatch(fingerprint, entries.get('STAGING_FIREBASE_CONFIG_FINGERPRINT'))) blocked()
   return { config, fingerprint, apiKeySha256: sha256(config.apiKey) }
 }
 

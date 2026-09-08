@@ -314,3 +314,18 @@ composition test's journal/output paths. They are now derived from the native
 filesystem root with `node:path`; a full scan finds no drive-letter literals in
 the invitation self-tests, and the aggregate executor passes 77/77 locally.
 This second failed run is also not a release gate.
+
+Exact-head run `34271204957` subsequently passed both `ci` and `functions` on
+independently reviewed HEAD `628bc8945dd5184cf495958e0157c4455e700af0`.
+The following zero-network package-pin calculation exposed one local
+integration mismatch: the new runtime and loopback guards used a JSON digest
+for the six-field Firebase Web config, but the retained staging file and the
+existing BASE-002 preflight use the canonical `key=value` newline digest from
+`scripts/lib/firebaseConfigFingerprint.mjs`. That mismatch failed closed before
+credentials or network, yet prevented any approved run. Both guards now reuse
+the existing canonical helper, and regression tests prove they do not accept
+the obsolete JSON digest. The hash-only local prerequisite check now accepts
+the retained config/mailbox, and `build:staging` passes with that same canonical
+fingerprint (after repeating outside the known sandbox Vite spawn/native-binding
+restriction). A fresh independent review and exact-head CI remain required
+before emitting the private execution artifact.

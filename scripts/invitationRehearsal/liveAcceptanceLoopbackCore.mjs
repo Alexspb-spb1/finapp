@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, timingSafeEqual } from 'node:crypto'
+import { computeFirebaseConfigFingerprint } from '../lib/firebaseConfigFingerprint.mjs'
 
 export const LOOPBACK_HOST = '127.0.0.1'
 export const LOOPBACK_PORT = 5177
@@ -22,7 +23,7 @@ function validateGitState(value, expectedHead) {
 function validateConfig(config, expectedFingerprint, expectedApiKeySha256) {
   if (!exactKeys(config, STAGING_CONFIG_KEYS) || Object.values(config).some(value => typeof value !== 'string' || value.length < 1 || value.length > 2048) ||
       config.projectId !== 'finapp-staging' || /finapp-prod-10a83/i.test(JSON.stringify(config))) blocked()
-  const fingerprint = sha256(JSON.stringify(Object.fromEntries(STAGING_CONFIG_KEYS.map(key => [key, config[key]]))))
+  const fingerprint = computeFirebaseConfigFingerprint(config)
   if (!sameHash(fingerprint, expectedFingerprint) || !sameHash(sha256(config.apiKey), expectedApiKeySha256)) blocked()
   return { fingerprint, apiKeySha256: sha256(config.apiKey) }
 }
