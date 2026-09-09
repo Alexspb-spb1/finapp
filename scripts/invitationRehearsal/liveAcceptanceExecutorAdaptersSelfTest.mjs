@@ -467,8 +467,9 @@ test('synthetic Admin Auth adapter binds exact body to journal and reconciles ve
   const ownerB = { uid: `${runId}-ownerB`, email: 'owner-b@example.invalid', password: 'different-random-B2!' }
   const createUrl = 'https://identitytoolkit.googleapis.com/v1/projects/finapp-staging/accounts'
   const lookupUrl = `${createUrl}:lookup`
-  const provider = { localId: ownerA.uid, email: ownerA.email, emailVerified: true, disabled: false }
-  const harness = fakeSessionHarness({ [`POST ${createUrl}`]: provider, [`POST ${lookupUrl}`]: { users: [provider] } })
+  const acknowledgement = { kind: 'identitytoolkit#SignupNewUserResponse', localId: ownerA.uid, email: ownerA.email }
+  const lookupAccount = { localId: ownerA.uid, email: ownerA.email, emailVerified: true, disabled: false }
+  const harness = fakeSessionHarness({ [`POST ${createUrl}`]: acknowledgement, [`POST ${lookupUrl}`]: { users: [lookupAccount] } })
   const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
   const adapter = createSyntheticVerifiedAuthAdapter({ session, runId, accounts: { ownerA, ownerB } })
   const subjectSha256 = h(ownerA.email)
@@ -476,13 +477,165 @@ test('synthetic Admin Auth adapter binds exact body to journal and reconciles ve
   const permit = { slot: 'createOwnerAAuth', requestSha256: operation.requestSha256,
     journalBytes: journalBytes(operation.requestSha256) }
   const dispatched = await operation.dispatch(permit)
-  assert.match(dispatched.outcomeSha256, /^[a-f0-9]{64}$/)
+  assert.equal(dispatched.outcomeSha256, h(JSON.stringify({ uidSha256: h(ownerA.uid), createAcknowledged: true })))
   const readback = await operation.readback()
   assert.deepEqual(readback.produced, { ownerAUid: ownerA.uid })
+  assert.deepEqual(harness.requests.map(row => [row.method, row.url]), [['POST', createUrl], ['POST', lookupUrl]])
   assert.equal(harness.requests[0].body.emailVerified, true)
   assert.equal(harness.requests[0].body.disableUser, false)
   assert.equal(harness.requests[0].options.retries, 0)
   await assert.rejects(() => operation.dispatch({ ...permit, requestSha256: h('drift') }))
+})
+
+async function syntheticAuthCase({ runId, createResponse, lookupResponse }) {
+  const ownerA = { uid: `${runId}-ownerA`, email: `${runId}.ownera@example.invalid`, password: 'long-random-password-A1!' }
+  const ownerB = { uid: `${runId}-ownerB`, email: `${runId}.ownerb@example.invalid`, password: 'different-random-B2!' }
+  const createUrl = 'https://identitytoolkit.googleapis.com/v1/projects/finapp-staging/accounts'
+  const lookupUrl = `${createUrl}:lookup`
+  const resolve = value => typeof value === 'function' ? value(ownerA) : value
+  const harness = fakeSessionHarness({ [`POST ${createUrl}`]: resolve(createResponse), [`POST ${lookupUrl}`]: resolve(lookupResponse) })
+  const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
+  const adapter = createSyntheticVerifiedAuthAdapter({ session, runId, accounts: { ownerA, ownerB } })
+  const operation = adapter.slot('ownerA', h(ownerA.email))
+  const permit = { slot: 'createOwnerAAuth', requestSha256: operation.requestSha256,
+    journalBytes: journalBytes(operation.requestSha256) }
+  return { ownerA, harness, operation, permit, createUrl, lookupUrl }
+}
+
+const signUpAcknowledgement = owner => ({
+  kind: 'identitytoolkit#SignupNewUserResponse', localId: owner.uid, email: owner.email,
+})
+
+test('synthetic Admin Auth create acknowledgement accepts SignUpResponse but rejects credential-bearing or mismatched responses', async () => {
+  const valid = await syntheticAuthCase({ runId: 'stage8-ack-valid',
+    createResponse: signUpAcknowledgement,
+    lookupResponse: owner => ({ users: [{ localId: owner.uid, email: owner.email, emailVerified: true }] }) })
+  await valid.operation.dispatch(valid.permit)
+  assert.deepEqual((await valid.operation.readback()).produced, { ownerAUid: valid.ownerA.uid })
+
+  const invalidResponses = [
+    owner => ({ localId: owner.uid, email: owner.email }),
+    owner => ({ kind: 'identitytoolkit#WrongResponse', localId: owner.uid, email: owner.email }),
+    owner => ({ ...signUpAcknowledgement(owner), localId: `${owner.uid}-drift` }),
+    owner => ({ ...signUpAcknowledgement(owner), email: `drift.${owner.email}` }),
+    owner => ({ ...signUpAcknowledgement(owner), admin: true }),
+    owner => ({ ...signUpAcknowledgement(owner), idToken: 'provider-token-canary' }),
+    owner => ({ ...signUpAcknowledgement(owner), refreshToken: 'provider-token-canary' }),
+    owner => ({ ...signUpAcknowledgement(owner), expiresIn: '3600' }),
+    owner => ({ ...signUpAcknowledgement(owner), ExpiresIn: 'case-variant-canary' }),
+    owner => ({ ...signUpAcknowledgement(owner), passwordHash: 'provider-password-canary' }),
+    owner => ({ ...signUpAcknowledgement(owner), metadata: { idToken: 'nested-provider-token-canary' } }),
+  ]
+  for (let index = 0; index < invalidResponses.length; index++) {
+    const current = await syntheticAuthCase({ runId: `stage8-ack-bad-${index}`,
+      createResponse: invalidResponses[index], lookupResponse: { users: [] } })
+    await assert.rejects(() => current.operation.dispatch(current.permit))
+    assert.deepEqual(current.harness.requests.map(row => row.url), [current.createUrl])
+    assert.equal(/provider-token-canary|provider-password-canary|case-variant-canary/.test(JSON.stringify(current.permit)), false)
+  }
+})
+
+test('synthetic Admin Auth lookup strictly requires verified identity and omitted or false disabled', async () => {
+  const validLookup = owner => ({ localId: owner.uid, email: owner.email, emailVerified: true })
+  const invalidLookups = [
+    owner => ({ localId: `${owner.uid}-drift`, email: owner.email, emailVerified: true }),
+    owner => ({ localId: owner.uid, email: `drift.${owner.email}`, emailVerified: true }),
+    owner => ({ localId: owner.uid, email: owner.email }),
+    owner => ({ localId: owner.uid, email: owner.email, emailVerified: false }),
+    ...[null, 'true', 1, {}].map(emailVerified => owner => ({
+      localId: owner.uid, email: owner.email, emailVerified,
+    })),
+    ...[null, 'false', 0, {}, true].map(disabled => owner => ({
+      localId: owner.uid, email: owner.email, emailVerified: true, disabled,
+    })),
+  ]
+  for (let index = 0; index < invalidLookups.length; index++) {
+    const current = await syntheticAuthCase({ runId: `stage8-lookup-bad-${index}`,
+      createResponse: signUpAcknowledgement,
+      lookupResponse: owner => ({ users: [invalidLookups[index](owner)] }) })
+    await current.operation.dispatch(current.permit)
+    await assert.rejects(() => current.operation.readback())
+    assert.deepEqual(current.harness.requests.map(row => row.url), [current.createUrl, current.lookupUrl])
+  }
+
+  const invalidEnvelopes = [() => ({}), () => ({ users: null }), () => ({ users: [] }),
+    owner => ({ users: [validLookup(owner), validLookup(owner)] })]
+  for (let index = 0; index < invalidEnvelopes.length; index++) {
+    const current = await syntheticAuthCase({ runId: `stage8-lookup-envelope-${index}`,
+      createResponse: signUpAcknowledgement, lookupResponse: invalidEnvelopes[index] })
+    await current.operation.dispatch(current.permit)
+    await assert.rejects(() => current.operation.readback())
+    assert.deepEqual(current.harness.requests.map(row => row.url), [current.createUrl, current.lookupUrl])
+  }
+
+  for (const disabled of [undefined, false]) {
+    const current = await syntheticAuthCase({ runId: disabled === undefined ? 'stage8-lookup-omitted' : 'stage8-lookup-false',
+      createResponse: signUpAcknowledgement,
+      lookupResponse: owner => ({ users: [{ ...validLookup(owner), ...(disabled === undefined ? {} : { disabled }) }] }) })
+    await current.operation.dispatch(current.permit)
+    assert.deepEqual((await current.operation.readback()).produced, { ownerAUid: current.ownerA.uid })
+  }
+})
+
+function inMemoryLiveJournal() {
+  let events = []
+  return {
+    append(status, details = {}) {
+      events = appendJournalEvent(events, { seq: events.length, status, at: now, details })
+      return events.at(-1)
+    },
+    bytes: () => Buffer.from(events.map(event => JSON.stringify(event)).join('\n') + (events.length ? '\n' : '')),
+    events: () => structuredClone(events),
+  }
+}
+
+function firstSlotExecutor(journal, runId, ownerAEmail) {
+  const sourceHead = 'a'.repeat(40)
+  const preflight = trackedPreflight({ emails: { mailbox: 'mailbox@example.invalid' } }, sourceHead)
+  return createLiveStagingExecutor({ journal, preflightAdapters: preflight.adapters, expectedPreflight: preflight.expected,
+    initial: { runId, mailboxSha256: preflight.expected.mailboxSha256,
+      ownerASubjectSha256: h(ownerAEmail), ownerBSubjectSha256: h(`${runId}.ownerb@example.invalid`) },
+    nowMs: () => Date.parse(now) })
+}
+
+test('real SignUpResponse acknowledgement lets the executor reconcile createOwnerAAuth', async () => {
+  const current = await syntheticAuthCase({ runId: 'stage8-executor-pass',
+    createResponse: signUpAcknowledgement,
+    lookupResponse: owner => ({ users: [{ localId: owner.uid, email: owner.email, emailVerified: true }] }) })
+  const journal = inMemoryLiveJournal()
+  const executor = firstSlotExecutor(journal, 'stage8-executor-pass', current.ownerA.email)
+  await executor.start()
+  await executor.executeFixtureSlot({ slot: 'createOwnerAAuth', requestSha256: current.operation.requestSha256,
+    binding: current.operation.binding, dispatch: current.operation.dispatch, readback: current.operation.readback })
+  assert.equal(journal.events().at(-1).status, 'FIXTURE_MUTATION_RECONCILED')
+  assert.equal(executor.snapshot().nextSlot, 1)
+  assert.equal(executor.snapshot().state.ownerAUid, current.ownerA.uid)
+})
+
+test('rejected create acknowledgement produces deterministic uncertain recovery without lookup or canary leakage', async () => {
+  const cases = [
+    owner => ({ ...signUpAcknowledgement(owner), idToken: 'provider-token-canary' }),
+    owner => ({ ...signUpAcknowledgement(owner), metadata: { idToken: 'nested-provider-token-canary' } }),
+  ]
+  for (let index = 0; index < cases.length; index++) {
+    const runId = `stage8-executor-bad-${index}`
+    const current = await syntheticAuthCase({ runId, createResponse: cases[index], lookupResponse: { users: [] } })
+    const journal = inMemoryLiveJournal()
+    const executor = firstSlotExecutor(journal, runId, current.ownerA.email)
+    await executor.start()
+    await assert.rejects(() => executor.executeFixtureSlot({ slot: 'createOwnerAAuth',
+      requestSha256: current.operation.requestSha256, binding: current.operation.binding,
+      dispatch: current.operation.dispatch, readback: current.operation.readback }))
+    const events = journal.events()
+    assert.deepEqual(events.slice(-2).map(event => event.status), ['FIXTURE_MUTATION_UNCERTAIN', 'FAILED'])
+    assert.equal(events.at(-2).details.outcomeSha256,
+      h(`uncertain:createOwnerAAuth:${current.operation.requestSha256}`))
+    assert.equal(events.at(-1).details.failureCode, 'FIXTURE_MUTATION_UNCERTAIN')
+    assert.equal(executor.snapshot().nextSlot, 0)
+    assert.equal(executor.snapshot().state.ownerAUid, null)
+    assert.deepEqual(current.harness.requests.map(row => row.url), [current.createUrl])
+    assert.equal(/provider-token-canary/.test(JSON.stringify(events)), false)
+  }
 })
 
 test('callable primitive fixes URL, method and body and blocks body/journal drift', async () => {

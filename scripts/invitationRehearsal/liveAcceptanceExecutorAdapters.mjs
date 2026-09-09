@@ -438,9 +438,16 @@ function validateSyntheticAccount(value, identity, runId) {
       typeof value.password !== 'string' || value.password.length < 16 || value.password.length > 128) blocked()
 }
 
-function sanitizeCreatedAccount(value, expected) {
+function sanitizeCreatedAccountAcknowledgement(value, expected) {
+  if (!exactKeys(value, ['kind', 'localId', 'email']) ||
+      value.kind !== 'identitytoolkit#SignupNewUserResponse' || value.localId !== expected.uid ||
+      normalizeMailbox(value.email) !== expected.email) blocked()
+  return value.localId
+}
+
+function sanitizeLookedUpAccount(value, expected) {
   if (!record(value) || value.localId !== expected.uid || normalizeMailbox(value.email) !== expected.email ||
-      value.emailVerified !== true || value.disabled === true) blocked()
+      value.emailVerified !== true || !(value.disabled === undefined || value.disabled === false)) blocked()
   return value.localId
 }
 
@@ -476,16 +483,16 @@ export function createSyntheticVerifiedAuthAdapter({ session, runId, accounts })
           // Consume before native dispatch. A thrown/timeout result is unknown
           // and cannot be repeated with the same operation object.
           dispatched = true
-          const createdUid = sanitizeCreatedAccount(await exactPost(Client, URLS.authCreate, body), account)
+          const createdUid = sanitizeCreatedAccountAcknowledgement(await exactPost(Client, URLS.authCreate, body), account)
           const produced = { [identity === 'ownerA' ? 'ownerAUid' : 'ownerBUid']: createdUid }
-          outcomeSha256 = jsonHash({ uidSha256: sha256(createdUid), emailVerified: true, disabled: false })
+          outcomeSha256 = jsonHash({ uidSha256: sha256(createdUid), createAcknowledged: true })
           return { requestSha256, outcomeSha256, producedSha256: jsonHash(produced) }
         },
         readback: async () => {
           if (!outcomeSha256) blocked()
           const lookup = await exactPost(Client, URLS.authLookup, { localId: [account.uid] })
           if (!record(lookup) || !Array.isArray(lookup.users) || lookup.users.length !== 1) blocked()
-          const uid = sanitizeCreatedAccount(lookup.users[0], account)
+          const uid = sanitizeLookedUpAccount(lookup.users[0], account)
           const produced = { [identity === 'ownerA' ? 'ownerAUid' : 'ownerBUid']: uid }
           completed.add(identity)
           recovery.syntheticAuth[identity].disposition = 'DELETE'
