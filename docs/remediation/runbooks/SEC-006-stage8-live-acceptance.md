@@ -367,11 +367,16 @@ paths; the real direct npm CLI probe reports npm 11.13.0, and the exact
 commit, exact-head CI and new fixed-path package are required before another
 live run.
 
-Independent review of clean remediation HEAD
+Independent review of initial clean remediation HEAD
 `4f11374dcb9e0f2174da265bbe66064333f8eb14` returned `CHANGES REQUIRED`:
 the final CLI file was regular, but an ancestor `node_modules` junction could
-resolve outside the adjacent Node directory. The current correction compares
+resolve outside the adjacent Node directory. Clean follow-up commit
+`1d49c55295c672505c9812fdfca0897dcea329ba` compares
 canonical real paths for both the running Node executable and CLI, enforces
 real-path containment, rejects executable/final symlinks, and tests an actual
 ancestor directory link plus relative, missing and non-file executable paths.
-This dirty correction still needs a new commit and independent review.
+Runtime tests pass 13/13, aggregate executor tests pass 79/79, lint/typecheck,
+the exact direct staging build and `git diff --check` pass. Independent review
+confirmed the code/security delta and requested only correction of stale status
+text. This documentation-only follow-up needs a fresh independent PASS, push
+and exact-head CI before a new package can be prepared.

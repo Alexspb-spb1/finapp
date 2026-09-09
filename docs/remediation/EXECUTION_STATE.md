@@ -405,22 +405,28 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   returns `spawnSync npm.cmd EINVAL`. The standalone staging build and loopback
   tests pass, but the runtime's direct child-process invocation of the Windows
   command shim could never start.
-- The current dirty tree replaces that Windows invocation with the current
-  `node.exe` plus its adjacent, verified regular
+- Clean remediation code commit
+  `1d49c55295c672505c9812fdfca0897dcea329ba` replaces that Windows
+  invocation with the current `node.exe` plus its canonical, contained regular
   `node_modules/npm/bin/npm-cli.js`; non-Windows keeps the existing `npm`
-  invocation. A platform-injected regression test covers the Windows command,
-  missing npm CLI fail-closed behavior and the non-Windows command.
-- Scoped runtime tests pass 12/12, scoped ESLint passes, and the exact direct
+  invocation. The resolver rejects executable and final CLI symlinks;
+  regression tests cover the Windows command, ancestor-junction escape, final
+  CLI symlink, relative/missing/non-file executables and the non-Windows
+  command.
+- Scoped runtime tests pass 13/13, aggregate executor tests pass 79/79, scoped
+  and root ESLint pass without errors, typecheck passes, and the exact direct
   `node.exe npm-cli.js run build:staging` path passes with npm 11.13.0;
-  `git diff --check` also passes. Next gates are aggregate/required checks, clean
-  commit, independent PASS, push and fresh exact-head CI. Only then may a new
-  private package with new approval/journal/output paths be prepared and
-  separately authorized.
+  `git diff --check` also passes.
 - The first clean remediation commit
   `4f11374dcb9e0f2174da265bbe66064333f8eb14` received independent
   `CHANGES REQUIRED`: checking only the final regular `npm-cli.js` allowed an
   ancestor `node_modules` junction to escape the adjacent Node directory. The
-  current dirty correction canonicalizes both the current Node executable and
+  follow-up commit `1d49c55295c672505c9812fdfca0897dcea329ba`
+  canonicalizes both the current Node executable and
   npm CLI, rejects executable/final symlinks and any real-path or containment
   drift, and adds ancestor-junction, relative, missing and non-file regression
-  cases. A new clean commit and review are pending.
+  cases. Independent review of `1d49c552…` confirmed the code/security delta
+  and requested only this stale-checkpoint correction. The next gates are a
+  fresh independent PASS on the resulting documentation-only HEAD, push and
+  exact-head CI. Only then may a new private package with new
+  approval/journal/output paths be prepared and separately authorized.
