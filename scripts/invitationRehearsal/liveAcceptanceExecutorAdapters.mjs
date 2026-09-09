@@ -11,7 +11,7 @@ import {
   PROJECT, READBACK_CHECKS, validateFixturePlan,
 } from './liveAcceptanceCore.mjs'
 import { PLAYWRIGHT_LIVE_MISSING_BINDINGS, validateLivePlaywrightUiEvidence } from './liveAcceptancePlaywrightCore.mjs'
-import { DATABASE, guardCliAccount, rulesHash } from './inventoryCore.mjs'
+import { DATABASE, guardCliAccount, guardEnvironment, rulesHash } from './inventoryCore.mjs'
 import {
   checkFunction, requestSpec as deploymentRequestSpec,
 } from './deploymentCheckCore.mjs'
@@ -157,7 +157,7 @@ export function buildPrivateLiveRecoveryManifest({ sourceHead, journal, session,
 }
 
 /** Load the signed-in firebase-tools session only after both local gates. */
-export function createGuardedFirebaseToolsSessionLoader({ repoRoot, loadModule } = {}) {
+export function createGuardedFirebaseToolsSessionLoader({ repoRoot, loadModule, env = process.env } = {}) {
   if (typeof repoRoot !== 'string' || !path.isAbsolute(repoRoot)) blocked()
   const require = createRequire(import.meta.url)
   const load = loadModule ?? (name => require(path.join(repoRoot, 'node_modules/firebase-tools/lib', name)))
@@ -169,6 +169,7 @@ export function createGuardedFirebaseToolsSessionLoader({ repoRoot, loadModule }
           gates.approvalValidated !== true || gates.localGatesValidated !== true) blocked()
       attempted = true
       try {
+        guardEnvironment(env)
         const logger = load('logger.js')?.logger
         const auth = load('auth.js')
         const requireAuth = load('requireAuth.js')

@@ -132,6 +132,7 @@ function fakeSessionHarness(overrides = {}, authOptions = {}) {
   }
   const loader = createGuardedFirebaseToolsSessionLoader({
     repoRoot: path.resolve('.'),
+    env: Object.hasOwn(authOptions, 'env') ? authOptions.env : {},
     loadModule: name => { loads++; return modules[name] },
   })
   return {
@@ -158,6 +159,56 @@ test('credential modules and network remain untouched until explicit gated execu
   assert.equal(harness.accessTokenSets(), 1)
   assert.equal(harness.requests.length, 0)
   await assert.rejects(() => harness.loader.execute({ approvalValidated: true, localGatesValidated: true }))
+})
+
+test('unsafe environment is rejected case-insensitively before credentials or provider access', async t => {
+  const dangerousKeys = [
+    'FIREBASE_TOKEN', 'FIREBASE_CLIENT_ID', 'FIREBASE_CLIENT_SECRET', 'GOOGLE_APPLICATION_CREDENTIALS',
+    'DEBUG', 'NODE_DEBUG', 'NODE_OPTIONS', 'NODE_TLS_REJECT_UNAUTHORIZED', 'IS_FIREBASE_CLI',
+    'IS_FIREBASE_MCP', 'MONOSPACE_ENV', 'CUSTOM_EMULATOR_HOST', 'FIREBASE_TOKEN_URL',
+    'FIREBASE_GOOGLE_URL', 'FIREBASE_CUSTOM_URL', 'FIREBASE_CUSTOM_ORIGIN', 'GOOGLE_CLOUD_QUOTA_PROJECT',
+  ]
+  const mixedCase = value => [...value].map((character, index) =>
+    /[a-z]/i.test(character) && index % 2 ? character.toLowerCase() : character.toUpperCase()).join('')
+  const styles = [['upper', value => value], ['mixed', mixedCase], ['lower', value => value.toLowerCase()]]
+  for (const baseKey of dangerousKeys) {
+    for (const [style, transform] of styles) {
+      await t.test(`${baseKey} ${style}`, async () => {
+        const key = transform(baseKey)
+        const value = baseKey === 'GOOGLE_CLOUD_QUOTA_PROJECT' ? 'foreign-project' : 'unsafe-value'
+        const harness = fakeSessionHarness({}, { env: { [key]: value } })
+        await assert.rejects(
+          () => harness.loader.execute({ approvalValidated: true, localGatesValidated: true }),
+          error => error?.message === 'live_executor_adapters_blocked',
+        )
+        assert.equal(harness.loads(), 0)
+        assert.equal(harness.authorizations(), 0)
+        assert.equal(harness.accessTokenCalls(), 0)
+        assert.equal(harness.accessTokenSets(), 0)
+        assert.equal(harness.requests.length, 0)
+        await assert.rejects(() => harness.loader.execute({ approvalValidated: true, localGatesValidated: true }))
+        assert.equal(harness.loads(), 0)
+        assert.equal(harness.authorizations(), 0)
+        assert.equal(harness.accessTokenCalls(), 0)
+        assert.equal(harness.accessTokenSets(), 0)
+        assert.equal(harness.requests.length, 0)
+      })
+    }
+  }
+})
+
+test('exact staging quota project is allowed in every Windows key casing', async t => {
+  for (const key of ['GOOGLE_CLOUD_QUOTA_PROJECT', 'GoOgLe_ClOuD_QuOtA_PrOjEcT', 'google_cloud_quota_project']) {
+    await t.test(key, async () => {
+      const harness = fakeSessionHarness({}, { env: { [key]: 'finapp-staging' } })
+      assert.deepEqual(await harness.loader.execute({ approvalValidated: true, localGatesValidated: true }), {
+        project: 'finapp-staging', authenticated: true,
+      })
+      assert.equal(harness.loads(), 4)
+      assert.equal(harness.accessTokenCalls(), 1)
+      assert.equal(harness.requests.length, 0)
+    })
+  }
 })
 
 test('access-token preflight fails closed without leaking OAuth errors or attempting provider GETs', async () => {

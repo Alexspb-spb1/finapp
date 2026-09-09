@@ -10,9 +10,16 @@ const text = value => typeof value === 'string' && /^[\w.()/:-]{1,400}$/.test(va
 
 export function guard({ project, expectedHead, head, status, env }) {
   if (project !== PROJECT || !/^[a-f0-9]{40}$/.test(expectedHead ?? '') || head !== expectedHead || status !== '') blocked()
+  guardEnvironment(env)
+}
+
+export function guardEnvironment(env) {
+  if (!record(env)) blocked()
   // Never fall through to ADC, service-account files, emulators, debug logging,
   // a custom token endpoint, or disabled TLS. Values are never reported.
-  for (const [rawKey, value] of Object.entries(env)) {
+  let entries
+  try { entries = Object.entries(env) } catch { blocked() }
+  for (const [rawKey, value] of entries) {
     // Windows environment lookup is case insensitive although enumeration
     // preserves spelling. Apply the same guard to every spelling/duplicate.
     const key = rawKey.toUpperCase()
