@@ -80,12 +80,26 @@ function memoryRecoveryCheckpoint(callLog = []) {
   }
 }
 
-function fakeSessionHarness(overrides = {}) {
-  let loads = 0, authorizations = 0
+function fakeSessionHarness(overrides = {}, authOptions = {}) {
+  let loads = 0, authorizations = 0, accessTokenCalls = 0, accessTokenRefreshes = 0, accessTokenSets = 0
+  let cachedAccessToken = ''
   const requests = []
+  const refreshToken = authOptions.refreshToken ?? 'opaque-refresh'
+  const getAccessToken = async () => {
+    accessTokenCalls++
+    if (cachedAccessToken) return cachedAccessToken
+    accessTokenRefreshes++
+    if (authOptions.accessTokenError) throw authOptions.accessTokenError
+    return Object.hasOwn(authOptions, 'accessToken') ? authOptions.accessToken : 'opaque-access'
+  }
+  const setAccessToken = value => {
+    accessTokenSets++
+    cachedAccessToken = value
+  }
   class Client {
     constructor({ urlPrefix, auth }) { this.origin = urlPrefix; assert.equal(auth, true) }
     async get(path, requestOptions) {
+      if (authOptions.simulateClientAuth) await getAccessToken()
       requests.push({ method: 'GET', url: `${this.origin}${path}`, options: structuredClone(requestOptions) })
       const key = `GET ${this.origin}${path}`
       if (Object.hasOwn(overrides, key)) {
@@ -96,6 +110,7 @@ function fakeSessionHarness(overrides = {}) {
       throw Object.assign(new Error('unexpected fake request'), { status: 599 })
     }
     async post(path, body, requestOptions) {
+      if (authOptions.simulateClientAuth) await getAccessToken()
       requests.push({ method: 'POST', url: `${this.origin}${path}`, body: structuredClone(body), options: structuredClone(requestOptions) })
       const key = `POST ${this.origin}${path}`
       if (Object.hasOwn(overrides, key)) {
@@ -107,19 +122,24 @@ function fakeSessionHarness(overrides = {}) {
   }
   const modules = {
     'logger.js': { logger: { silent: false } },
-    'auth.js': { getGlobalDefaultAccount: () => ({ user: { email: 'operator@example.invalid' }, tokens: { refresh_token: 'opaque-refresh' } }) },
+    'auth.js': { getGlobalDefaultAccount: () => ({ user: { email: 'operator@example.invalid' }, tokens: { refresh_token: refreshToken } }) },
     'requireAuth.js': { requireAuth: async options => {
       authorizations++
       assert.equal(options.project, 'finapp-staging')
       return true
     } },
-    'apiv2.js': { Client },
+    'apiv2.js': { Client, getAccessToken, setAccessToken },
   }
   const loader = createGuardedFirebaseToolsSessionLoader({
     repoRoot: path.resolve('.'),
     loadModule: name => { loads++; return modules[name] },
   })
-  return { loader, requests, loads: () => loads, authorizations: () => authorizations }
+  return {
+    loader, requests,
+    loads: () => loads, authorizations: () => authorizations,
+    accessTokenCalls: () => accessTokenCalls, accessTokenRefreshes: () => accessTokenRefreshes,
+    accessTokenSets: () => accessTokenSets,
+  }
 }
 
 test('credential modules and network remain untouched until explicit gated execute', async () => {
@@ -133,8 +153,77 @@ test('credential modules and network remain untouched until explicit gated execu
   assert.deepEqual(session, { project: 'finapp-staging', authenticated: true })
   assert.equal(harness.loads(), 4)
   assert.equal(harness.authorizations(), 1)
+  assert.equal(harness.accessTokenCalls(), 1)
+  assert.equal(harness.accessTokenRefreshes(), 1)
+  assert.equal(harness.accessTokenSets(), 1)
   assert.equal(harness.requests.length, 0)
   await assert.rejects(() => harness.loader.execute({ approvalValidated: true, localGatesValidated: true }))
+})
+
+test('access-token preflight fails closed without leaking OAuth errors or attempting provider GETs', async () => {
+  const secretCanary = 'oauth-secret-canary-do-not-expose'
+  const harness = fakeSessionHarness({}, { accessTokenError: new Error(`HTTP 400 ${secretCanary}`) })
+  await assert.rejects(
+    () => harness.loader.execute({ approvalValidated: true, localGatesValidated: true }),
+    error => error?.message === 'live_executor_adapters_blocked' && !String(error).includes(secretCanary),
+  )
+  assert.equal(harness.authorizations(), 1)
+  assert.equal(harness.accessTokenCalls(), 1)
+  assert.equal(harness.accessTokenRefreshes(), 1)
+  assert.equal(harness.accessTokenSets(), 0)
+  assert.equal(harness.requests.length, 0)
+  await assert.rejects(() => harness.loader.execute({ approvalValidated: true, localGatesValidated: true }))
+  assert.equal(harness.accessTokenCalls(), 1)
+})
+
+test('access-token preflight rejects malformed, oversized and refresh-token values', async t => {
+  const cases = [
+    ['empty', ''],
+    ['non-string', { access_token: 'opaque-access' }],
+    ['leading whitespace', ' opaque-access'],
+    ['trailing whitespace', 'opaque-access '],
+    ['embedded whitespace', 'opaque access'],
+    ['control character', 'opaque\naccess'],
+    ['oversized', 'a'.repeat(16_385)],
+    ['refresh-token', 'opaque-refresh'],
+  ]
+  for (const [name, accessToken] of cases) {
+    await t.test(name, async () => {
+      const harness = fakeSessionHarness({}, { accessToken })
+      await assert.rejects(
+        () => harness.loader.execute({ approvalValidated: true, localGatesValidated: true }),
+        error => error?.message === 'live_executor_adapters_blocked',
+      )
+      assert.equal(harness.accessTokenCalls(), 1)
+      assert.equal(harness.accessTokenSets(), 0)
+      assert.equal(harness.requests.length, 0)
+    })
+  }
+})
+
+test('cached access token prevents another refresh during parallel authenticated requests', async () => {
+  const projectUrl = 'https://firebase.googleapis.com/v1beta1/projects/finapp-staging'
+  const billingUrl = 'https://cloudbilling.googleapis.com/v1/projects/finapp-staging/billingInfo'
+  const databaseUrl = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)'
+  const releaseUrl = 'https://firebaserules.googleapis.com/v1/projects/finapp-staging/releases/cloud.firestore'
+  const rulesetUrl = 'https://firebaserules.googleapis.com/v1/projects/finapp-staging/rulesets/rules-1'
+  const harness = fakeSessionHarness({
+    [`GET ${projectUrl}`]: { projectId: 'finapp-staging', projectNumber: '123456789' },
+    [`GET ${billingUrl}`]: { projectId: 'finapp-staging', billingEnabled: true },
+    [`GET ${databaseUrl}`]: { name: 'projects/finapp-staging/databases/(default)', locationId: 'eur3', type: 'FIRESTORE_NATIVE' },
+    [`GET ${releaseUrl}`]: { name: 'projects/finapp-staging/releases/cloud.firestore', rulesetName: 'projects/finapp-staging/rulesets/rules-1' },
+    [`GET ${rulesetUrl}`]: { name: 'projects/finapp-staging/rulesets/rules-1', source: { files: [{ content: 'rules' }] } },
+  }, { simulateClientAuth: true })
+  const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
+  const adapters = createFirebaseReadOnlyPreflightAdapters({
+    session, sourceHead: 'a'.repeat(40), mailbox: 'owner@example.invalid', expectedAuthMetadataSha256: h('auth'),
+    stagingBuildProbe: async () => ({ sourceHead: 'a'.repeat(40), stagingFingerprint: h('build'), servedFrom: 'http://127.0.0.1:5177', sixFieldsVerified: true }),
+  })
+  await Promise.all([adapters.project(), adapters.rules()])
+  assert.equal(harness.requests.length, 5)
+  assert.equal(harness.accessTokenCalls(), 6)
+  assert.equal(harness.accessTokenRefreshes(), 1)
+  assert.equal(harness.accessTokenSets(), 1)
 })
 
 test('fresh project/build adapters use exact shapes and block endpoint response drift', async () => {

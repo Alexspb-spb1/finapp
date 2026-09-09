@@ -56,6 +56,8 @@ const isoNow = now => {
 
 const sessionInternals = new WeakMap()
 const privateRecoveryBySession = new WeakMap()
+// Keep the opaque credential comfortably within a bounded HTTP header value.
+const FIREBASE_ACCESS_TOKEN_MAX_BYTES = 16 * 1024
 
 function sessionRecovery(session) {
   let value = privateRecoveryBySession.get(session)
@@ -166,22 +168,33 @@ export function createGuardedFirebaseToolsSessionLoader({ repoRoot, loadModule }
       if (attempted || !exactKeys(gates, ['approvalValidated', 'localGatesValidated']) ||
           gates.approvalValidated !== true || gates.localGatesValidated !== true) blocked()
       attempted = true
-      const logger = load('logger.js')?.logger
-      const auth = load('auth.js')
-      const requireAuth = load('requireAuth.js')
-      const Client = load('apiv2.js')?.Client
-      if (!logger || !auth || !requireAuth || typeof Client !== 'function' ||
-          typeof auth.getGlobalDefaultAccount !== 'function' || typeof requireAuth.requireAuth !== 'function') blocked()
-      logger.silent = true
-      const account = auth.getGlobalDefaultAccount()
-      guardCliAccount(account)
-      const authenticated = await requireAuth.requireAuth({
-        project: PROJECT, user: account.user, tokens: account.tokens,
-      }, true)
-      if (!authenticated) blocked()
-      const session = Object.freeze({ project: PROJECT, authenticated: true })
-      sessionInternals.set(session, { Client })
-      return session
+      try {
+        const logger = load('logger.js')?.logger
+        const auth = load('auth.js')
+        const requireAuth = load('requireAuth.js')
+        const api = load('apiv2.js')
+        const { Client, getAccessToken, setAccessToken } = api ?? {}
+        if (!logger || !auth || !requireAuth || typeof Client !== 'function' ||
+            typeof getAccessToken !== 'function' || typeof setAccessToken !== 'function' ||
+            typeof auth.getGlobalDefaultAccount !== 'function' || typeof requireAuth.requireAuth !== 'function') blocked()
+        logger.silent = true
+        const account = auth.getGlobalDefaultAccount()
+        guardCliAccount(account)
+        const authenticated = await requireAuth.requireAuth({
+          project: PROJECT, user: account.user, tokens: account.tokens,
+        }, true)
+        if (!authenticated) blocked()
+        const accessToken = await getAccessToken()
+        if (typeof accessToken !== 'string' || !/^[\x21-\x7e]+$/.test(accessToken) ||
+            Buffer.byteLength(accessToken, 'utf8') > FIREBASE_ACCESS_TOKEN_MAX_BYTES ||
+            accessToken === account.tokens.refresh_token) blocked()
+        setAccessToken(accessToken)
+        const session = Object.freeze({ project: PROJECT, authenticated: true })
+        sessionInternals.set(session, { Client })
+        return session
+      } catch {
+        blocked()
+      }
     },
   })
 }
