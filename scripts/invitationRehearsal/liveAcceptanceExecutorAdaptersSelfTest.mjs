@@ -103,7 +103,7 @@ function fakeSessionHarness(overrides = {}, authOptions = {}) {
       requests.push({ method: 'GET', url: `${this.origin}${path}`, options: structuredClone(requestOptions) })
       const key = `GET ${this.origin}${path}`
       if (Object.hasOwn(overrides, key)) {
-        const value = overrides[key]
+        const value = typeof overrides[key] === 'function' ? await overrides[key]({ path, requestOptions }) : overrides[key]
         if (value instanceof Error) throw value
         return { body: structuredClone(value) }
       }
@@ -331,6 +331,59 @@ test('all eight fresh adapters sanitize the fixed provider schemas', async () =>
   assert.equal(result.subjectAbsence.accountExists, false)
   assert.equal(JSON.stringify(result).includes('Verify'), false)
   assert.equal(JSON.stringify(result).includes('owner@example.invalid'), false)
+})
+
+test('indexes adapter uses canonical initial and paginated query shapes without pageSize', async () => {
+  const indexesUrl = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/collectionGroups/-/indexes'
+  const fieldsUrl = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/collectionGroups/-/fields'
+  const filter = 'indexConfig.usesAncestorConfig=false OR ttlConfig:*'
+  const invitationIndex = {
+    name: 'projects/finapp-staging/databases/(default)/collectionGroups/invitations/indexes/index-1',
+    state: 'READY', queryScope: 'COLLECTION',
+    fields: [
+      { fieldPath: 'companyId', order: 'ASCENDING' },
+      { fieldPath: 'createdAt', order: 'DESCENDING' },
+      { fieldPath: '__name__', order: 'DESCENDING' },
+    ],
+  }
+  const field = { name: 'projects/finapp-staging/databases/(default)/collectionGroups/one/fields/two' }
+  let indexPage = 0, fieldPage = 0
+  const rejectPageSize = requestOptions => {
+    if (Object.hasOwn(requestOptions.queryParams, 'pageSize')) {
+      throw Object.assign(new Error('pageSize rejected by fake Firestore Admin'), { status: 400 })
+    }
+  }
+  const harness = fakeSessionHarness({
+    [`GET ${indexesUrl}`]: ({ requestOptions }) => {
+      rejectPageSize(requestOptions)
+      indexPage++
+      return indexPage === 1 ? { indexes: [invitationIndex], nextPageToken: 'indexes-next' } : {}
+    },
+    [`GET ${fieldsUrl}`]: ({ requestOptions }) => {
+      rejectPageSize(requestOptions)
+      fieldPage++
+      return fieldPage === 1 ? { fields: [field], nextPageToken: 'fields-next' } : {}
+    },
+  })
+  const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
+  const adapters = createFirebaseReadOnlyPreflightAdapters({
+    session, sourceHead: 'a'.repeat(40), mailbox: 'owner@example.invalid', expectedAuthMetadataSha256: h('auth'),
+    stagingBuildProbe: async () => ({ sourceHead: 'a'.repeat(40), stagingFingerprint: h('build'), servedFrom: 'http://127.0.0.1:5177', sixFieldsVerified: true }),
+    now: () => now,
+  })
+  const result = await adapters.indexes()
+  assert.deepEqual(result, {
+    invitationIndexState: 'READY', fieldOverrideCount: 1,
+    fieldOverridesSha256: h(JSON.stringify([field])), observedAt: now,
+  })
+  assert.deepEqual(harness.requests.map(row => [row.url, row.options.queryParams]), [
+    [indexesUrl, {}],
+    [indexesUrl, { pageToken: 'indexes-next' }],
+    [fieldsUrl, { filter }],
+    [fieldsUrl, { filter, pageToken: 'fields-next' }],
+  ])
+  assert.equal(JSON.stringify(result).includes('indexes-next'), false)
+  assert.equal(JSON.stringify(result).includes(field.name), false)
 })
 
 test('narrow Auth template discovery returns hashes and booleans without template text', async () => {

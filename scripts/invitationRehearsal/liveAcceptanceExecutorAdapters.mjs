@@ -379,11 +379,11 @@ export function createFirebaseReadOnlyPreflightAdapters({
       return { canonicalSha256: rulesHash(ruleset.source.files[0].content), observedAt: observed() }
     },
     indexes: async () => {
-      const indexes = await listCollection(Client, URLS.indexes, 'indexes', { pageSize: '100' })
+      const indexes = await listCollection(Client, URLS.indexes, 'indexes')
       const matches = indexes.filter(isInvitationIndex)
       if (matches.length !== 1) blocked()
       const fields = await listCollection(Client, URLS.fields, 'fields', {
-        pageSize: '100', filter: 'indexConfig.usesAncestorConfig=false OR ttlConfig:*',
+        filter: 'indexConfig.usesAncestorConfig=false OR ttlConfig:*',
       })
       if (fields.some(field => !record(field) || typeof field.name !== 'string' || !field.name.startsWith(`${DATABASE}/collectionGroups/`))) blocked()
       return { invitationIndexState: matches[0].state, fieldOverrideCount: fields.length,
