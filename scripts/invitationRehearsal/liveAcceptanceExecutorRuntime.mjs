@@ -146,9 +146,28 @@ function gitState(repoRoot) {
   return { head: git(['rev-parse', 'HEAD']), status: git(['status', '--porcelain', '--untracked-files=all']) }
 }
 
+export function resolveStagingBuildInvocation({ platform = process.platform, execPath = process.execPath, io = fs } = {}) {
+  if (typeof platform !== 'string' || typeof execPath !== 'string' || !io) blocked()
+  if (platform !== 'win32') return frozen({ executable: 'npm', arguments: ['run', 'build:staging'] })
+  if (!path.isAbsolute(execPath)) blocked()
+  if (!io.existsSync(execPath) || io.lstatSync(execPath).isSymbolicLink() || !io.lstatSync(execPath).isFile()) blocked()
+  const canonical = value => value.toLowerCase()
+  const realExecPath = io.realpathSync(execPath)
+  if (canonical(realExecPath) !== canonical(path.resolve(execPath))) blocked()
+  const realNodeDirectory = path.dirname(realExecPath)
+  const npmCli = path.join(realNodeDirectory, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  if (!io.existsSync(npmCli) || io.lstatSync(npmCli).isSymbolicLink() || !io.lstatSync(npmCli).isFile()) blocked()
+  const realNpmCli = io.realpathSync(npmCli)
+  const relative = path.relative(realNodeDirectory, realNpmCli)
+  if (canonical(realNpmCli) !== canonical(path.resolve(npmCli)) || relative.startsWith(`..${path.sep}`) ||
+      relative === '..' || path.isAbsolute(relative)) blocked()
+  return frozen({ executable: realExecPath, arguments: [realNpmCli, 'run', 'build:staging'] })
+}
+
 function buildStaging(repoRoot) {
   const started = Date.now()
-  const result = spawnSync('npm.cmd', ['run', 'build:staging'], { cwd: repoRoot, encoding: 'utf8', windowsHide: true })
+  const invocation = resolveStagingBuildInvocation()
+  const result = spawnSync(invocation.executable, invocation.arguments, { cwd: repoRoot, encoding: 'utf8', windowsHide: true })
   return { exitCode: result.status ?? 1, sourceHead: gitState(repoRoot).head, finishedAtMs: Math.max(started, Date.now()),
     stdoutSha256: sha256(result.stdout ?? ''), stderrSha256: sha256(result.stderr ?? '') }
 }

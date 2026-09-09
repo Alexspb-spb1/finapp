@@ -344,3 +344,34 @@ The next review found that the one-hour interval was exact but the instant
 `now === expiresAt` still passed. The current CLI rejects at and after expiry,
 with a regression assertion for the exact boundary. It remains subject to a
 fresh review and exact-head CI before package regeneration.
+
+## 2026-09-09 Windows staging-build safe stop
+
+The owner-authorized package
+`ac7af67e10dc68be857416699591cb605d709ea86c9ca178fb556f76ad008ac6`
+passed its exact package/helper, GitHub and local freshness checks and created
+its short-lived private approval. Its one allowed executor invocation then
+stopped before the private journal/recovery paths were created. No Firebase
+credential or provider call, browser, fixture, email or cleanup action ran.
+That approval and package are failed evidence and cannot be retried.
+
+The local runtime used `spawnSync('npm.cmd', ...)` for its staging build. Node
+24.16.0 on the Windows execution host rejects direct `.cmd` spawning with
+`EINVAL`, although the same `npm run build:staging` succeeds from PowerShell.
+The corrected runtime executes the adjacent regular
+`node_modules/npm/bin/npm-cli.js` with the current `node.exe` on Windows and
+keeps `npm` on other platforms. The invocation resolver fails closed if that
+fixed npm CLI is absent or symlinked. The regression test injects both platform
+paths; the real direct npm CLI probe reports npm 11.13.0, and the exact
+`node.exe npm-cli.js run build:staging` invocation passes. A new reviewed
+commit, exact-head CI and new fixed-path package are required before another
+live run.
+
+Independent review of clean remediation HEAD
+`4f11374dcb9e0f2174da265bbe66064333f8eb14` returned `CHANGES REQUIRED`:
+the final CLI file was regular, but an ancestor `node_modules` junction could
+resolve outside the adjacent Node directory. The current correction compares
+canonical real paths for both the running Node executable and CLI, enforces
+real-path containment, rejects executable/final symlinks, and tests an actual
+ancestor directory link plus relative, missing and non-file executable paths.
+This dirty correction still needs a new commit and independent review.

@@ -7,7 +7,7 @@ import test from 'node:test'
 import {
   buildVerifiedScenarioRows, createConcreteLiveAcceptanceRuntime, createCountedTransport, createFixedChromiumLauncher,
   FIXED_CHROME_EXECUTABLE, LIVE_MAILBOX_FILE_ENV, spawnImmutableServer, summarizeVerificationResponse,
-  validateConcreteRuntimePrerequisites, writePrivateOutput,
+  resolveStagingBuildInvocation, validateConcreteRuntimePrerequisites, writePrivateOutput,
 } from './liveAcceptanceExecutorRuntime.mjs'
 import { SCENARIO_NAMES } from './liveAcceptanceCore.mjs'
 import { LIVE_PLAYWRIGHT_UI_STEPS } from './liveAcceptancePlaywrightCore.mjs'
@@ -126,6 +126,50 @@ test('runtime checks HEAD before reading local private inputs or loading any run
     approval: value.approval, recheckHead: async () => { checks++; throw new Error('head-drift') } }))
   assert.equal(checks, 1)
   assert.equal(reads, 0)
+})
+
+test('Windows staging build invokes adjacent npm CLI through the current Node executable', t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'finapp-live-npm-cli-'))
+  const execPath = path.join(base, 'node.exe')
+  const npmCli = path.join(base, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  fs.mkdirSync(path.dirname(npmCli), { recursive: true })
+  fs.writeFileSync(execPath, 'fixture executable\n')
+  fs.writeFileSync(npmCli, '/* fixture */\n')
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }))
+  assert.deepEqual(resolveStagingBuildInvocation({ platform: 'win32', execPath }), {
+    executable: execPath, arguments: [npmCli, 'run', 'build:staging'],
+  })
+  assert.deepEqual(resolveStagingBuildInvocation({ platform: 'linux', execPath: '/usr/bin/node' }), {
+    executable: 'npm', arguments: ['run', 'build:staging'],
+  })
+  fs.rmSync(npmCli)
+  assert.throws(() => resolveStagingBuildInvocation({ platform: 'win32', execPath }))
+})
+
+test('Windows staging build rejects escaped, symlinked, relative and non-file runtime paths', t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'finapp-live-npm-containment-'))
+  const nodeDirectory = path.join(base, 'node'), outside = path.join(base, 'outside')
+  const execPath = path.join(nodeDirectory, 'node.exe')
+  const escapedNpmCli = path.join(outside, 'npm', 'bin', 'npm-cli.js')
+  fs.mkdirSync(path.dirname(escapedNpmCli), { recursive: true })
+  fs.mkdirSync(nodeDirectory)
+  fs.writeFileSync(execPath, 'fixture executable\n')
+  fs.writeFileSync(escapedNpmCli, '/* escaped fixture */\n')
+  fs.symlinkSync(outside, path.join(nodeDirectory, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }))
+  assert.throws(() => resolveStagingBuildInvocation({ platform: 'win32', execPath }))
+  assert.throws(() => resolveStagingBuildInvocation({ platform: 'win32', execPath: 'node.exe' }))
+  assert.throws(() => resolveStagingBuildInvocation({ platform: 'win32', execPath: path.join(base, 'missing.exe') }))
+  assert.throws(() => resolveStagingBuildInvocation({ platform: 'win32', execPath: nodeDirectory }))
+
+  const finalPath = path.join(nodeDirectory, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  const finalSymlinkIo = new Proxy(fs, { get(target, property) {
+    if (property === 'lstatSync') return filename => path.resolve(filename) === path.resolve(finalPath)
+      ? { isFile: () => true, isSymbolicLink: () => true } : target.lstatSync(filename)
+    const member = target[property]
+    return typeof member === 'function' ? member.bind(target) : member
+  } })
+  assert.throws(() => resolveStagingBuildInvocation({ platform: 'win32', execPath, io: finalSymlinkIo }))
 })
 
 test('counted transport records a native dispatch attempt before awaiting an uncertain response', async () => {

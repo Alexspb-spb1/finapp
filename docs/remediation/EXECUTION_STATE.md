@@ -388,3 +388,39 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   `now === expiresAt` was accepted. The current tree changes the expiry check
   to `expiresAt <= now` and adds that exact-instant rejection case. Review and
   CI must be repeated; no live action followed the finding.
+
+## 2026-09-09 Stage 8 approved-package safe stop
+
+- The owner authorized independently reviewed private package SHA-256
+  `ac7af67e10dc68be857416699591cb605d709ea86c9ca178fb556f76ad008ac6`
+  for exact reviewed HEAD `e545c0a564d3760300cb27c09a2f15867ae1077e`.
+  Package/helper integrity, Draft PR 27, exact-head CI run `34275106652`, local
+  pins and absent output paths passed immediately before approval creation.
+- The package's single executor invocation stopped at its local gate before a
+  journal or recovery stream existed. No Firebase credentials, provider
+  preflight, browser, Auth/Firestore mutation, callable scenario, email or
+  cleanup ran. The private approval is retained as consumed failed evidence;
+  the package and its paths must not be reused.
+- Read-only diagnosis reproduced the cause: Node 24.16.0 on this Windows host
+  returns `spawnSync npm.cmd EINVAL`. The standalone staging build and loopback
+  tests pass, but the runtime's direct child-process invocation of the Windows
+  command shim could never start.
+- The current dirty tree replaces that Windows invocation with the current
+  `node.exe` plus its adjacent, verified regular
+  `node_modules/npm/bin/npm-cli.js`; non-Windows keeps the existing `npm`
+  invocation. A platform-injected regression test covers the Windows command,
+  missing npm CLI fail-closed behavior and the non-Windows command.
+- Scoped runtime tests pass 12/12, scoped ESLint passes, and the exact direct
+  `node.exe npm-cli.js run build:staging` path passes with npm 11.13.0;
+  `git diff --check` also passes. Next gates are aggregate/required checks, clean
+  commit, independent PASS, push and fresh exact-head CI. Only then may a new
+  private package with new approval/journal/output paths be prepared and
+  separately authorized.
+- The first clean remediation commit
+  `4f11374dcb9e0f2174da265bbe66064333f8eb14` received independent
+  `CHANGES REQUIRED`: checking only the final regular `npm-cli.js` allowed an
+  ancestor `node_modules` junction to escape the adjacent Node directory. The
+  current dirty correction canonicalizes both the current Node executable and
+  npm CLI, rejects executable/final symlinks and any real-path or containment
+  drift, and adds ancestor-junction, relative, missing and non-file regression
+  cases. A new clean commit and review are pending.
