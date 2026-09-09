@@ -449,12 +449,14 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   output file to have a timestamp after build start. The build itself exited
   zero and port 5177 remained free.
 - The current gate accepts an older output timestamp only when the file has the
-  same relative path and exact bytes as a regular, non-symlink file under the
-  reviewed `public` directory. An altered copied file, an untrusted extra stale
+  same relative path and exact bytes as a regular, non-symlink blob in the
+  exact reviewed commit's `public` tree. It derives the complete path/hash set
+  with `git ls-tree` and `git cat-file`, so ignored or untracked local files
+  cannot become trusted inputs. An altered copied file, an untrusted extra stale
   file, a symlink, a stale generated file or post-readiness inventory drift
   remains fail-closed.
-- Aggregate executor tests pass 80/80, including new trusted-copy, altered-copy
-  and untrusted-extra cases. Scoped ESLint, typecheck, `build:staging` and
+- Aggregate executor tests pass 82/82, including new trusted-copy, altered-copy,
+  untrusted-extra and ignored-public cases. Scoped ESLint, typecheck, `build:staging` and
   `git diff --check` pass. A local actual-build/immutable-server/HTTP-probe
   harness now passes on `http://127.0.0.1:5177` without provider or credential
   access. A clean commit, independent PASS, push and exact-head CI are required

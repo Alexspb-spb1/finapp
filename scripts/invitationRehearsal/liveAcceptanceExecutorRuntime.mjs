@@ -146,6 +146,29 @@ function gitState(repoRoot) {
   return { head: git(['rev-parse', 'HEAD']), status: git(['status', '--porcelain', '--untracked-files=all']) }
 }
 
+export function readReviewedPublicInventory(repoRoot, sourceHead) {
+  if (typeof repoRoot !== 'string' || !path.isAbsolute(repoRoot) || !/^[a-f0-9]{40}$/.test(sourceHead)) blocked()
+  const git = args => execFileSync('git', args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
+  const entries = git(['ls-tree', '-r', '-z', '--full-tree', sourceHead, '--', 'public']).toString('utf8').split('\0').filter(Boolean)
+  if (entries.length > 10_000) blocked()
+  const inventory = Object.create(null)
+  for (const entry of entries) {
+    const tab = entry.indexOf('\t')
+    if (tab < 1) blocked()
+    const [mode, type, oid, ...extra] = entry.slice(0, tab).split(' ')
+    const filename = entry.slice(tab + 1)
+    if (!/^100[0-7]{3}$/.test(mode) || type !== 'blob' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid) || extra.length ||
+        !filename.startsWith('public/')) blocked()
+    const relative = filename.slice('public/'.length), segments = relative.split('/')
+    if (!relative || path.posix.isAbsolute(relative) || relative.includes('\\') || segments.some(segment => !segment || segment === '.' || segment === '..') ||
+        Object.hasOwn(inventory, relative)) blocked()
+    const bytes = git(['cat-file', 'blob', oid])
+    if (bytes.length > 64 * 1024 * 1024) blocked()
+    inventory[relative] = sha256(bytes)
+  }
+  return Object.freeze(inventory)
+}
+
 export function resolveStagingBuildInvocation({ platform = process.platform, execPath = process.execPath, io = fs } = {}) {
   if (typeof platform !== 'string' || typeof execPath !== 'string' || !io) blocked()
   if (platform !== 'win32') return frozen({ executable: 'npm', arguments: ['run', 'build:staging'] })
@@ -323,7 +346,9 @@ export function createConcreteLiveAcceptanceRuntime({ repoRoot, io = fs }) {
         openLoopback: async ({ sourceHead }) => openFreshStagingLoopbackGate({ repoRoot, distDir: path.join(repoRoot, 'dist'),
           expectedHead: sourceHead, expectedStagingFingerprint: approval.stagingFingerprint,
           expectedApiKeySha256: local.parsed.apiKeySha256, gitState: async () => gitState(repoRoot),
-          loadSixFieldConfig: async () => local.parsed.config, runBuild: async () => buildStaging(repoRoot),
+          loadSixFieldConfig: async () => local.parsed.config,
+          loadReviewedPublicInventory: async () => readReviewedPublicInventory(repoRoot, sourceHead),
+          runBuild: async () => buildStaging(repoRoot),
           spawnServer: spec => spawnImmutableServer(spec, io), probeReady: probeLoopback, io }),
         openProvider: async () => {
           await recheckHead()

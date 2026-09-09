@@ -51,6 +51,10 @@ function setup(t, override = {}) {
   const options = {
     repoRoot, distDir, expectedHead: head, expectedStagingFingerprint: fingerprint, expectedApiKeySha256: h(config.apiKey),
     gitState: async () => ({ head, status: '' }), loadSixFieldConfig: async () => ({ ...config }),
+    loadReviewedPublicInventory: async spec => {
+      assert.deepEqual(spec, { sourceHead: head, relativeRoot: 'public' })
+      return {}
+    },
     runBuild: async spec => {
       buildCalls++
       assert.deepEqual(spec.args, ['run', 'build:staging']); assert.equal(spec.capturePolicy, 'hashes-only')
@@ -112,13 +116,14 @@ test('stale dist and altered six-field config fail before server start', async t
 
 test('old timestamps are accepted only for byte-identical files copied from trusted public', async t => {
   const copied = setup(t)
+  const trustedBytes = Buffer.from('<svg>trusted-public-copy</svg>')
+  copied.options.loadReviewedPublicInventory = async () => ({ 'favicon.svg': h(trustedBytes) })
   copied.options.runBuild = async () => {
     writeDist(copied.distDir)
     const publicDir = path.join(copied.repoRoot, 'public')
     fs.mkdirSync(publicDir)
-    const bytes = Buffer.from('<svg>trusted-public-copy</svg>')
-    fs.writeFileSync(path.join(publicDir, 'favicon.svg'), bytes)
-    fs.writeFileSync(path.join(copied.distDir, 'favicon.svg'), bytes)
+    fs.writeFileSync(path.join(publicDir, 'favicon.svg'), trustedBytes)
+    fs.writeFileSync(path.join(copied.distDir, 'favicon.svg'), trustedBytes)
     const old = new Date(1_600_000_000_000)
     fs.utimesSync(path.join(copied.distDir, 'favicon.svg'), old, old)
     return { exitCode: 0, sourceHead: head, finishedAtMs: Date.now(),
@@ -130,6 +135,7 @@ test('old timestamps are accepted only for byte-identical files copied from trus
 
   for (const mode of ['altered-copy', 'untrusted-extra']) {
     const rejected = setup(t)
+    rejected.options.loadReviewedPublicInventory = async () => ({ 'favicon.svg': h(trustedBytes) })
     rejected.options.runBuild = async () => {
       writeDist(rejected.distDir)
       const publicDir = path.join(rejected.repoRoot, 'public')
@@ -145,6 +151,23 @@ test('old timestamps are accepted only for byte-identical files copied from trus
     await assert.rejects(() => openFreshStagingLoopbackGate(rejected.options))
     assert.equal(rejected.counts().spawnCalls, 0)
   }
+})
+
+test('ignored or untracked public files are rejected when absent from the reviewed Git inventory', async t => {
+  const value = setup(t)
+  value.options.runBuild = async () => {
+    writeDist(value.distDir)
+    const publicDir = path.join(value.repoRoot, 'public')
+    fs.mkdirSync(publicDir)
+    fs.writeFileSync(path.join(publicDir, 'probe.local'), 'ignored-unreviewed')
+    fs.writeFileSync(path.join(value.distDir, 'probe.local'), 'ignored-unreviewed')
+    const old = new Date(1_600_000_000_000)
+    fs.utimesSync(path.join(value.distDir, 'probe.local'), old, old)
+    return { exitCode: 0, sourceHead: head, finishedAtMs: Date.now(),
+      stdoutSha256: h('stdout'), stderrSha256: h('stderr') }
+  }
+  await assert.rejects(() => openFreshStagingLoopbackGate(value.options))
+  assert.equal(value.counts().spawnCalls, 0)
 })
 
 test('dirty or different source HEAD fails before config and build', async t => {

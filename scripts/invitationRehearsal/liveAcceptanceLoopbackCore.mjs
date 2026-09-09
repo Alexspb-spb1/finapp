@@ -30,10 +30,25 @@ function validateConfig(config, expectedFingerprint, expectedApiKeySha256) {
 
 function relativePosix(root, filename) { return path.relative(root, filename).split(path.sep).join('/') }
 
-function inventoryTrustedPublic(publicRoot, io) {
-  if (!path.isAbsolute(publicRoot)) blocked()
+function validateReviewedPublicInventory(value) {
+  if (!record(value) || Object.keys(value).length > 10_000) blocked()
+  const inventory = new Map()
+  for (const [relative, digest] of Object.entries(value)) {
+    const segments = relative.split('/')
+    if (!relative || path.posix.isAbsolute(relative) || relative.includes('\\') ||
+        segments.some(segment => !segment || segment === '.' || segment === '..') || !hex64(digest)) blocked()
+    inventory.set(relative, digest)
+  }
+  return inventory
+}
+
+function inventoryTrustedPublic(publicRoot, reviewedInventory, io) {
+  if (!path.isAbsolute(publicRoot) || !(reviewedInventory instanceof Map)) blocked()
   const files = new Map()
-  if (!io.existsSync(publicRoot)) return files
+  if (!io.existsSync(publicRoot)) {
+    if (reviewedInventory.size) blocked()
+    return files
+  }
   const rootStat = io.lstatSync(publicRoot)
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) blocked()
   const visit = directory => {
@@ -47,19 +62,20 @@ function inventoryTrustedPublic(publicRoot, io) {
       if (!relative || relative.startsWith('../') || path.isAbsolute(relative) || files.has(relative)) blocked()
       const bytes = io.readFileSync(target)
       if (bytes.length !== stat.size) blocked()
+      if (reviewedInventory.get(relative) !== sha256(bytes)) blocked()
       files.set(relative, bytes)
     }
   }
   visit(publicRoot)
-  if (files.size > 10_000) blocked()
+  if (files.size > 10_000 || files.size !== reviewedInventory.size) blocked()
   return files
 }
 
-function inventoryDist(distRoot, publicRoot, io, buildStartedAtMs) {
+function inventoryDist(distRoot, publicRoot, reviewedPublic, io, buildStartedAtMs) {
   if (!path.isAbsolute(distRoot) || !path.isAbsolute(publicRoot) || !Number.isFinite(buildStartedAtMs)) blocked()
   const rootStat = io.lstatSync(distRoot)
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) blocked()
-  const trustedPublic = inventoryTrustedPublic(publicRoot, io)
+  const trustedPublic = inventoryTrustedPublic(publicRoot, reviewedPublic, io)
   const rows = []
   const visit = directory => {
     const entries = io.readdirSync(directory, { withFileTypes: true })
@@ -108,12 +124,13 @@ function validateChild(child) {
  * only hashes and the fixed loopback origin. */
 export async function openFreshStagingLoopbackGate({
   repoRoot, distDir, expectedHead, expectedStagingFingerprint, expectedApiKeySha256,
-  gitState, loadSixFieldConfig, runBuild, spawnServer, probeReady,
+  gitState, loadSixFieldConfig, loadReviewedPublicInventory, runBuild, spawnServer, probeReady,
   io = fs, now = () => Date.now(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), readinessTimeoutMs = 15_000,
 }) {
   if (typeof repoRoot !== 'string' || !path.isAbsolute(repoRoot) || io.realpathSync(repoRoot) !== path.resolve(repoRoot) ||
       distDir !== path.join(repoRoot, 'dist') || !/^[a-f0-9]{40}$/.test(expectedHead) || !hex64(expectedStagingFingerprint) ||
-      !hex64(expectedApiKeySha256) || [gitState, loadSixFieldConfig, runBuild, spawnServer, probeReady, now, sleep].some(value => typeof value !== 'function') ||
+      !hex64(expectedApiKeySha256) || [gitState, loadSixFieldConfig, loadReviewedPublicInventory, runBuild, spawnServer, probeReady, now, sleep]
+        .some(value => typeof value !== 'function') ||
       !Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs < 100 || readinessTimeoutMs > 60_000) blocked()
   let child = null, closed = false
   const close = async () => {
@@ -124,6 +141,9 @@ export async function openFreshStagingLoopbackGate({
   try {
     validateGitState(await gitState(), expectedHead)
     const configHashes = validateConfig(await loadSixFieldConfig(), expectedStagingFingerprint, expectedApiKeySha256)
+    const reviewedPublic = validateReviewedPublicInventory(await loadReviewedPublicInventory(Object.freeze({
+      sourceHead: expectedHead, relativeRoot: 'public',
+    })))
     const buildStartedAtMs = now()
     if (!Number.isFinite(buildStartedAtMs) || buildStartedAtMs < 0) blocked()
     const build = await runBuild(Object.freeze({ command: 'npm.cmd', args: Object.freeze(['run', 'build:staging']), cwd: repoRoot,
@@ -133,7 +153,7 @@ export async function openFreshStagingLoopbackGate({
         !hex64(build.stdoutSha256) || !hex64(build.stderrSha256)) blocked()
     validateGitState(await gitState(), expectedHead)
     const publicDir = path.join(repoRoot, 'public')
-    const initial = inventoryDist(distDir, publicDir, io, buildStartedAtMs)
+    const initial = inventoryDist(distDir, publicDir, reviewedPublic, io, buildStartedAtMs)
     child = await spawnServer(Object.freeze({ host: LOOPBACK_HOST, port: LOOPBACK_PORT, fallbackHost: null,
       root: distDir, basePath: '/finapp/', notFoundFile: '404.html', immutableInventorySha256: initial.inventorySha256 }))
     validateChild(child)
@@ -154,7 +174,7 @@ export async function openFreshStagingLoopbackGate({
     }
     if (!ready) blocked()
     validateGitState(await gitState(), expectedHead)
-    const finalInventory = inventoryDist(distDir, publicDir, io, buildStartedAtMs)
+    const finalInventory = inventoryDist(distDir, publicDir, reviewedPublic, io, buildStartedAtMs)
     if (!sameHash(initial.inventorySha256, finalInventory.inventorySha256)) blocked()
     const attestation = await child.attest()
     if (!exactKeys(attestation, ['servedFrom', 'immutableInventorySha256']) || attestation.servedFrom !== LOOPBACK_ORIGIN ||

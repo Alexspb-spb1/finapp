@@ -3,11 +3,12 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import test from 'node:test'
 import {
   buildVerifiedScenarioRows, createConcreteLiveAcceptanceRuntime, createCountedTransport, createFixedChromiumLauncher,
   FIXED_CHROME_EXECUTABLE, LIVE_MAILBOX_FILE_ENV, spawnImmutableServer, summarizeVerificationResponse,
-  resolveStagingBuildInvocation, validateConcreteRuntimePrerequisites, writePrivateOutput,
+  readReviewedPublicInventory, resolveStagingBuildInvocation, validateConcreteRuntimePrerequisites, writePrivateOutput,
 } from './liveAcceptanceExecutorRuntime.mjs'
 import { SCENARIO_NAMES } from './liveAcceptanceCore.mjs'
 import { LIVE_PLAYWRIGHT_UI_STEPS } from './liveAcceptancePlaywrightCore.mjs'
@@ -126,6 +127,26 @@ test('runtime checks HEAD before reading local private inputs or loading any run
     approval: value.approval, recheckHead: async () => { checks++; throw new Error('head-drift') } }))
   assert.equal(checks, 1)
   assert.equal(reads, 0)
+})
+
+test('reviewed public inventory reads exact Git blobs and excludes ignored working-tree files', t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'finapp-live-reviewed-public-'))
+  const git = args => execFileSync('git', args, { cwd: base, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(base, 'public'))
+  fs.writeFileSync(path.join(base, '.gitignore'), '*.local\n')
+  fs.writeFileSync(path.join(base, 'public', 'favicon.svg'), '<svg>reviewed</svg>')
+  git(['init']); git(['add', '--', '.gitignore', 'public/favicon.svg'])
+  git(['-c', 'user.name=FinApp Test', '-c', 'user.email=finapp@example.invalid', 'commit', '-m', 'fixture'])
+  const sourceHead = git(['rev-parse', 'HEAD'])
+  fs.writeFileSync(path.join(base, 'public', 'probe.local'), 'ignored-unreviewed')
+  assert.deepEqual({ ...readReviewedPublicInventory(base, sourceHead) }, {
+    'favicon.svg': h('<svg>reviewed</svg>'),
+  })
+  fs.writeFileSync(path.join(base, 'public', 'favicon.svg'), '<svg>working-tree-drift</svg>')
+  assert.deepEqual({ ...readReviewedPublicInventory(base, sourceHead) }, {
+    'favicon.svg': h('<svg>reviewed</svg>'),
+  })
 })
 
 test('Windows staging build invokes adjacent npm CLI through the current Node executable', t => {
