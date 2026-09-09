@@ -150,6 +150,27 @@ test('reviewed public inventory reads exact Git blobs and excludes ignored worki
   assert.throws(() => readReviewedPublicInventory(base, sourceHead))
 })
 
+test('reviewed public inventory ignores Git replacement objects for the exact source HEAD', t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'finapp-live-replace-object-'))
+  const git = args => execFileSync('git', args, { cwd: base, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(base, 'public'))
+  fs.writeFileSync(path.join(base, 'public', 'favicon.svg'), '<svg>reviewed</svg>')
+  git(['init']); git(['add', '--', 'public/favicon.svg'])
+  git(['-c', 'user.name=FinApp Test', '-c', 'user.email=finapp@example.invalid', 'commit', '-m', 'reviewed'])
+  const reviewedHead = git(['rev-parse', 'HEAD'])
+  fs.writeFileSync(path.join(base, 'public', 'probe.local'), 'replacement-only')
+  git(['add', '--', 'public/probe.local'])
+  git(['-c', 'user.name=FinApp Test', '-c', 'user.email=finapp@example.invalid', 'commit', '-m', 'replacement'])
+  const replacementHead = git(['rev-parse', 'HEAD'])
+  git(['replace', reviewedHead, replacementHead])
+  git(['reset', '--hard', reviewedHead])
+  assert.equal(git(['rev-parse', 'HEAD']), reviewedHead)
+  assert.deepEqual(Object.keys(readReviewedPublicInventory(base, reviewedHead)), ['favicon.svg'])
+  const secureStatus = git(['--no-replace-objects', 'status', '--porcelain', '--untracked-files=all'])
+  assert.notEqual(secureStatus, '')
+})
+
 test('Windows staging build invokes adjacent npm CLI through the current Node executable', t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'finapp-live-npm-cli-'))
   const execPath = path.join(base, 'node.exe')

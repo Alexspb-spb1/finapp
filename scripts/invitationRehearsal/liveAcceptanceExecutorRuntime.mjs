@@ -142,14 +142,18 @@ export function validateConcreteRuntimePrerequisites(options) {
 }
 
 function gitState(repoRoot) {
-  const git = args => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  const git = args => execFileSync('git', ['--no-replace-objects', ...args], {
+    cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
   return { head: git(['rev-parse', 'HEAD']), status: git(['status', '--porcelain', '--untracked-files=all']) }
 }
 
 export function readReviewedPublicInventory(repoRoot, sourceHead) {
   if (typeof repoRoot !== 'string' || !path.isAbsolute(repoRoot) || fs.realpathSync(repoRoot) !== path.resolve(repoRoot) ||
       !/^[a-f0-9]{40}$/.test(sourceHead)) blocked()
-  const git = args => execFileSync('git', args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
+  const git = args => execFileSync('git', ['--no-replace-objects', ...args], {
+    cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024,
+  })
   const entries = git(['ls-tree', '-r', '-z', '--full-tree', sourceHead, '--', 'public']).toString('utf8').split('\0').filter(Boolean)
   if (entries.length > 10_000) blocked()
   const inventory = Object.create(null)

@@ -12,7 +12,9 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 async function execute(parsed) {
-  const git = command => execFileSync('git', command, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  const git = command => execFileSync('git', ['--no-replace-objects', ...command], {
+    cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
   const outcome = await executeApprovedLiveRuntime({ parsed, repoRoot: root, io: fs, missingAdapters: LIVE_EXECUTOR_MISSING_ADAPTERS,
     gitState: async () => ({
     head: git(['rev-parse', 'HEAD']), status: git(['status', '--porcelain', '--untracked-files=all']),
