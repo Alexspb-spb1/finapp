@@ -430,3 +430,33 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   fresh independent PASS on the resulting documentation-only HEAD, push and
   exact-head CI. Only then may a new private package with new
   approval/journal/output paths be prepared and separately authorized.
+
+## 2026-09-09 Stage 8 second approved-package safe stop
+
+- The owner authorized independently reviewed private package SHA-256
+  `482e428187e26c38036f0ef75ae31c70b0ffe2b9326b5e0652318eb837658391`
+  for exact reviewed HEAD `ec50cbf2145c8ae1f719670cf19accac71e979d3`.
+  Package/helper integrity, Draft PR 27, exact-head CI run `34318025082`, local
+  pins and absent new output paths passed immediately before approval creation.
+- The single executor invocation stopped inside the local loopback gate before
+  provider loading or journal/recovery creation. No Firebase credential,
+  provider preflight, browser, Auth/Firestore mutation, callable scenario,
+  verification email or cleanup ran. The approval and `ec50cbf` namespace are
+  retained as consumed failed evidence and must not be reused.
+- Read-only diagnosis isolated the failure to Vite's byte-identical copy of
+  `public/favicon.svg` and `public/icons.svg`: Vite preserves those source
+  modification times, while the loopback inventory incorrectly required every
+  output file to have a timestamp after build start. The build itself exited
+  zero and port 5177 remained free.
+- The current gate accepts an older output timestamp only when the file has the
+  same relative path and exact bytes as a regular, non-symlink file under the
+  reviewed `public` directory. An altered copied file, an untrusted extra stale
+  file, a symlink, a stale generated file or post-readiness inventory drift
+  remains fail-closed.
+- Aggregate executor tests pass 80/80, including new trusted-copy, altered-copy
+  and untrusted-extra cases. Scoped ESLint, typecheck, `build:staging` and
+  `git diff --check` pass. A local actual-build/immutable-server/HTTP-probe
+  harness now passes on `http://127.0.0.1:5177` without provider or credential
+  access. A clean commit, independent PASS, push and exact-head CI are required
+  before another fresh private package can be prepared and separately
+  authorized.

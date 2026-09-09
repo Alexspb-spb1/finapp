@@ -30,10 +30,36 @@ function validateConfig(config, expectedFingerprint, expectedApiKeySha256) {
 
 function relativePosix(root, filename) { return path.relative(root, filename).split(path.sep).join('/') }
 
-function inventoryDist(distRoot, io, buildStartedAtMs) {
-  if (!path.isAbsolute(distRoot) || !Number.isFinite(buildStartedAtMs)) blocked()
+function inventoryTrustedPublic(publicRoot, io) {
+  if (!path.isAbsolute(publicRoot)) blocked()
+  const files = new Map()
+  if (!io.existsSync(publicRoot)) return files
+  const rootStat = io.lstatSync(publicRoot)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) blocked()
+  const visit = directory => {
+    for (const entry of io.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry || typeof entry.name !== 'string' || !entry.name || entry.name === '.' || entry.name === '..') blocked()
+      const target = path.join(directory, entry.name), stat = io.lstatSync(target)
+      if (stat.isSymbolicLink()) blocked()
+      if (stat.isDirectory()) { visit(target); continue }
+      if (!stat.isFile() || stat.size < 0 || stat.size > 64 * 1024 * 1024) blocked()
+      const relative = relativePosix(publicRoot, target)
+      if (!relative || relative.startsWith('../') || path.isAbsolute(relative) || files.has(relative)) blocked()
+      const bytes = io.readFileSync(target)
+      if (bytes.length !== stat.size) blocked()
+      files.set(relative, bytes)
+    }
+  }
+  visit(publicRoot)
+  if (files.size > 10_000) blocked()
+  return files
+}
+
+function inventoryDist(distRoot, publicRoot, io, buildStartedAtMs) {
+  if (!path.isAbsolute(distRoot) || !path.isAbsolute(publicRoot) || !Number.isFinite(buildStartedAtMs)) blocked()
   const rootStat = io.lstatSync(distRoot)
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) blocked()
+  const trustedPublic = inventoryTrustedPublic(publicRoot, io)
   const rows = []
   const visit = directory => {
     const entries = io.readdirSync(directory, { withFileTypes: true })
@@ -42,11 +68,15 @@ function inventoryDist(distRoot, io, buildStartedAtMs) {
       const target = path.join(directory, entry.name), stat = io.lstatSync(target)
       if (stat.isSymbolicLink()) blocked()
       if (stat.isDirectory()) { visit(target); continue }
-      if (!stat.isFile() || stat.size < 0 || stat.size > 64 * 1024 * 1024 || stat.mtimeMs < buildStartedAtMs) blocked()
+      if (!stat.isFile() || stat.size < 0 || stat.size > 64 * 1024 * 1024) blocked()
       const relative = relativePosix(distRoot, target)
       if (!relative || relative.startsWith('../') || path.isAbsolute(relative)) blocked()
       const bytes = io.readFileSync(target)
       if (bytes.length !== stat.size) blocked()
+      if (stat.mtimeMs < buildStartedAtMs) {
+        const trustedBytes = trustedPublic.get(relative)
+        if (!trustedBytes || !trustedBytes.equals(bytes)) blocked()
+      }
       rows.push({ path: relative, size: stat.size, sha256: sha256(bytes) })
     }
   }
@@ -102,7 +132,8 @@ export async function openFreshStagingLoopbackGate({
         build.sourceHead !== expectedHead || !Number.isFinite(build.finishedAtMs) || build.finishedAtMs < buildStartedAtMs ||
         !hex64(build.stdoutSha256) || !hex64(build.stderrSha256)) blocked()
     validateGitState(await gitState(), expectedHead)
-    const initial = inventoryDist(distDir, io, buildStartedAtMs)
+    const publicDir = path.join(repoRoot, 'public')
+    const initial = inventoryDist(distDir, publicDir, io, buildStartedAtMs)
     child = await spawnServer(Object.freeze({ host: LOOPBACK_HOST, port: LOOPBACK_PORT, fallbackHost: null,
       root: distDir, basePath: '/finapp/', notFoundFile: '404.html', immutableInventorySha256: initial.inventorySha256 }))
     validateChild(child)
@@ -123,7 +154,7 @@ export async function openFreshStagingLoopbackGate({
     }
     if (!ready) blocked()
     validateGitState(await gitState(), expectedHead)
-    const finalInventory = inventoryDist(distDir, io, buildStartedAtMs)
+    const finalInventory = inventoryDist(distDir, publicDir, io, buildStartedAtMs)
     if (!sameHash(initial.inventorySha256, finalInventory.inventorySha256)) blocked()
     const attestation = await child.attest()
     if (!exactKeys(attestation, ['servedFrom', 'immutableInventorySha256']) || attestation.servedFrom !== LOOPBACK_ORIGIN ||

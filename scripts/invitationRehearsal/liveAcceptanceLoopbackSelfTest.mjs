@@ -110,6 +110,43 @@ test('stale dist and altered six-field config fail before server start', async t
   assert.equal(altered.counts().buildCalls, 0)
 })
 
+test('old timestamps are accepted only for byte-identical files copied from trusted public', async t => {
+  const copied = setup(t)
+  copied.options.runBuild = async () => {
+    writeDist(copied.distDir)
+    const publicDir = path.join(copied.repoRoot, 'public')
+    fs.mkdirSync(publicDir)
+    const bytes = Buffer.from('<svg>trusted-public-copy</svg>')
+    fs.writeFileSync(path.join(publicDir, 'favicon.svg'), bytes)
+    fs.writeFileSync(path.join(copied.distDir, 'favicon.svg'), bytes)
+    const old = new Date(1_600_000_000_000)
+    fs.utimesSync(path.join(copied.distDir, 'favicon.svg'), old, old)
+    return { exitCode: 0, sourceHead: head, finishedAtMs: Date.now(),
+      stdoutSha256: h('stdout'), stderrSha256: h('stderr') }
+  }
+  const accepted = await openFreshStagingLoopbackGate(copied.options)
+  await accepted.close()
+  assert.equal(copied.counts().spawnCalls, 1)
+
+  for (const mode of ['altered-copy', 'untrusted-extra']) {
+    const rejected = setup(t)
+    rejected.options.runBuild = async () => {
+      writeDist(rejected.distDir)
+      const publicDir = path.join(rejected.repoRoot, 'public')
+      fs.mkdirSync(publicDir)
+      fs.writeFileSync(path.join(publicDir, 'favicon.svg'), '<svg>trusted-public-copy</svg>')
+      const filename = mode === 'altered-copy' ? 'favicon.svg' : 'unexpected.txt'
+      fs.writeFileSync(path.join(rejected.distDir, filename), mode === 'altered-copy' ? '<svg>altered</svg>' : 'untrusted')
+      const old = new Date(1_600_000_000_000)
+      fs.utimesSync(path.join(rejected.distDir, filename), old, old)
+      return { exitCode: 0, sourceHead: head, finishedAtMs: Date.now(),
+        stdoutSha256: h('stdout'), stderrSha256: h('stderr') }
+    }
+    await assert.rejects(() => openFreshStagingLoopbackGate(rejected.options))
+    assert.equal(rejected.counts().spawnCalls, 0)
+  }
+})
+
 test('dirty or different source HEAD fails before config and build', async t => {
   for (const gitState of [async () => ({ head: 'b'.repeat(40), status: '' }), async () => ({ head, status: ' M src/file.ts' })]) {
     let configReads = 0
