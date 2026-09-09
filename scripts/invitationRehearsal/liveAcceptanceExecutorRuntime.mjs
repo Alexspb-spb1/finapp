@@ -147,7 +147,8 @@ function gitState(repoRoot) {
 }
 
 export function readReviewedPublicInventory(repoRoot, sourceHead) {
-  if (typeof repoRoot !== 'string' || !path.isAbsolute(repoRoot) || !/^[a-f0-9]{40}$/.test(sourceHead)) blocked()
+  if (typeof repoRoot !== 'string' || !path.isAbsolute(repoRoot) || fs.realpathSync(repoRoot) !== path.resolve(repoRoot) ||
+      !/^[a-f0-9]{40}$/.test(sourceHead)) blocked()
   const git = args => execFileSync('git', args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
   const entries = git(['ls-tree', '-r', '-z', '--full-tree', sourceHead, '--', 'public']).toString('utf8').split('\0').filter(Boolean)
   if (entries.length > 10_000) blocked()
@@ -162,9 +163,22 @@ export function readReviewedPublicInventory(repoRoot, sourceHead) {
     const relative = filename.slice('public/'.length), segments = relative.split('/')
     if (!relative || path.posix.isAbsolute(relative) || relative.includes('\\') || segments.some(segment => !segment || segment === '.' || segment === '..') ||
         Object.hasOwn(inventory, relative)) blocked()
-    const bytes = git(['cat-file', 'blob', oid])
-    if (bytes.length > 64 * 1024 * 1024) blocked()
-    inventory[relative] = sha256(bytes)
+    let workingPath = path.join(repoRoot, 'public')
+    const publicStat = fs.lstatSync(workingPath)
+    if (!publicStat.isDirectory() || publicStat.isSymbolicLink()) blocked()
+    for (let index = 0; index < segments.length; index++) {
+      workingPath = path.join(workingPath, segments[index])
+      const stat = fs.lstatSync(workingPath), final = index === segments.length - 1
+      if (stat.isSymbolicLink() || (final ? !stat.isFile() : !stat.isDirectory())) blocked()
+    }
+    const blobBytes = git(['cat-file', 'blob', oid]), workingBytes = fs.readFileSync(workingPath)
+    if (blobBytes.length > 64 * 1024 * 1024 || workingBytes.length > 64 * 1024 * 1024) blocked()
+    if (!blobBytes.equals(workingBytes)) {
+      const normalizeCrlf = bytes => Buffer.from(bytes.toString('latin1').replace(/\r\n/g, '\n'), 'latin1')
+      if (path.posix.extname(relative).toLowerCase() !== '.svg' || blobBytes.includes(0) || workingBytes.includes(0) ||
+          !normalizeCrlf(blobBytes).equals(normalizeCrlf(workingBytes))) blocked()
+    }
+    inventory[relative] = sha256(workingBytes)
   }
   return Object.freeze(inventory)
 }

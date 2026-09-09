@@ -136,17 +136,18 @@ test('reviewed public inventory reads exact Git blobs and excludes ignored worki
   fs.mkdirSync(path.join(base, 'public'))
   fs.writeFileSync(path.join(base, '.gitignore'), '*.local\n')
   fs.writeFileSync(path.join(base, 'public', 'favicon.svg'), '<svg>reviewed</svg>')
-  git(['init']); git(['add', '--', '.gitignore', 'public/favicon.svg'])
+  fs.writeFileSync(path.join(base, 'public', 'icons.svg'), '<svg>reviewed\nicon</svg>\n')
+  git(['init']); git(['add', '--', '.gitignore', 'public/favicon.svg', 'public/icons.svg'])
   git(['-c', 'user.name=FinApp Test', '-c', 'user.email=finapp@example.invalid', 'commit', '-m', 'fixture'])
   const sourceHead = git(['rev-parse', 'HEAD'])
   fs.writeFileSync(path.join(base, 'public', 'probe.local'), 'ignored-unreviewed')
+  fs.writeFileSync(path.join(base, 'public', 'icons.svg'), '<svg>reviewed\r\nicon</svg>\r\n')
   assert.deepEqual({ ...readReviewedPublicInventory(base, sourceHead) }, {
     'favicon.svg': h('<svg>reviewed</svg>'),
+    'icons.svg': h('<svg>reviewed\r\nicon</svg>\r\n'),
   })
   fs.writeFileSync(path.join(base, 'public', 'favicon.svg'), '<svg>working-tree-drift</svg>')
-  assert.deepEqual({ ...readReviewedPublicInventory(base, sourceHead) }, {
-    'favicon.svg': h('<svg>reviewed</svg>'),
-  })
+  assert.throws(() => readReviewedPublicInventory(base, sourceHead))
 })
 
 test('Windows staging build invokes adjacent npm CLI through the current Node executable', t => {
