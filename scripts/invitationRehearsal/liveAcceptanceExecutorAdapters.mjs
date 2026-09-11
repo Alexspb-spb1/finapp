@@ -693,6 +693,21 @@ const DOCUMENTS_ROOT = `${DATABASE}/documents`
 const DOCUMENTS_URL = `https://firestore.googleapis.com/v1/${DOCUMENTS_ROOT}`
 const rfc3339 = value => typeof value === 'string' &&
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value))
+
+function instantNanos(value) {
+  if (!rfc3339(value)) blocked()
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value)
+  if (!match) blocked()
+  const milliseconds = Date.parse(`${match[1]}Z`)
+  if (!Number.isFinite(milliseconds)) blocked()
+  return BigInt(milliseconds) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0') || '0')
+}
+
+const compareInstants = (left, right) => instantNanos(left) < instantNanos(right) ? -1
+  : instantNanos(left) > instantNanos(right) ? 1 : 0
+const sameInstant = (left, right) => rfc3339(left) && rfc3339(right) && instantNanos(left) === instantNanos(right)
+const afterOrEqual = (left, right) => rfc3339(left) && rfc3339(right) && instantNanos(left) >= instantNanos(right)
+const beforeOrEqual = (left, right) => rfc3339(left) && rfc3339(right) && instantNanos(left) <= instantNanos(right)
 const safePath = value => typeof value === 'string' &&
   /^(?:users|user_bootstrap|companies|company_data|invitations|invitationLocks)\/[a-zA-Z0-9_-]{1,200}(?:\/(?:members|audit_events)\/[a-zA-Z0-9_-]{1,200})?$/.test(value)
 
@@ -731,7 +746,7 @@ function decodeFirestoreFields(fields) {
 
 function decodeDocument(value, allowedNames) {
   if (!exactKeys(value, ['name', 'fields', 'createTime', 'updateTime']) || !allowedNames.has(value.name) ||
-      !rfc3339(value.createTime) || !rfc3339(value.updateTime) || Date.parse(value.updateTime) < Date.parse(value.createTime)) blocked()
+      !rfc3339(value.createTime) || !rfc3339(value.updateTime) || !afterOrEqual(value.updateTime, value.createTime)) blocked()
   return frozen({ name: value.name, fields: decodeFirestoreFields(value.fields), createTime: value.createTime, updateTime: value.updateTime })
 }
 
@@ -849,7 +864,7 @@ async function batchGetIncrementalSnapshot(Client, paths) {
     }
   }
   if (rows.size !== names.length) blocked()
-  return frozen({ documents: names.map(name => rows.get(name)), observedAt: readTimes.sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) })
+  return frozen({ documents: names.map(name => rows.get(name)), observedAt: readTimes.sort(compareInstants).at(-1) })
 }
 
 async function incrementalAuditSnapshot(Client, companyId) {
@@ -876,7 +891,7 @@ async function incrementalAuditSnapshot(Client, companyId) {
       fields: doc.fields })
   }
   if (new Set(rows.map(row => row.id)).size !== rows.length) blocked()
-  return frozen({ rows, observedAt: readTimes.sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) })
+  return frozen({ rows, observedAt: readTimes.sort(compareInstants).at(-1) })
 }
 
 function incrementalPaths(slot, binding, produced, state) {
@@ -944,7 +959,7 @@ function assertInvitationFields(fields, expected) {
       fields.companyId !== expected.companyId || fields.role !== expected.role || fields.status !== expected.status ||
       fields.createdBy !== expected.createdBy || fields.resendCount !== expected.resendCount || !hex64(fields.tokenHash) ||
       !rfc3339(fields.expiresAt) || !rfc3339(fields.createdAt) || !rfc3339(fields.updatedAt) ||
-      !rfc3339(fields.lastSentAt) || Date.parse(fields.updatedAt) < Date.parse(fields.createdAt)) blocked()
+      !rfc3339(fields.lastSentAt) || !afterOrEqual(fields.updatedAt, fields.createdAt)) blocked()
   if (expected.subjectSha256 && sha256(fields.emailNormalized) !== expected.subjectSha256) blocked()
   if (expected.capabilitySha256 && fields.tokenHash !== expected.capabilitySha256) blocked()
   if (expected.status === 'accepted' &&
@@ -957,9 +972,6 @@ function requireUnchangedDocument(prior, after, path) {
   const left = incrementalDocument(prior, path), right = incrementalDocument(after, path)
   if (JSON.stringify(left) !== JSON.stringify(right)) blocked()
 }
-
-const sameInstant = (left, right) => rfc3339(left) && rfc3339(right) && Date.parse(left) === Date.parse(right)
-const afterOrEqual = (left, right) => rfc3339(left) && rfc3339(right) && Date.parse(left) >= Date.parse(right)
 
 function requireCreatedAfterCapture(row, prior) {
   if (!row.exists || !prior || !rfc3339(prior.observedAt) || !afterOrEqual(row.createTime, prior.observedAt) ||
@@ -996,10 +1008,21 @@ function assertIncrementalSemantics(input, after, prior) {
     expectBootstrap(bootstrap, binding.actorUid, companyId)
     if (sha256(bootstrap.fields.idempotencyKey) !== binding.idempotencyKeySha256 || !prior || prior.documents.some(row => row.exists)) blocked()
     for (const row of [companyRow, dataRow, memberRow, profile, bootstrap]) requireCreatedAfterCapture(row, prior)
-    if (!sameInstant(memberRow.fields.createdAt, memberRow.updateTime) || !sameInstant(memberRow.fields.updatedAt, memberRow.updateTime) ||
-        !sameInstant(bootstrap.fields.createdAt, bootstrap.updateTime) ||
-        Date.parse(companyRow.fields.createdAt) > Date.parse(companyRow.createTime) ||
-        Date.parse(profile.fields.createdAt) > Date.parse(profile.createTime)) blocked()
+    // Firestore's REQUEST_TIME transform is shared by both membership
+    // fields, but it precedes the document commit/update time. Requiring the
+    // transform to equal updateTime rejects real Firestore commits. Preserve
+    // the actual invariants: the paired transforms are identical and no
+    // field timestamp is later than its document commit.
+    if (!sameInstant(memberRow.fields.createdAt, memberRow.fields.updatedAt) ||
+        !sameInstant(memberRow.fields.createdAt, bootstrap.fields.createdAt) ||
+        !afterOrEqual(memberRow.fields.createdAt, prior.observedAt) ||
+        !beforeOrEqual(memberRow.fields.updatedAt, memberRow.updateTime) ||
+        !beforeOrEqual(bootstrap.fields.createdAt, bootstrap.updateTime) ||
+        !sameInstant(companyRow.fields.createdAt, profile.fields.createdAt) ||
+        !afterOrEqual(companyRow.fields.createdAt, prior.observedAt) ||
+        !afterOrEqual(profile.fields.createdAt, prior.observedAt) ||
+        !beforeOrEqual(companyRow.fields.createdAt, companyRow.createTime) ||
+        !beforeOrEqual(profile.fields.createdAt, profile.createTime)) blocked()
   } else if (['createMailboxCancelledInvite', 'createMailboxFinalInvite', 'createOwnerBInvite'].includes(slot)) {
     const invitationId = produced.mailboxCancelledInviteId ?? produced.mailboxFinalInviteId ?? produced.ownerBInviteId
     const capability = produced.mailboxCancelledCapabilitySha256 ?? produced.mailboxFinalCapabilitySha256 ?? produced.ownerBCapabilitySha256
@@ -1146,7 +1169,7 @@ export function createIncrementalFirestoreReconciler({ session, recoveryCheckpoi
       audits.push(...snapshot.rows); if (snapshot.observedAt) observed.push(snapshot.observedAt)
     }
     return { documents: documentCapture.documents, audits,
-      observedAt: observed.sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null }
+      observedAt: observed.sort(compareInstants).at(-1) ?? null }
   }
   return Object.freeze({
     async assertCompanyInvitationsEmpty(companyId) {

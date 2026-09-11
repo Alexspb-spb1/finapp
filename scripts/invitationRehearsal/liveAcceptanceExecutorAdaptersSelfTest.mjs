@@ -927,6 +927,9 @@ test('incremental reconciler proves final replay changed no document, updateTime
 test('incremental createCompany proves absent pre-state, exact chronology and exact audit identity', async () => {
   const fixture = semanticFixture(), root = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/documents'
   const companyId = 'company_new', actorUid = fixture.ids.ownerAUid, idempotencyKey = 'idem-new-1234567890'
+  // Firestore serverTimestamp() is REQUEST_TIME, which legitimately precedes
+  // the document commit/update time. The emulator reproduces this ordering.
+  const requestTime = '2026-09-08T12:00:00.020000000Z'
   const docs = new Map(), early = '2026-09-08T11:59:59.000000000Z'
   const harness = fakeSessionHarness({
     [`POST ${root}:batchGet`]: ({ body }) => body.documents.map(name => {
@@ -955,12 +958,12 @@ test('incremental createCompany proves absent pre-state, exact chronology and ex
   docs.set(`company_data/${companyId}`, fsDoc(`company_data/${companyId}`,
     { accounts: [], categories: [], counterparties: [], transactions: [], projects: [], rules: [] }))
   docs.set(`companies/${companyId}/members/${actorUid}`, fsDoc(`companies/${companyId}/members/${actorUid}`,
-    { uid: actorUid, role: 'admin', status: 'active', createdAt: fsTime, updatedAt: fsTime }))
+    { uid: actorUid, role: 'admin', status: 'active', createdAt: requestTime, updatedAt: requestTime }))
   docs.set(`users/${actorUid}`, fsDoc(`users/${actorUid}`, {
     id: actorUid, name: 'Owner', email: fixture.emails.ownerA, role: 'admin', companyId, createdAt: now,
   }))
   docs.set(`user_bootstrap/${actorUid}`, fsDoc(`user_bootstrap/${actorUid}`, {
-    idempotencyKey, fingerprint: h('fingerprint'), result: { companyId }, createdAt: fsTime,
+    idempotencyKey, fingerprint: h('fingerprint'), result: { companyId }, createdAt: requestTime,
   }))
   const result = await reconciler.reconcile({ slot: 'createCompanyA', binding, state,
     requestSha256: h('company-request'), outcomeSha256: h('company-outcome'), sanitized: { companyId }, produced: { companyAId: companyId } })
@@ -969,6 +972,59 @@ test('incremental createCompany proves absent pre-state, exact chronology and ex
   const persisted = JSON.stringify(checkpoint.events())
   for (const forbidden of [...Object.values(fixture.emails), 'synthetic-password', 'raw-invite-capability', 'provider body']) {
     assert.equal(persisted.includes(forbidden), false)
+  }
+})
+
+test('incremental createCompany rejects sub-millisecond transform drift and timestamps after commit', async () => {
+  const fixture = semanticFixture(), root = 'https://firestore.googleapis.com/v1/projects/finapp-staging/databases/(default)/documents'
+  const companyId = 'company_chronology', actorUid = fixture.ids.ownerAUid, idempotencyKey = 'idem-chronology-1234567890'
+  const baseFields = {
+    company: { id: companyId, name: 'Company', legalType: 'ooo', currency: 'RUB', createdAt: now, ownerId: actorUid },
+    member: { uid: actorUid, role: 'admin', status: 'active', createdAt: fsTime, updatedAt: fsTime },
+    profile: { id: actorUid, name: 'Owner', email: fixture.emails.ownerA, role: 'admin', companyId, createdAt: now },
+    bootstrap: { idempotencyKey, fingerprint: h('fingerprint'), result: { companyId }, createdAt: fsTime },
+  }
+  for (const mutate of [
+    docs => { docs.get(`companies/${companyId}/members/${actorUid}`).fields.updatedAt.timestampValue = '2026-09-08T12:00:00.123456788Z' },
+    docs => { docs.get(`user_bootstrap/${actorUid}`).fields.createdAt.timestampValue = '2026-09-08T12:00:00.123456790Z' },
+    docs => {
+      const stale = '2026-09-08T11:59:58.999999999Z'
+      docs.get(`companies/${companyId}/members/${actorUid}`).fields.createdAt.timestampValue = stale
+      docs.get(`companies/${companyId}/members/${actorUid}`).fields.updatedAt.timestampValue = stale
+      docs.get(`user_bootstrap/${actorUid}`).fields.createdAt.timestampValue = stale
+    },
+    docs => {
+      const stale = '2026-09-08T11:59:58.999999999Z'
+      docs.get(`companies/${companyId}`).fields.createdAt.stringValue = stale
+      docs.get(`users/${actorUid}`).fields.createdAt.stringValue = stale
+    },
+  ]) {
+    const afterDocs = new Map([
+      [`companies/${companyId}`, fsDoc(`companies/${companyId}`, baseFields.company)],
+      [`company_data/${companyId}`, fsDoc(`company_data/${companyId}`, { accounts: [], categories: [], counterparties: [], transactions: [], projects: [], rules: [] })],
+      [`companies/${companyId}/members/${actorUid}`, fsDoc(`companies/${companyId}/members/${actorUid}`, baseFields.member)],
+      [`users/${actorUid}`, fsDoc(`users/${actorUid}`, baseFields.profile)],
+      [`user_bootstrap/${actorUid}`, fsDoc(`user_bootstrap/${actorUid}`, baseFields.bootstrap)],
+    ])
+    mutate(afterDocs)
+    const docs = new Map()
+    const harness = fakeSessionHarness({
+      [`POST ${root}:batchGet`]: ({ body }) => body.documents.map(name => {
+        const path = name.slice('projects/finapp-staging/databases/(default)/documents/'.length), found = docs.get(path)
+        return found ? { found, readTime: fsTime } : { missing: name, readTime: '2026-09-08T11:59:59.000000000Z' }
+      }),
+    })
+    const session = await harness.loader.execute({ approvalValidated: true, localGatesValidated: true })
+    const reconciler = createIncrementalFirestoreReconciler({ session, recoveryCheckpoint: memoryRecoveryCheckpoint() })
+    const state = { ownerASubjectSha256: h(fixture.emails.ownerA), ownerBSubjectSha256: h(fixture.emails.ownerB) }
+    const binding = { identity: 'ownerA', actorUid, idempotencyKeySha256: h(idempotencyKey) }
+    const input = { idempotencyKey, ownerName: 'Owner', companyName: 'Company', legalType: 'ooo' }
+    reconciler.registerIdempotencyMaterial({ slot: 'createCompanyA', identity: 'ownerA', actorUid,
+      requestSha256: h(JSON.stringify({ data: input })), callable: 'createCompany', input })
+    await reconciler.captureBefore({ slot: 'createCompanyA', binding, state })
+    for (const [path, document] of afterDocs) docs.set(path, document)
+    await assert.rejects(() => reconciler.reconcile({ slot: 'createCompanyA', binding, state,
+      requestSha256: h('company-request'), outcomeSha256: h('company-outcome'), sanitized: { companyId }, produced: { companyAId: companyId } }))
   }
 })
 
