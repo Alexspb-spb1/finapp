@@ -2,13 +2,15 @@
 
 ## Итоговый статус
 
-READY_FOR_REVIEW. Все обязательные проверки зелёные локально и в CI.
-Независимое security review ещё не проводилось; merge не выполнялся.
+REVIEWED. Все обязательные проверки зелёные локально и в CI.
+
+**Independent review: PASS — 2026-09-11, проверенный HEAD
+`8f7d495f03b70a6f279f3622d61d5380db611a92`** (round 2). Merge и deploy по
+этому отчёту не выполнялись.
 
 Milestone закрывает три пункта плана: SEC-007 (серверные callable),
 SEC-011 (Rules на canonical memberships) и SEC-010 (capability-модель).
-Чекбоксы в `REMEDIATION_PLAN.md` не проставлены — по протоколу это делается
-после явного PASS.
+Все три отмечены `[x]` в `REMEDIATION_PLAN.md` после этого PASS.
 
 ## Branch / commit
 
@@ -16,7 +18,8 @@ SEC-011 (Rules на canonical memberships) и SEC-010 (capability-модель).
 - base SHA: `6d713fe77164b5d7f096a85509d73b43bd9dad13` (main после merge PR #27)
 - коммиты: `3499075` (SEC-007), `01a9917` (SEC-011), `ed5ddc1` (SEC-010),
   `7013a3b` (отчёт), `4e14ee3` (round 1 по независимому ревью),
-  round 2 — коммит этого шага
+  `8f7d495` (round 2 по независимому ревью)
+- reviewed SHA: `8f7d495f03b70a6f279f3622d61d5380db611a92` — независимый PASS
 
 ## Проверенное исходное состояние
 
@@ -107,7 +110,9 @@ SEC-011 (Rules на canonical memberships) и SEC-010 (capability-модель).
       показываются пользователю.
 - [x] Multi-company: роль определяется отдельно для выбранной компании.
 - [x] Независимое security review round 0 — выполнено, шесть findings закрыты.
-- [ ] Повторное независимое review после round 1 — не выполнялось.
+- [x] Round 1 — восемь findings закрыты, повторное review выполнено.
+- [x] Round 2 — пять findings закрыты; независимое review на
+      `8f7d495f03b70a6f279f3622d61d5380db611a92` дало PASS.
 
 ## Round 1: исправления по независимому ревью
 
@@ -381,7 +386,9 @@ Rules доступ не дают.
 
 ## Следующий разрешенный пункт
 
-Не начинать. Повторное независимое security review этого PR, затем — решение
-владельца по SEC-008 / SEC-009 (fail-closed session lifecycle и переключение
-компании), где логично закрыть recovery-путь пересоздания документов
-компании в auth-listener.
+Не начинать. Независимое review пройдено (PASS на
+`8f7d495f03b70a6f279f3622d61d5380db611a92`), PR #28 снят с Draft и ждёт
+решения владельца по merge и по порядку production deployment (см. выше).
+Следующий пункт плана — SEC-008 / SEC-009 (fail-closed session lifecycle и
+переключение компании), где логично закрыть recovery-путь пересоздания
+документов компании в auth-listener.
