@@ -508,6 +508,18 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   bundle being built from repository-secret Firebase config separate from the
   `finapp-staging` target, on the synthetic owner's credentials never leaving
   private runtime material, and on membership-gated Rules.
-- Next: independent final audit by Astra as auditor only, owner PASS, then the
-  SEC-006 checkbox, PR 27 Ready and expected-HEAD merge. Merge triggers Pages
-  and therefore still needs a separate owner go-ahead as an external action.
+- Independent final audit completed. First pass `CHANGES REQUIRED` (one blocking
+  documentation defect: a false containment rationale claiming the frontend does
+  not call these callables). Corrected in `5c39158`; re-audit of
+  `1af41a0..5c39158` returned `REVIEW_RESULT: PASS` with no blocking findings,
+  after independent recomputation of all evidence hashes, the fixture slot
+  states, the `createCompany` guard chain and a document-by-document Rules walk
+  of the residual Company A set. Exact-head CI on `5c39158`: run
+  `34603426281`, `ci` and `functions` both SUCCESS.
+- SEC-006 is marked `[x]` in `REMEDIATION_PLAN.md` on that basis. The named
+  follow-up gate stands: live invitation-callable acceptance and one real
+  verification email before real users are invited through the deployed backend.
+- Next: PR 27 Ready, then expected-HEAD merge. Merge triggers Pages and
+  therefore still needs a separate owner go-ahead as an external action; it must
+  also be performed only while the PR head equals the reviewed local HEAD with
+  its own exact-head `ci`/`functions` SUCCESS.
