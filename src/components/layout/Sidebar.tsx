@@ -18,7 +18,6 @@ import {
   GitCompare,
   ChevronDown,
   Check,
-  Plus,
   Upload,
   Building2,
   Sparkles,
@@ -52,10 +51,6 @@ interface Props {
 // ── Company switcher ──────────────────────────────────────────────────────────
 function CompanySwitcher({ currentCompany }: { currentCompany: { id: string; name: string } | null }) {
   const [open, setOpen] = useState(false)
-  const [creating, setCreating] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newType, setNewType] = useState<'ooo' | 'ip'>('ip')
-  const [saving, setSaving] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
   const companies = authStore.getAllCompanies()
@@ -76,17 +71,6 @@ function CompanySwitcher({ currentCompany }: { currentCompany: { id: string; nam
     await authStore.switchCompany(id)
     setOpen(false)
     window.location.reload() // reload to reinitialize companyStore cleanly
-  }
-
-  async function handleCreate() {
-    if (!newName.trim()) return
-    setSaving(true)
-    await authStore.createCompany({ name: newName.trim(), legalType: newType })
-    setSaving(false)
-    setCreating(false)
-    setNewName('')
-    setOpen(false)
-    window.location.reload()
   }
 
   return (
@@ -126,50 +110,18 @@ function CompanySwitcher({ currentCompany }: { currentCompany: { id: string; nam
             ))}
           </div>
 
-          {/* Create new company */}
-          {creating ? (
-            <div className="border-t border-white/10 p-3 space-y-2">
-              <input
-                autoFocus
-                value={newName}
-                onChange={e => setNewName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleCreate()}
-                placeholder="Название компании"
-                className="w-full bg-white/10 text-white text-xs rounded px-2 py-1.5 outline-none placeholder:text-white/30 border border-white/15 focus:border-indigo-400"
-              />
-              <div className="flex gap-1">
-                <select
-                  value={newType}
-                  onChange={e => setNewType(e.target.value as 'ooo' | 'ip')}
-                  className="flex-1 bg-white/10 text-white text-xs rounded px-2 py-1.5 outline-none border border-white/15"
-                >
-                  <option value="ip">ИП</option>
-                  <option value="ooo">ООО</option>
-                </select>
-                <button
-                  onClick={handleCreate}
-                  disabled={saving || !newName.trim()}
-                  className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 text-white text-xs rounded transition-colors"
-                >
-                  {saving ? '…' : 'Создать'}
-                </button>
-                <button
-                  onClick={() => { setCreating(false); setNewName('') }}
-                  className="px-2 py-1.5 text-white/40 hover:text-white text-xs transition-colors"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              onClick={() => setCreating(true)}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-indigo-300 hover:bg-white/8 border-t border-white/10 transition-colors"
-            >
-              <Plus size={12} />
-              Создать компанию
-            </button>
-          )}
+          {/* SEC-007 R1: client-side company creation is withdrawn.
+              It wrote companies/ and company_data/ directly and self-granted
+              through the legacy users.companies[] array. Under canonical
+              memberships that array grants nothing, so the company would be
+              created with NO membership — an orphan its own creator cannot
+              open — and the profile write is refused by Rules, leaving the
+              dialog spinning on a half-created company. Company creation
+              belongs to the server callable; restoring it in the UI is
+              SEC-008/SEC-009 work, not this milestone. */}
+          <p className="border-t border-white/10 px-3 py-2 text-[11px] leading-snug text-white/40">
+            Создание компании временно недоступно
+          </p>
         </div>
       )}
     </div>
@@ -178,7 +130,7 @@ function CompanySwitcher({ currentCompany }: { currentCompany: { id: string; nam
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 export default function Sidebar({ open, onClose }: Props) {
-  const { user, company } = useAuth()
+  const { user, company, isAdmin } = useAuth()
   const navigate = useNavigate()
 
   function handleLogout() {
@@ -186,7 +138,11 @@ export default function Sidebar({ open, onClose }: Props) {
     navigate('/login', { replace: true })
   }
 
-  const visibleNav = nav.filter(item => !item.adminOnly || user?.role === 'admin')
+  // SEC-007 R1: admin-only navigation follows the canonical role of the
+  // ACTIVE company. The legacy user.role field is the role of the user's
+  // PRIMARY company and leaked admin navigation into companies where the
+  // user is only a viewer.
+  const visibleNav = nav.filter(item => !item.adminOnly || isAdmin)
 
   return (
     <>

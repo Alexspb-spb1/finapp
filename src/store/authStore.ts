@@ -16,7 +16,7 @@ import { callCreateCompany } from '../lib/companyApi'
 import type { User, Company } from '../types/auth'
 import { parseLegacyUserDocument, parseMembershipDocument, type DataError } from '../schemas/auth'
 import type { Membership, Role } from '../schemas/auth'
-import { memberApi } from '../lib/memberApi'
+import { memberApi, memberErrorMessage, type CompanyMemberEntry } from '../lib/memberApi'
 import { parseCompanyDocument } from '../schemas/company'
 import { isInvitationEntry } from '../lib/invitationEntry'
 import { confirmCompanyAccess } from '../lib/inviteAcceptanceApi'
@@ -34,22 +34,48 @@ let allUserCompanies: Company[]    = []
 // and cleared on sign-out, so a stale role can never survive a switch.
 let activeMembership: Membership | null = null
 let activeMembershipCompanyId: string | null = null
-// Canonical roster of the active company, keyed by uid. Used by the member
-// list instead of querying legacy profiles by users.companyId, which would
-// still list people whose access was revoked.
-let companyMemberships: Membership[] = []
+// SEC-007 R1: canonical roster of the active company, loaded from the
+// `listCompanyMembers` callable.
+//
+// It cannot be built in the browser: a member of a SECONDARY company has
+// `users/{uid}.companyId` naming their PRIMARY company, and the canonical
+// Rules only allow reading a profile for a company both parties belong to —
+// so such a member was invisible. The old legacy query
+// (`users where companyId == active`) had the mirror-image defect: it kept
+// listing people whose membership had been revoked.
+let companyRoster: CompanyMemberEntry[] = []
+let companyRosterCompanyId: string | null = null
+let companyRosterError: string | null = null
 
 function clearCanonicalMembership() {
   activeMembership = null
   activeMembershipCompanyId = null
-  companyMemberships = []
+  companyRoster = []
+  companyRosterCompanyId = null
+  companyRosterError = null
 }
 
-/** Re-reads the canonical membership/roster after a server-side change. */
+/** Re-reads the caller's own membership AND the roster after a server-side
+ * change, so a role change or a removal is reflected immediately. */
 async function refreshCanonicalMembership(companyId: string): Promise<void> {
   const uid = auth.currentUser?.uid
   if (!uid) { clearCanonicalMembership(); return }
   await loadCanonicalMembership(companyId, uid)
+  await loadCompanyRoster(companyId)
+}
+
+/** Loads the canonical roster for a company. Failures are recorded rather
+ * than swallowed: an empty list must never be presented as "no colleagues"
+ * when it actually means "could not read". */
+async function loadCompanyRoster(companyId: string): Promise<void> {
+  companyRosterCompanyId = companyId
+  try {
+    companyRoster = await memberApi.listMembers({ companyId })
+    companyRosterError = null
+  } catch (error) {
+    companyRoster = []
+    companyRosterError = memberErrorMessage(error)
+  }
 }
 
 /**
@@ -63,26 +89,12 @@ async function refreshCanonicalMembership(companyId: string): Promise<void> {
 async function loadCanonicalMembership(companyId: string, uid: string): Promise<void> {
   activeMembershipCompanyId = companyId
   try {
-    const [ownSnap, rosterSnap] = await Promise.all([
-      getDoc(doc(db, 'companies', companyId, 'members', uid)),
-      getDocs(collection(db, 'companies', companyId, 'members')),
-    ])
-
-    if (!ownSnap.exists()) { activeMembership = null; companyMemberships = []; return }
+    const ownSnap = await getDoc(doc(db, 'companies', companyId, 'members', uid))
+    if (!ownSnap.exists()) { activeMembership = null; return }
     const parsed = parseMembershipDocument(companyId, uid, ownSnap.data())
     activeMembership = parsed.ok ? parsed.data : null
-
-    const roster: Membership[] = []
-    for (const memberDoc of rosterSnap.docs) {
-      const parsedMember = parseMembershipDocument(companyId, memberDoc.id, memberDoc.data())
-      // A corrupted roster entry is skipped rather than shown with a guessed
-      // role; the caller's own membership above is what gates access anyway.
-      if (parsedMember.ok) roster.push(parsedMember.data)
-    }
-    companyMemberships = roster
   } catch {
     activeMembership = null
-    companyMemberships = []
   }
 }
 
@@ -825,8 +837,26 @@ export const authStore = {
     return activeMembership.role
   },
   getActiveMembership(): Membership | null { return activeMembership },
-  /** Canonical roster of the active company (uid/role/status). */
-  getCompanyMemberships(): Membership[] { return companyMemberships },
+
+  // ── SEC-007 R1: canonical roster ────────────────────────────────────────
+  /** Members of the active company: uid, canonical role/status, display
+   * fields. The only supported source of "who belongs to this company". */
+  getCompanyRoster(): CompanyMemberEntry[] { return companyRoster },
+  /** User-visible message if the roster could not be read, else null. An
+   * empty roster must never be shown as "no colleagues" when it really means
+   * "could not read". */
+  getCompanyRosterError(): string | null { return companyRosterError },
+  /** Loads the roster once per company; cheap to call from an effect. */
+  async loadCompanyRoster(companyId: string) {
+    if (companyRosterCompanyId === companyId && (companyRoster.length > 0 || companyRosterError)) return
+    await loadCompanyRoster(companyId)
+    notify()
+  },
+  /** Forces a reload, ignoring the cache. */
+  async reloadCompanyRoster(companyId: string) {
+    await loadCompanyRoster(companyId)
+    notify()
+  },
   // Может ли менять данные: все, кроме «Наблюдателя» и отсутствия доступа
   canWrite() { const role = this.getEffectiveRole(); return role !== null && role !== 'viewer' },
   // Админ компании: настройки компании и управление участниками

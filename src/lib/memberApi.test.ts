@@ -63,6 +63,31 @@ describe('memberApi', () => {
     await expect(memberApi.restore({ companyId: 'co', subjectUid: 'u' })).rejects.toBeInstanceOf(MemberApiError)
   })
 
+  it('listMembers returns the canonical roster, including entries with no profile', async () => {
+    mocks.invoke.mockResolvedValue({ data: { members: [
+      { uid: 'a', role: 'admin', status: 'active', name: 'A', email: 'a@example.test' },
+      { uid: 'b', role: 'viewer', status: 'disabled', name: null, email: null },
+    ] } })
+
+    await expect(memberApi.listMembers({ companyId: 'co' })).resolves.toEqual([
+      { uid: 'a', role: 'admin', status: 'active', name: 'A', email: 'a@example.test' },
+      { uid: 'b', role: 'viewer', status: 'disabled', name: null, email: null },
+    ])
+    expect(mocks.callable).toHaveBeenCalledWith({}, 'listCompanyMembers')
+    expect(mocks.invoke).toHaveBeenCalledWith({ companyId: 'co' })
+  })
+
+  it('listMembers rejects a malformed roster rather than returning a partial list', async () => {
+    mocks.invoke.mockResolvedValue({ data: { members: [{ uid: 'a', role: 'owner', status: 'active', name: null, email: null }] } })
+    await expect(memberApi.listMembers({ companyId: 'co' })).rejects.toBeInstanceOf(MemberApiError)
+  })
+
+  it('listMembers maps a server refusal to a user-visible message', async () => {
+    mocks.invoke.mockRejectedValue(appError('membership_inactive'))
+    const error = await memberApi.listMembers({ companyId: 'co' }).catch((e: unknown) => e)
+    expect(memberErrorMessage(error)).toContain('неактивен')
+  })
+
   it('refuses to send an invalid role or empty identifier', async () => {
     await expect(memberApi.changeRole({ companyId: 'co', subjectUid: 'u', role: 'owner' as never })).rejects.toBeTruthy()
     await expect(memberApi.remove({ companyId: '', subjectUid: 'u' })).rejects.toBeTruthy()

@@ -66,6 +66,20 @@ async function call(name: string, input: object): Promise<MemberMutationResult> 
 
 const subjectSchema = z.object({ companyId: id, subjectUid: id }).strict()
 const roleSchema = z.object({ companyId: id, subjectUid: id, role: RoleSchema }).strict()
+const companySchema = z.object({ companyId: id }).strict()
+
+/** Canonical roster entry. `name`/`email` are display-only and may be null
+ * when the member has no profile document — the member must still be listed
+ * and manageable. */
+const rosterEntrySchema = z.object({
+  uid: id,
+  role: RoleSchema,
+  status: z.enum(['invited', 'active', 'disabled']),
+  name: z.string().min(1).nullable(),
+  email: z.string().min(1).nullable(),
+}).strict()
+const rosterSchema = z.object({ members: z.array(rosterEntrySchema) }).strict()
+export type CompanyMemberEntry = z.infer<typeof rosterEntrySchema>
 
 /** Local validation failures surface exactly like server refusals — a
  * rejected promise carrying a MemberApiError — so a caller that only awaits
@@ -76,7 +90,28 @@ async function validated<T>(schema: z.ZodType<T>, input: unknown, name: string):
   return call(name, parsed.data as object)
 }
 
+/** Reads the canonical roster. Separate from `call` because it returns a
+ * roster rather than a mutation result, but it shares the error contract. */
+async function callRoster(input: unknown): Promise<CompanyMemberEntry[]> {
+  const validatedInput = companySchema.safeParse(input)
+  if (!validatedInput.success) throw new MemberApiError('invalid_request')
+  try {
+    const result = await httpsCallable(functions, 'listCompanyMembers')(validatedInput.data)
+    const parsed = rosterSchema.safeParse(result.data)
+    if (!parsed.success) throw new MemberApiError('invalid_response')
+    return parsed.data.members
+  } catch (error) {
+    if (error instanceof MemberApiError) throw error
+    const parsed = z.object({ details: z.object({ appCode: z.string() }) }).safeParse(error)
+    throw new MemberApiError(parsed.success ? parsed.data.details.appCode : 'unknown')
+  }
+}
+
 export const memberApi = {
+  /** Canonical member list of a company — the only supported source of "who
+   * belongs here". Built server-side because a secondary-company member's
+   * profile is unreadable by the browser under canonical Rules. */
+  listMembers: (input: { companyId: string }) => callRoster(input),
   changeRole: (input: { companyId: string; subjectUid: string; role: MemberRole }) =>
     validated(roleSchema, input, 'changeMemberRole'),
   disable: (input: { companyId: string; subjectUid: string }) =>

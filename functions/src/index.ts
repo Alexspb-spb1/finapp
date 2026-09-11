@@ -22,6 +22,7 @@ import { setGlobalOptions } from 'firebase-functions/v2/options'
 import { FieldValue, FieldPath, Timestamp, type Transaction } from 'firebase-admin/firestore'
 import { db, adminAuth } from './lib/admin'
 import { readCompanyAccess } from './lib/companyAccess'
+import { readCompanyRoster } from './lib/companyRoster'
 import { requireAuth, requireVerifiedEmail, requireActiveMember, requireRole, requireNotInMaintenanceMode, validateRequest } from './lib/authz'
 import { AppError, toSafeHttpsError } from './lib/errors'
 import { writeAuditEvent } from './lib/audit'
@@ -692,6 +693,16 @@ export const restoreMember = onCall(async request => {
 export const removeMember = onCall(async request => {
   try {
     return await performRemoveMember(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+// SEC-007 R1: read-only canonical roster. See lib/companyRoster.ts for why
+// the join has to happen here rather than in the browser.
+export const listCompanyMembers = onCall(async request => {
+  try {
+    return await readCompanyRoster(db, request)
   } catch (err) {
     throw toSafeHttpsError(err)
   }

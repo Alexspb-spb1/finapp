@@ -327,7 +327,7 @@ export async function callWithEmulatorIdentity(
   command:
     | 'acceptInvite' | 'cancelInvite' | 'resendInvite' | 'inviteMember'
     | 'changeMemberRole' | 'disableMember' | 'restoreMember' | 'removeMember'
-    | 'getCompanyAccess',
+    | 'getCompanyAccess' | 'listCompanyMembers',
   payload: unknown,
 ): Promise<unknown> {
   const app = initializeClientApp({ projectId: PROJECT_ID, apiKey: 'emulator-only-synthetic-key' }, `scoped-invite-${++scopedClientCounter}`)

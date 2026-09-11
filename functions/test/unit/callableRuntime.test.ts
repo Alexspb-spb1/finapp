@@ -8,13 +8,14 @@ const deploymentCallables = [
   'resendInvite', 'previewInvite', 'acceptInvite', 'getCompanyAccess',
   // SEC-007 member management.
   'changeMemberRole', 'disableMember', 'restoreMember', 'removeMember',
+  'listCompanyMembers',
 ] as const
 const endpoints = Object.fromEntries(Object.entries(functions).flatMap(([name, value]) =>
   '__endpoint' in value ? [[name, value.__endpoint]] : [],
 ))
 
 describe('callable deployment resource envelope', () => {
-  it('discovers exactly the twelve release callables and the undeployed authorization probe', () => {
+  it('discovers exactly the thirteen release callables and the undeployed authorization probe', () => {
     expect(Object.keys(endpoints).sort()).toEqual([...deploymentCallables, 'authzProbe'].sort())
   })
 

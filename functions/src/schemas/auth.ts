@@ -44,8 +44,10 @@ export type Membership = z.infer<typeof MembershipSchema>
 // requireVerifiedEmail() + requireActiveMember()/requireRole() (see
 // src/lib/authz.ts), independent of anything in the validated payload.
 
+// `companyId` is interpolated into `companies/{companyId}/...`, so it must be
+// a real Firestore document ID rather than any non-empty string.
 export const CompanyScopedRequestSchema = z.object({
-  companyId: nonEmptyString,
+  companyId: FirestoreDocumentIdSchema,
 }).strict()
 export type CompanyScopedRequest = z.infer<typeof CompanyScopedRequestSchema>
 
@@ -77,6 +79,31 @@ export const MembershipResponseSchema = z.object({
   membership: MembershipSchema,
 }).strict()
 export type MembershipResponse = z.infer<typeof MembershipResponseSchema>
+
+// SEC-007 R1: canonical roster entry.
+//
+// The client cannot build this list itself. A member of a SECONDARY company
+// has `users/{uid}.companyId` pointing at their PRIMARY company, so the
+// canonical Rules — which require the caller to be a member of the company a
+// profile names — deny reading that profile. Joining membership to display
+// fields therefore has to happen server-side.
+//
+// `name`/`email` are display-only and nullable: a membership whose profile
+// document is missing must still appear in the roster, otherwise a real
+// member would be invisible and unmanageable.
+export const CompanyMemberSchema = z.object({
+  uid: nonEmptyString,
+  role: RoleSchema,
+  status: MembershipStatusSchema,
+  name: nonEmptyString.nullable(),
+  email: nonEmptyString.nullable(),
+}).strict()
+export type CompanyMember = z.infer<typeof CompanyMemberSchema>
+
+export const ListCompanyMembersResponseSchema = z.object({
+  members: z.array(CompanyMemberSchema),
+}).strict()
+export type ListCompanyMembersResponse = z.infer<typeof ListCompanyMembersResponseSchema>
 
 // ── Authorization probe (this task's minimal read-only callable) ───────────
 // See src/index.ts — proves the real callable pipeline through the
