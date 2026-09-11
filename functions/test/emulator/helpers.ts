@@ -324,7 +324,10 @@ let scopedClientCounter = 0
  * without changing the shared singleton Auth identity mid-request. */
 export async function callWithEmulatorIdentity(
   uid: string,
-  command: 'acceptInvite' | 'cancelInvite' | 'resendInvite' | 'inviteMember',
+  command:
+    | 'acceptInvite' | 'cancelInvite' | 'resendInvite' | 'inviteMember'
+    | 'changeMemberRole' | 'disableMember' | 'restoreMember' | 'removeMember'
+    | 'getCompanyAccess' | 'listCompanyMembers',
   payload: unknown,
 ): Promise<unknown> {
   const app = initializeClientApp({ projectId: PROJECT_ID, apiKey: 'emulator-only-synthetic-key' }, `scoped-invite-${++scopedClientCounter}`)

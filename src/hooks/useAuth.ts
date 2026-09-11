@@ -43,10 +43,18 @@ export function useAuth() {
     dataError,
     activeCompanyId,
     allCompanies: authStore.getAllCompanies(),
-    // Права доступа для активной компании
+    // Права доступа для активной компании.
+    //
+    // SEC-007 R1 fail-closed fix: `role` is null whenever there is no usable
+    // canonical membership — missing, disabled, still invited, corrupted, or
+    // belonging to another company. Previously `readOnly` was computed as
+    // `role === 'viewer'` and `canWrite` as `role !== 'viewer'`, so null —
+    // the "no access at all" case — produced readOnly:false and canWrite:true
+    // and the UI offered write controls to someone with no membership.
+    // Absence of a role must be the most restrictive state, not the least.
     role,
-    readOnly: hasDataError ? true : role === 'viewer',
-    canWrite: hasDataError ? false : role !== 'viewer',
+    readOnly: hasDataError || role === null ? true : role === 'viewer',
+    canWrite: hasDataError ? false : role === 'accountant' || role === 'admin',
     isAdmin: hasDataError ? false : role === 'admin',
   }
 }

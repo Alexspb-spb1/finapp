@@ -23,7 +23,6 @@ import {
   getDoc,
   getDocs,
   limit,
-  orderBy,
   query,
   setDoc,
   updateDoc,
@@ -60,6 +59,37 @@ async function seedUser(
       createdAt: '2026-01-01T00:00:00.000Z',
       ...profile,
     })
+  })
+}
+
+/**
+ * SEC-011: canonical membership seeding.
+ *
+ * `companies/{companyId}/members/{uid}` is now the ONLY source of access.
+ * Every positive-access fixture must have one; legacy `users.role`/
+ * `companyId`/`companies[]` are retained in the fixtures precisely so the
+ * tests can prove those fields no longer grant anything on their own.
+ */
+async function seedMembership(
+  companyId: string,
+  uid: string,
+  role: 'viewer' | 'accountant' | 'admin',
+  status: 'active' | 'disabled' | 'invited' = 'active',
+  overrides: Record<string, unknown> = {},
+) {
+  await testEnv.withSecurityRulesDisabled(async ctx => {
+    await setDoc(doc(ctx.firestore(), 'companies', companyId, 'members', uid), {
+      uid, role, status,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      ...overrides,
+    })
+  })
+}
+
+async function removeMembership(companyId: string, uid: string) {
+  await testEnv.withSecurityRulesDisabled(async ctx => {
+    await deleteDoc(doc(ctx.firestore(), 'companies', companyId, 'members', uid))
   })
 }
 
@@ -133,6 +163,15 @@ afterAll(async () => {
 beforeEach(async () => {
   await testEnv.clearFirestore()
   await seed()
+  // Canonical memberships mirroring the legacy fixtures above. From SEC-011
+  // onward these — not the profile fields — are what actually grant access.
+  await Promise.all([
+    seedMembership(COMPANY_A, ADMIN_A, 'admin'),
+    seedMembership(COMPANY_A, ACCOUNTANT_A, 'accountant'),
+    seedMembership(COMPANY_A, VIEWER_A, 'viewer'),
+    seedMembership(COMPANY_B, ADMIN_B, 'admin'),
+    seedMembership(COMPANY_C, ADMIN_C, 'admin'),
+  ])
 })
 
 // ── 1. Unauthenticated → отказ для всех путей ───────────────────────────────
@@ -417,11 +456,56 @@ describe('positive application flows still work for legitimate same-company use'
       projects: [], rules: [], budgets: [], recurring: [], paymentCalendar: [],
     }))
   })
-  it('any authenticated user can create a brand-new company they own', async () => {
+  // SEC-007 R2: a signed-in user with NO canonical membership can no longer
+  // create a company. Doing so produced an orphan — the company document
+  // existed but no membership did, since clients cannot write memberships at
+  // all, so not even the creator could open it.
+  it('an authenticated user without a membership cannot create a company', async () => {
     const db = testEnv.authenticatedContext(ATTACKER_UID).firestore()
-    await assertSucceeds(setDoc(doc(db, 'companies', 'brand_new_co_synthetic'), {
+    await assertFails(setDoc(doc(db, 'companies', 'brand_new_co_synthetic'), {
       id: 'brand_new_co_synthetic', name: 'New Co', legalType: 'ip',
       currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: ATTACKER_UID,
+    }))
+  })
+
+  it('a legacy companies[] entry does not enable company creation either', async () => {
+    await seedUser(MULTI_COMPANY_UID, {
+      role: 'admin', companyId: 'orphan_target_synthetic',
+      companies: [{ companyId: 'orphan_target_synthetic', role: 'admin' }],
+    })
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(setDoc(doc(db, 'companies', 'orphan_target_synthetic'), {
+      id: 'orphan_target_synthetic', name: 'Orphan', legalType: 'ip',
+      currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: MULTI_COMPANY_UID,
+    }))
+  })
+
+  // The one legitimate client case survives: the membership exists but the
+  // company document itself vanished, so an admin may recreate it.
+  it('an active admin may recreate the missing document of their own company', async () => {
+    await seedMembership('recovery_co_synthetic', MULTI_COMPANY_UID, 'admin')
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertSucceeds(setDoc(doc(db, 'companies', 'recovery_co_synthetic'), {
+      id: 'recovery_co_synthetic', name: 'Recovered', legalType: 'ip',
+      currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: MULTI_COMPANY_UID,
+    }))
+  })
+
+  it.each(['viewer', 'accountant'] as const)('a %s cannot recreate their company document', async role => {
+    await seedMembership('recovery_denied_synthetic', MULTI_COMPANY_UID, role)
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(setDoc(doc(db, 'companies', 'recovery_denied_synthetic'), {
+      id: 'recovery_denied_synthetic', name: 'Denied', legalType: 'ip',
+      currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: MULTI_COMPANY_UID,
+    }))
+  })
+
+  it('a disabled admin cannot recreate their company document', async () => {
+    await seedMembership('recovery_disabled_synthetic', MULTI_COMPANY_UID, 'admin', 'disabled')
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(setDoc(doc(db, 'companies', 'recovery_disabled_synthetic'), {
+      id: 'recovery_disabled_synthetic', name: 'Disabled', legalType: 'ip',
+      currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: MULTI_COMPANY_UID,
     }))
   })
   it('cannot create a new company claiming someone else as owner', async () => {
@@ -434,205 +518,229 @@ describe('positive application flows still work for legitimate same-company use'
 })
 
 // ── Роли должны вычисляться отдельно для каждой компании ───────────────────
-describe('per-company role isolation for companies[] memberships', () => {
-  it('additional viewer can read company B', async () => {
+// ── SEC-011: роль вычисляется отдельно для КАЖДОЙ компании ────────────────
+// Источник — только companies/{companyId}/members/{uid}. Legacy-профиль во
+// всех тестах ниже намеренно сохраняется (и часто противоречит канону),
+// чтобы доказать: сам по себе он не даёт ни одного права.
+describe('per-company role isolation via canonical memberships', () => {
+  it('additional viewer can read company B but cannot write it', async () => {
     await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
+      role: 'admin', companyId: COMPANY_A,
+      companies: [{ companyId: COMPANY_B, role: 'admin' }],
     })
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'admin')
+    await seedMembership(COMPANY_B, MULTI_COMPANY_UID, 'viewer')
+
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
     await assertSucceeds(getDoc(doc(db, 'company_data', COMPANY_B)))
-  })
-
-  it('primary admin A remains only viewer in additional company B', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    // Legacy companies[] says admin of B; canonical says viewer. Canonical wins.
     await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), { name: 'Escalated' }))
     await assertFails(updateDoc(doc(db, 'company_data', COMPANY_B), { accounts: [{ id: 'bad' }] }))
   })
 
-  it('additional accountant can edit data but not company settings or closingDate', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'accountant' }],
-    })
+  it('admin of A stays admin in A while holding only viewer in B', async () => {
+    await seedUser(MULTI_COMPANY_UID, { role: 'admin', companyId: COMPANY_A })
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'admin')
+    await seedMembership(COMPANY_B, MULTI_COMPANY_UID, 'viewer')
+
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertSucceeds(updateDoc(doc(db, 'companies', COMPANY_A), { name: 'Renamed A' }))
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), { name: 'Renamed B' }))
+  })
+
+  it('additional accountant can edit data but not settings or closingDate', async () => {
+    await seedUser(MULTI_COMPANY_UID, { role: 'viewer', companyId: COMPANY_A })
+    await seedMembership(COMPANY_B, MULTI_COMPANY_UID, 'accountant')
+
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
     await assertSucceeds(updateDoc(doc(db, 'company_data', COMPANY_B), {
       accounts: [{ id: 'accountant-ok' }],
     }))
-    await assertFails(updateDoc(doc(db, 'company_data', COMPANY_B), {
-      closingDate: '2026-06-30',
-    }))
-    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), {
-      name: 'Accountant Cannot Rename',
-    }))
+    await assertFails(updateDoc(doc(db, 'company_data', COMPANY_B), { closingDate: '2026-06-30' }))
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), { name: 'Accountant Cannot Rename' }))
   })
 
   it('additional admin can edit company B and its closingDate', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'admin' }],
-    })
+    await seedUser(MULTI_COMPANY_UID, { role: 'viewer', companyId: COMPANY_A })
+    await seedMembership(COMPANY_B, MULTI_COMPANY_UID, 'admin')
+
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(updateDoc(doc(db, 'companies', COMPANY_B), {
-      name: 'Admin B Rename',
-    }))
-    await assertSucceeds(updateDoc(doc(db, 'company_data', COMPANY_B), {
-      closingDate: '2026-06-30',
-    }))
+    await assertSucceeds(updateDoc(doc(db, 'companies', COMPANY_B), { name: 'Admin B Rename' }))
+    await assertSucceeds(updateDoc(doc(db, 'company_data', COMPANY_B), { closingDate: '2026-06-30' }))
   })
 })
 
-// ── Повреждённые memberships обрабатываются fail-closed ────────────────────
-describe('companies[] membership validation is fail-closed', () => {
-  it('membership without a role cannot grant access to company B', async () => {
+// ── SEC-011: legacy-поля профиля не дают полномочий ───────────────────────
+describe('legacy profile fields grant no access', () => {
+  it('companies[] entry without a membership document grants nothing', async () => {
     await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B }],
+      role: 'viewer', companyId: COMPANY_A,
+      companies: [{ companyId: COMPANY_B, role: 'admin' }],
     })
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
     await assertFails(getDoc(doc(db, 'company_data', COMPANY_B)))
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), { name: 'No' }))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_B))))
   })
 
-  it('unknown role cannot grant access to company B', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'superadmin' }],
-    })
+  it('primary role/companyId without a membership document grants nothing', async () => {
+    await seedUser(MULTI_COMPANY_UID, { role: 'admin', companyId: COMPANY_A })
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDoc(doc(db, 'company_data', COMPANY_B)))
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_A), { name: 'No' }))
   })
 
-  it('null companies value cannot grant access and does not break primary membership', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: null,
-    })
+  it('a legacy role higher than the canonical one is ignored', async () => {
+    await seedUser(MULTI_COMPANY_UID, { role: 'admin', companyId: COMPANY_A })
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'viewer')
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
     await assertSucceeds(getDoc(doc(db, 'company_data', COMPANY_A)))
-    await assertFails(getDoc(doc(db, 'company_data', COMPANY_B)))
+    await assertFails(updateDoc(doc(db, 'company_data', COMPANY_A), { accounts: [{ id: 'x' }] }))
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_A), { name: 'No' }))
   })
 
-  it('more than ten additional memberships are rejected', async () => {
-    const memberships = Array.from({ length: 10 }, (_, index) => ({
-      companyId: `dummy_company_${index}`,
-      role: 'viewer',
-    }))
-    memberships.push({ companyId: COMPANY_B, role: 'admin' })
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: memberships,
-    })
+  it('having no profile at all does not matter when the membership exists', async () => {
+    await seedMembership(COMPANY_A, NO_PROFILE_UID, 'accountant')
+    const db = testEnv.authenticatedContext(NO_PROFILE_UID).firestore()
+    await assertSucceeds(getDoc(doc(db, 'company_data', COMPANY_A)))
+    await assertSucceeds(updateDoc(doc(db, 'company_data', COMPANY_A), { accounts: [{ id: 'ok' }] }))
+  })
+})
+
+// ── SEC-011: fail-closed по состоянию и целостности membership ────────────
+describe('canonical membership is fail-closed', () => {
+  it('a disabled membership loses read and write immediately', async () => {
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'admin', 'disabled')
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), {
-      name: 'Eleventh Membership Must Fail',
-    }))
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
+    await assertFails(getDoc(doc(db, 'companies', COMPANY_A)))
+    await assertFails(updateDoc(doc(db, 'company_data', COMPANY_A), { accounts: [] }))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
   })
 
-  it('a valid tenth additional membership remains usable', async () => {
-    const memberships = Array.from({ length: 9 }, (_, index) => ({
-      companyId: `dummy_company_${index}`,
-      role: 'viewer',
-    }))
-    memberships.push({ companyId: COMPANY_B, role: 'admin' })
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: memberships,
-    })
+  it('an invited membership does not yet grant access', async () => {
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'admin', 'invited')
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(updateDoc(doc(db, 'companies', COMPANY_B), {
-      name: 'Tenth Membership Works',
-    }))
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
   })
 
-  it('conflicting roles for the same additional company deny all access', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [
-        { companyId: COMPANY_B, role: 'viewer' },
-        { companyId: COMPANY_B, role: 'admin' },
-      ],
-    })
+  it('a missing membership denies everything', async () => {
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDoc(doc(db, 'company_data', COMPANY_B)))
-    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), {
-      name: 'Conflicting Role Escalation',
-    }))
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
+    await assertFails(getDoc(doc(db, 'companies', COMPANY_A)))
   })
 
-  it('an additional role conflicting with the primary role denies access', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_B,
-      companies: [{ companyId: COMPANY_B, role: 'admin' }],
-    })
+  it('an active member who is later removed loses access at once', async () => {
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'accountant')
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDoc(doc(db, 'company_data', COMPANY_B)))
-    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), {
-      name: 'Primary Conflict Escalation',
-    }))
+    await assertSucceeds(getDoc(doc(db, 'company_data', COMPANY_A)))
+
+    await removeMembership(COMPANY_A, MULTI_COMPANY_UID)
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
+    await assertFails(updateDoc(doc(db, 'company_data', COMPANY_A), { accounts: [] }))
   })
 
-  it('duplicate identical viewer memberships do not elevate privileges', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [
-        { companyId: COMPANY_B, role: 'viewer' },
-        { companyId: COMPANY_B, role: 'viewer' },
-      ],
+  it('a membership whose uid disagrees with its document id is rejected', async () => {
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'admin', 'active', { uid: 'uid_someone_else' })
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
+  })
+
+  it('an unknown role is rejected', async () => {
+    await testEnv.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'companies', COMPANY_A, 'members', MULTI_COMPANY_UID), {
+        uid: MULTI_COMPANY_UID, role: 'superuser', status: 'active',
+        createdAt: new Date(), updatedAt: new Date(),
+      })
     })
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
+  })
+
+  it('a membership missing status or role is rejected', async () => {
+    await testEnv.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'companies', COMPANY_A, 'members', MULTI_COMPANY_UID), {
+        uid: MULTI_COMPANY_UID, createdAt: new Date(),
+      })
+    })
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
+  })
+
+  it('a membership in another company does not grant access here', async () => {
+    await seedMembership(COMPANY_B, MULTI_COMPANY_UID, 'admin')
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
     await assertSucceeds(getDoc(doc(db, 'company_data', COMPANY_B)))
-    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), {
-      name: 'Duplicate Viewer Escalation',
+  })
+})
+
+// ── SEC-011: сама подколлекция members ────────────────────────────────────
+describe('members subcollection is read-only for members and never client-writable', () => {
+  it('an active member can read the roster of their own company', async () => {
+    const db = testEnv.authenticatedContext(VIEWER_A).firestore()
+    await assertSucceeds(getDoc(doc(db, 'companies', COMPANY_A, 'members', ADMIN_A)))
+    const snap = await assertSucceeds(getDocs(collection(db, 'companies', COMPANY_A, 'members')))
+    expect(snap.docs.length).toBe(3)
+  })
+
+  it('a non-member cannot read the roster', async () => {
+    const db = testEnv.authenticatedContext(ADMIN_B).firestore()
+    await assertFails(getDoc(doc(db, 'companies', COMPANY_A, 'members', ADMIN_A)))
+    await assertFails(getDocs(collection(db, 'companies', COMPANY_A, 'members')))
+  })
+
+  it('an unauthenticated caller cannot read the roster', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    await assertFails(getDoc(doc(db, 'companies', COMPANY_A, 'members', ADMIN_A)))
+  })
+
+  it('a disabled member cannot read the roster', async () => {
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'admin', 'disabled')
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(getDocs(collection(db, 'companies', COMPANY_A, 'members')))
+  })
+
+  it('no client can create, update or delete a membership — not even an admin, not even their own', async () => {
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    // self-escalation attempt
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_A, 'members', ADMIN_A), { role: 'admin' }))
+    // demote a colleague
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_A, 'members', VIEWER_A), { role: 'admin' }))
+    // disable a colleague
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_A, 'members', VIEWER_A), { status: 'disabled' }))
+    // remove a colleague
+    await assertFails(deleteDoc(doc(db, 'companies', COMPANY_A, 'members', VIEWER_A)))
+    // grant a brand-new membership
+    await assertFails(setDoc(doc(db, 'companies', COMPANY_A, 'members', ATTACKER_UID), {
+      uid: ATTACKER_UID, role: 'admin', status: 'active',
+      createdAt: new Date(), updatedAt: new Date(),
+    }))
+  })
+
+  it('an outsider cannot grant themselves a membership', async () => {
+    const db = testEnv.authenticatedContext(ATTACKER_UID).firestore()
+    await assertFails(setDoc(doc(db, 'companies', COMPANY_A, 'members', ATTACKER_UID), {
+      uid: ATTACKER_UID, role: 'admin', status: 'active',
+      createdAt: new Date(), updatedAt: new Date(),
+    }))
+    await assertFails(getDoc(doc(db, 'company_data', COMPANY_A)))
+  })
+
+  it('a member cannot re-enable their own disabled membership', async () => {
+    await seedMembership(COMPANY_A, MULTI_COMPANY_UID, 'admin', 'disabled')
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(updateDoc(doc(db, 'companies', COMPANY_A, 'members', MULTI_COMPANY_UID), {
+      status: 'active',
     }))
   })
 })
 
-// ── BASE-004A-FIX-02 ─────────────────────────────────────────────────────────
-// Дефект: пользователь с валидным membership в ДОПОЛНИТЕЛЬНОЙ компании не мог
-// выполнить query сотрудников этой компании — приложение выполняет РЕАЛЬНЫЙ
-// query `where('companyId', '==', selectedCompanyId)` (вход с ранее выбранной
-// доп. компанией, switchCompany(), загрузка списка сотрудников выбранной
-// компании), а прежний `allow list` на users сравнивал ТОЛЬКО с
-// `callerProfile().companyId` (основной компанией), из-за чего запрос для
-// дополнительной компании получал permission-denied.
-//
-// baseline: на commit bfa23b6 (до исправления) тест
-// "BASELINE (defect reproduction)" ниже padает с permission-denied — именно
-// это и есть подтверждение дефекта, зафиксированное ДО правки firestore.rules
-// (см. docs/remediation/reports/BASE-004A.md).
-describe('BASE-004A-FIX-02: scoped member queries for additional companies', () => {
-  it('BASELINE (defect reproduction): additional member of B can query B\'s employees — must now ALLOW', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    const snap = await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-    expect(snap.docs.some(d => d.id === ADMIN_B)).toBe(true)
-  })
-
-  // ── Позитивные ──────────────────────────────────────────────────────────
-  it('1. primary-company member query still works', async () => {
+// ── SEC-011: запросы сотрудников компании (bывший BASE-004A-FIX-02) ───────
+// Интент сохранён: участник дополнительной компании должен уметь получить
+// список её сотрудников. Механизм теперь канонический.
+describe('scoped member queries follow canonical membership', () => {
+  it('primary-company member query still works', async () => {
     const db = testEnv.authenticatedContext(ADMIN_A).firestore()
     const snap = await assertSucceeds(getDocs(query(
       collection(db, 'users'),
@@ -641,141 +749,34 @@ describe('BASE-004A-FIX-02: scoped member queries for additional companies', () 
     expect(snap.docs.length).toBe(3)
   })
 
-  it('3. additional admin role can query the additional company employees', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'admin' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
+  it.each(['admin', 'accountant', 'viewer'] as const)(
+    'a %s member of an additional company can query that company employees',
+    async role => {
+      await seedUser(MULTI_COMPANY_UID, { role: 'viewer', companyId: COMPANY_A })
+      await seedMembership(COMPANY_B, MULTI_COMPANY_UID, role)
+      const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+      await assertSucceeds(getDocs(query(
+        collection(db, 'users'),
+        where('companyId', '==', COMPANY_B),
+      )))
+    },
+  )
 
-  it('4. additional accountant role can query the additional company employees', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'accountant' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
-
-  it('5. additional viewer role can query the additional company employees', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
-
-  it('6. a valid membership at the tenth position can still query that company', async () => {
-    const memberships = Array.from({ length: 9 }, (_, index) => ({
-      companyId: `dummy_company_${index}`,
-      role: 'viewer',
-    }))
-    memberships.push({ companyId: COMPANY_B, role: 'admin' })
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: memberships,
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
-
-  it('7. query matches the real switchCompany() app flow (where companyId == selected company)', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'accountant' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    const selectedCompanyId = COMPANY_B // as persisted by switchCompany() / LS_ACTIVE_COMPANY
-    const snap = await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', selectedCompanyId),
-    )))
-    expect(snap.docs.every(d => d.data().companyId === COMPANY_B)).toBe(true)
-  })
-
-  // ── Негативные ──────────────────────────────────────────────────────────
-  it('8. query for employees of a company the caller is not a member of at all — DENY', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+  it('querying a company the caller has no membership in is denied', async () => {
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
     await assertFails(getDocs(query(
       collection(db, 'users'),
-      where('companyId', '==', COMPANY_C),
+      where('companyId', '==', COMPANY_B),
     )))
   })
 
-  it('9. query combining an allowed company and a foreign company (in-query) — DENY', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', 'in', [COMPANY_A, COMPANY_C]),
-    )))
-  })
-
-  it('10. unrestricted getDocs(collection(users)) remains denied for a multi-company member', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+  it('an unfiltered users query is denied', async () => {
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
     await assertFails(getDocs(collection(db, 'users')))
   })
 
-  it('11. unrestricted query with only a limit() (no companyId constraint) — DENY', async () => {
-    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
-    await assertFails(getDocs(query(collection(db, 'users'), limit(5))))
-  })
-
-  it('12. orderBy without a companyId constraint — DENY', async () => {
-    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
-    await assertFails(getDocs(query(collection(db, 'users'), orderBy('name'))))
-  })
-
-  it('13. direct get() of a user in a company the caller has no membership in — DENY', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDoc(doc(db, 'users', ADMIN_C)))
-  })
-
-  it('14. additional membership with an unknown role cannot query that company', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'superadmin' }],
-    })
+  it('a disabled member cannot query employees', async () => {
+    await seedMembership(COMPANY_B, MULTI_COMPANY_UID, 'admin', 'disabled')
     const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
     await assertFails(getDocs(query(
       collection(db, 'users'),
@@ -783,125 +784,18 @@ describe('BASE-004A-FIX-02: scoped member queries for additional companies', () 
     )))
   })
 
-  it('15. membership missing companyId cannot grant a query for any company', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ role: 'admin' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
+  it('reading a colleague profile requires canonical membership on both sides', async () => {
+    const db = testEnv.authenticatedContext(VIEWER_A).firestore()
+    // Colleague with a real membership in the same company: allowed.
+    await assertSucceeds(getDoc(doc(db, 'users', ADMIN_A)))
+    // Foreign profile: denied.
+    await assertFails(getDoc(doc(db, 'users', ADMIN_B)))
   })
 
-  it('16. a null element inside companies[] is ignored fail-closed, primary access unaffected', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [null],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_A),
-    )))
-    await assertFails(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
-
-  it('17. companies[] of the wrong type (string, not a list) is fail-closed', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: 'not-a-list',
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_A),
-    )))
-    await assertFails(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
-
-  it('19. more than ten additional memberships denies the query for the extra company', async () => {
-    const memberships = Array.from({ length: 10 }, (_, index) => ({
-      companyId: `dummy_company_${index}`,
-      role: 'viewer',
-    }))
-    memberships.push({ companyId: COMPANY_B, role: 'admin' })
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: memberships,
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
-
-  it('20. admin of A / viewer of B does not get admin-level access in B via query-adjacent write', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'viewer' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), { name: 'Should not work' }))
-    await assertFails(updateDoc(doc(db, 'company_data', COMPANY_B), { closingDate: '2026-06-30' }))
-  })
-
-  it('21. member of additional company B gets no access at all to unrelated company C', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'admin',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'admin' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_C),
-    )))
-    await assertFails(getDoc(doc(db, 'companies', COMPANY_C)))
-    await assertFails(getDoc(doc(db, 'company_data', COMPANY_C)))
-  })
-
-  it('22. cannot self-update auth-sensitive fields while holding an additional membership', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'admin' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(updateDoc(doc(db, 'users', MULTI_COMPANY_UID), { role: 'admin' }))
-    await assertFails(updateDoc(doc(db, 'users', MULTI_COMPANY_UID), { companyId: COMPANY_B }))
-    await assertFails(updateDoc(doc(db, 'users', MULTI_COMPANY_UID), {
-      companies: [{ companyId: COMPANY_C, role: 'admin' }],
-    }))
-    await assertFails(updateDoc(doc(db, 'users', MULTI_COMPANY_UID), { id: ATTACKER_UID }))
-    await assertFails(updateDoc(doc(db, 'users', MULTI_COMPANY_UID), { email: 'new@example.test' }))
-  })
-
-  it('23. admin of the additional company cannot spoof/change companies.ownerId', async () => {
-    await seedUser(MULTI_COMPANY_UID, {
-      role: 'viewer',
-      companyId: COMPANY_A,
-      companies: [{ companyId: COMPANY_B, role: 'admin' }],
-    })
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(updateDoc(doc(db, 'companies', COMPANY_B), { ownerId: MULTI_COMPANY_UID }))
+  it('a profile claiming our companyId without a membership is not readable', async () => {
+    await seedUser(ATTACKER_UID, { role: 'admin', companyId: COMPANY_A })
+    const db = testEnv.authenticatedContext(VIEWER_A).firestore()
+    await assertFails(getDoc(doc(db, 'users', ATTACKER_UID)))
   })
 })
 

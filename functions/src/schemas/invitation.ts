@@ -26,6 +26,7 @@
 import { z } from 'zod'
 import { createHash } from 'node:crypto'
 import { RoleSchema, FirestoreTimestampSchema } from './auth'
+import { FirestoreDocumentIdSchema } from './firestoreIds'
 
 const nonEmptyString = z.string().min(1)
 const idLikeString = nonEmptyString.max(200)
@@ -59,14 +60,11 @@ const idLikeString = nonEmptyString.max(200)
 // SEC-006 Stage 3 (which only required fixing `CancelInviteRequestSchema`);
 // tracked as a candidate for a future, separate cleanup task rather than
 // folded into this one.
-const RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN = /^__.*__$/
-export const FirestoreDocumentIdSchema = nonEmptyString
-  .max(200)
-  .regex(/^[^/]+$/)
-  .refine(
-    value => value !== '.' && value !== '..' && !RESERVED_FIRESTORE_DOCUMENT_ID_PATTERN.test(value),
-    { message: 'not a valid Firestore document ID' },
-  )
+// Canonical definition now lives in ./firestoreIds so `schemas/auth.ts` can
+// use it too without creating an import cycle (this module already imports
+// from `./auth`). Imported (not just re-exported) because this module uses it
+// locally; re-exported so every existing import site is unchanged.
+export { FirestoreDocumentIdSchema }
 
 // ── Canonical constants ──────────────────────────────────────────────────
 // Approved owner defaults (SEC_006_RECOMMENDED_DEFAULTS) — not re-derived
