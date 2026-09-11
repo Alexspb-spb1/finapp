@@ -1,0 +1,44 @@
+{
+  "status": "PASS",
+  "project": "demo-finapp",
+  "build": "production static dist",
+  "checks": [
+    "artifact-preflight",
+    "synthetic-fixtures",
+    "admin-create-copy-new-invitee-verification-accept",
+    "existing-invitee-verification-accountant",
+    "cancel-and-expiry-deny-without-partial-access",
+    "resend-cooldown-old-token-denial-new-token-success",
+    "resend-limit-five",
+    "wrong-account-denial-without-partial-access",
+    "duplicate-click-lost-success-response-idempotent-retry",
+    "offline-accept-failure-and-recovery",
+    "two-independent-clients-race-same-uid",
+    "cross-company-admin-role-does-not-leak",
+    "isolation-and-artifact-evidence"
+  ],
+  "artifactHashes": {
+    "404.html": "a32b1a7eb51fd2251a84c5f7903fd4b97d71682121df2c3a81fca852602ad992",
+    "assets/AcceptInvite-C8f122KP.js": "ebe190266684539a263b7a287d33a73dba9dc0cfad14366da10a7c335fdc928a",
+    "assets/LegacyApp-CZK7fnsE.js": "87a26643648d4f3542a60396be3e89ff359e9f863c972d6370bbfd4520ded257",
+    "assets/authStore-B6nEqULF.js": "0e3a558fe08a4145efa98d6c36e85dbf294bd7a1a426a5a7552408b4932e2d83",
+    "assets/firebase-D309YOiu.js": "98b98024a9c8ac7216e991ff86650030c69232de9126faaf9d7f5105de010147",
+    "assets/index-sMtru1q1.js": "29c39a8fd9a28af1513a23e0f176d8d83e794b1d736fac7751fbda3bb3ef829e",
+    "assets/invitationEntry-B2l6qOul.js": "6c094f8991e8e47f494cbfa168334d147d85d74fc238d310cfff9fa8838a168d",
+    "assets/inviteAcceptanceApi-CL-hCeIh.js": "94fe33accf1466afc668fc8f33995942be18d1beb225866ab37d86ae07048ee3",
+    "assets/jsx-runtime-B6doAwFl.js": "95a73361ee1226ce8a71e3628db69a7b367a10c43f322925ad4449e8ad9c0449",
+    "assets/react-dom-D9izJeWH.js": "a13c11c23354c6a326466fd09ba331a2f1e094851a48358d6cc1fecf2246e508",
+    "assets/renderApp-35xiiSzZ.css": "ab88fabffda214949f1ebf07ce6532d464b4c78e5e66357c4fedc8bf4bd4ece8",
+    "assets/renderApp-BtCF7HCV.js": "c9878e4803e975913cabacadbe011c9a8197bca12f95a11071eb7e03cf504ef0",
+    "index.html": "a32b1a7eb51fd2251a84c5f7903fd4b97d71682121df2c3a81fca852602ad992"
+  },
+  "contexts": 13,
+  "externalAttempts": 1,
+  "blockedOriginKinds": [
+    "legacy-exchange-rate"
+  ],
+  "capabilityUrlAttempts": 0,
+  "pageErrors": 0,
+  "liveActions": 0,
+  "realEmailDeliveryVerified": false
+}

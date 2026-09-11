@@ -18,6 +18,7 @@
 // verified-email enforcement is SEC-013. The verification email itself is
 // still sent by the client right after Auth user creation (src/store/authStore.ts).
 import { onCall, type CallableRequest } from 'firebase-functions/v2/https'
+import { setGlobalOptions } from 'firebase-functions/v2/options'
 import { FieldValue, FieldPath, Timestamp, type Transaction } from 'firebase-admin/firestore'
 import { db, adminAuth } from './lib/admin'
 import { readCompanyAccess } from './lib/companyAccess'
@@ -53,6 +54,20 @@ import {
   type CancelInviteResponse,
   type ResendInviteResponse,
 } from './schemas/invitation'
+
+// SEC-006 Stage 8: explicit resources for the initial low-volume rehearsal.
+// Each callable scales to zero; maxInstances/concurrency are per function,
+// not a project spending cap. Keep the prior SDK timeout default (60s).
+// Declare before every onCall so the emitted deployment descriptors include it.
+setGlobalOptions({
+  region: 'us-central1',
+  memory: '256MiB',
+  cpu: 1,
+  concurrency: 1,
+  minInstances: 0,
+  maxInstances: 1,
+  timeoutSeconds: 60,
+})
 
 export const authzProbe = onCall(async request => {
   try {
