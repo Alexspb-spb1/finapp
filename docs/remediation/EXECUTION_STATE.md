@@ -1,9 +1,13 @@
 # Execution checkpoint
 
-Updated: 2026-09-08. Status: IN_PROGRESS — SEC-006 Stage 8 staging backend
-deployed and metadata-verified. The approved API activation, billing link,
-index creation and scoped Functions/Rules deployment have completed. Do not
-repeat them. Real invitation behavior and Firebase email remain unverified.
+Updated: 2026-09-11. Status: SEC-006 Stage 8 CLOSED on reduced live scope,
+awaiting final independent audit and owner PASS. Staging backend is deployed and
+metadata-verified; one live callable (`createCompany`) is committed and
+independently reconciled. The approved API activation, billing link, index
+creation, scoped Functions/Rules deployment, the ownerA Auth creation and the
+createCompanyA write have all completed. Do not repeat any of them. Live
+invitation-callable behavior and the real Firebase verification email remain
+unverified and are carried forward as a named follow-up gate.
 
 - Scope: stabilization stages 0–8; stage9 excluded. Engineering, separate
   agents/review and expected-HEAD merges authorized. External actions require
@@ -465,3 +469,38 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   access. A clean commit, independent PASS, push and exact-head CI are required
   before another fresh private package can be prepared and separately
   authorized.
+
+## 2026-09-11 live execution, interruption and Stage 8 closure
+
+- The third authorized package ran on exact HEAD `f9f82cf` (run id
+  `stage8-mtww3p0r-1ae5cb84b43c285e`) and was interrupted. `createOwnerAAuth`
+  reached `RECONCILED`; `createCompanyA` was dispatched and left `UNCERTAIN`
+  with `RECOVERY_REQUIRED` / `EXECUTION_INTERRUPTED`. The other 14 fixture
+  slots, the verification email and the verified session are `NOT_STARTED`.
+  No browser, no cleanup, no production change.
+- A separate read-only classification resolved the uncertain slot as
+  `COMMITTED_EXACT` (`anchorsStable`, `bundleExact`, `auditExact` all true)
+  using three Firestore reads, zero mutations, zero callable invocations and
+  zero emails. Private receipts:
+  `D:/projects/finapp/.runtime/stage8-createCompanyA-reconciliation-f9f82cf-result.json`
+  SHA-256 `7648bbd3a83bcd562e48b8dc2be4c21d6983ed410e8b21bcddefa0e574778d97`
+  and `…-journal.jsonl` SHA-256
+  `1a63ad233b004894c7766ece9169f9a676b303d449ecc8f0478e7b0c8b6cec74`.
+- Do not repeat `createCompanyA` and do not start new diagnostic or
+  reconciliation cycles for it. The result is settled.
+- Residual synthetic staging state is exactly: Auth user
+  `stage8-mtww3p0r-1ae5cb84b43c285e-ownerA` and the Company A bundle with its
+  one audit event. Cleanup is deferred as a separate non-blocking
+  owner-approved action; leaving it is safer than new live deletes.
+- Stage 8 is closed on reduced live scope, recorded in the SEC-006 report. The
+  deployed backend is live-proven for the shared callable spine (real token
+  verification, strict validation, idempotency receipt, maintenance gate,
+  transactional commit, audit). Invitation-specific authorization, the five
+  invitation callables, the acceptance UI lifecycle and one real verification
+  email remain emulator-verified only and are the named follow-up gate before
+  real users are invited through the deployed backend.
+- No code change accompanies the closure; the tree is clean at `f9f82cf`,
+  equal to the PR 27 head, with `ci` and `functions` SUCCESS on that HEAD.
+- Next: independent final audit by Astra as auditor only, owner PASS, then the
+  SEC-006 checkbox, PR 27 Ready and expected-HEAD merge. Merge triggers Pages
+  and therefore still needs a separate owner go-ahead as an external action.
