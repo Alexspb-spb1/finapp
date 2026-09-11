@@ -47,7 +47,55 @@ let companyRoster: CompanyMemberEntry[] = []
 let companyRosterCompanyId: string | null = null
 let companyRosterError: string | null = null
 
+// ── SEC-007 R2: staleness guard for all canonical async state ──────────────
+//
+// Both the membership read and the roster call are asynchronous, so a slow
+// response for company A (or for a previous session) can land after the user
+// has already switched to company B or signed out. Applying it would show one
+// company's roster under another company's name, or resurrect the role of a
+// user who has logged out.
+//
+// Every request captures a token first and re-checks it before touching ANY
+// state — on success and on failure alike, since a late error is just as
+// damaging as a late success when it overwrites a good result.
+//
+// The token pins three independent things:
+//   - `generation`, bumped by every clear/logout/switch, which invalidates
+//     everything in flight without needing to know what it was;
+//   - `companyId`, so a response is only applied to the company it was asked
+//     for;
+//   - the exact Firebase user OBJECT, not merely the uid: signing out and
+//     back in as the same person yields a NEW object, and that session must
+//     not inherit the previous one's in-flight reads.
+interface CanonicalRequestToken {
+  generation: number
+  companyId: string
+  user: FirebaseUser | null
+}
+
+let canonicalGeneration = 0
+
+function beginCanonicalRequest(companyId: string): CanonicalRequestToken {
+  return { generation: canonicalGeneration, companyId, user: auth.currentUser }
+}
+
+/** True if anything the request depended on has changed since it started. */
+function isStaleCanonicalRequest(token: CanonicalRequestToken): boolean {
+  return token.generation !== canonicalGeneration
+    || token.companyId !== effectiveActiveCompanyId()
+    || token.user !== auth.currentUser
+}
+
+/** The company the app is actually showing right now. */
+function effectiveActiveCompanyId(): string | null {
+  return activeCompanyId ?? currentUser?.companyId ?? null
+}
+
 function clearCanonicalMembership() {
+  // Bumping the generation is what cancels in-flight work; without it a
+  // response that started before the clear would repopulate the state we just
+  // emptied.
+  canonicalGeneration += 1
   activeMembership = null
   activeMembershipCompanyId = null
   companyRoster = []
@@ -58,28 +106,34 @@ function clearCanonicalMembership() {
 /** Re-reads the caller's own membership AND the roster after a server-side
  * change, so a role change or a removal is reflected immediately. */
 async function refreshCanonicalMembership(companyId: string): Promise<void> {
-  const uid = auth.currentUser?.uid
-  if (!uid) { clearCanonicalMembership(); return }
-  await loadCanonicalMembership(companyId, uid)
-  await loadCompanyRoster(companyId)
+  if (!auth.currentUser) { clearCanonicalMembership(); return }
+  await Promise.all([
+    loadCanonicalMembership(companyId, auth.currentUser.uid),
+    loadCompanyRoster(companyId),
+  ])
 }
 
 /** Loads the canonical roster for a company. Failures are recorded rather
  * than swallowed: an empty list must never be presented as "no colleagues"
  * when it actually means "could not read". */
 async function loadCompanyRoster(companyId: string): Promise<void> {
-  companyRosterCompanyId = companyId
+  const token = beginCanonicalRequest(companyId)
   try {
-    companyRoster = await memberApi.listMembers({ companyId })
+    const members = await memberApi.listMembers({ companyId })
+    if (isStaleCanonicalRequest(token)) return
+    companyRoster = members
+    companyRosterCompanyId = companyId
     companyRosterError = null
   } catch (error) {
+    if (isStaleCanonicalRequest(token)) return
     companyRoster = []
+    companyRosterCompanyId = companyId
     companyRosterError = memberErrorMessage(error)
   }
 }
 
 /**
- * Loads the caller's canonical membership plus the company roster.
+ * Loads the caller's canonical membership.
  *
  * Fail-closed: any read failure, missing document or schema violation leaves
  * `activeMembership` null, which yields a null effective role and therefore no
@@ -87,14 +141,22 @@ async function loadCompanyRoster(companyId: string): Promise<void> {
  * not `active`, so it grants nothing either.
  */
 async function loadCanonicalMembership(companyId: string, uid: string): Promise<void> {
-  activeMembershipCompanyId = companyId
+  const token = beginCanonicalRequest(companyId)
   try {
     const ownSnap = await getDoc(doc(db, 'companies', companyId, 'members', uid))
-    if (!ownSnap.exists()) { activeMembership = null; return }
+    if (isStaleCanonicalRequest(token)) return
+    if (!ownSnap.exists()) {
+      activeMembership = null
+      activeMembershipCompanyId = companyId
+      return
+    }
     const parsed = parseMembershipDocument(companyId, uid, ownSnap.data())
     activeMembership = parsed.ok ? parsed.data : null
+    activeMembershipCompanyId = companyId
   } catch {
+    if (isStaleCanonicalRequest(token)) return
     activeMembership = null
+    activeMembershipCompanyId = companyId
   }
 }
 
@@ -452,20 +514,6 @@ onAuthStateChanged(auth, async firebaseUser => {
 // We intentionally do NOT call notify() here to avoid premature redirects
 // while Firestore reads are still in flight after authStateReady resolves.
 
-// ── Default company data (new registrations) ──────────────────────────────────
-const DEFAULT_CATEGORIES = [
-  { id: 'cat_inc1', name: 'Выручка от клиентов', type: 'income',   icon: 'TrendingUp',     color: '#22c55e' },
-  { id: 'cat_inc2', name: 'Прочие доходы',        type: 'income',   icon: 'BarChart2',      color: '#10b981' },
-  { id: 'cat_inc3', name: 'Займы полученные',      type: 'income',   icon: 'Banknote',       color: '#6ee7b7' },
-  { id: 'cat_exp1', name: 'Зарплата',              type: 'expense',  icon: 'Users',          color: '#ef4444' },
-  { id: 'cat_exp2', name: 'Аренда',                type: 'expense',  icon: 'Building2',      color: '#f97316' },
-  { id: 'cat_exp3', name: 'Реклама и маркетинг',   type: 'expense',  icon: 'Megaphone',      color: '#a855f7' },
-  { id: 'cat_exp4', name: 'Закупка товаров',        type: 'expense',  icon: 'Package',        color: '#3b82f6' },
-  { id: 'cat_exp5', name: 'Налоги',                type: 'expense',  icon: 'Landmark',       color: '#64748b' },
-  { id: 'cat_exp6', name: 'Связь и интернет',      type: 'expense',  icon: 'Wifi',           color: '#06b6d4' },
-  { id: 'cat_exp7', name: 'Командировки',          type: 'expense',  icon: 'Plane',          color: '#8b5cf6' },
-  { id: 'cat_tr1',  name: 'Внутренний перевод',    type: 'transfer', icon: 'ArrowLeftRight', color: '#94a3b8' },
-]
 
 // ── Store ─────────────────────────────────────────────────────────────────────
 export const authStore = {
@@ -840,12 +888,22 @@ export const authStore = {
 
   // ── SEC-007 R1: canonical roster ────────────────────────────────────────
   /** Members of the active company: uid, canonical role/status, display
-   * fields. The only supported source of "who belongs to this company". */
-  getCompanyRoster(): CompanyMemberEntry[] { return companyRoster },
+   * fields. The only supported source of "who belongs to this company".
+   *
+   * SEC-007 R2: returns nothing unless the loaded roster belongs to the
+   * company that is active RIGHT NOW. Between starting a switch and the new
+   * roster arriving there is no roster to show — never the previous
+   * company's one under the new company's name. */
+  getCompanyRoster(): CompanyMemberEntry[] {
+    return companyRosterCompanyId === effectiveActiveCompanyId() ? companyRoster : []
+  },
   /** User-visible message if the roster could not be read, else null. An
    * empty roster must never be shown as "no colleagues" when it really means
-   * "could not read". */
-  getCompanyRosterError(): string | null { return companyRosterError },
+   * "could not read". Scoped to the active company for the same reason as
+   * getCompanyRoster. */
+  getCompanyRosterError(): string | null {
+    return companyRosterCompanyId === effectiveActiveCompanyId() ? companyRosterError : null
+  },
   /** Loads the roster once per company; cheap to call from an effect. */
   async loadCompanyRoster(companyId: string) {
     if (companyRosterCompanyId === companyId && (companyRoster.length > 0 || companyRosterError)) return
@@ -855,6 +913,13 @@ export const authStore = {
   /** Forces a reload, ignoring the cache. */
   async reloadCompanyRoster(companyId: string) {
     await loadCompanyRoster(companyId)
+    notify()
+  },
+  /** Forces a reload of the caller's own canonical membership. */
+  async reloadCanonicalMembership(companyId: string) {
+    const user = auth.currentUser
+    if (!user) { clearCanonicalMembership(); notify(); return }
+    await loadCanonicalMembership(companyId, user.uid)
     notify()
   },
   // Может ли менять данные: все, кроме «Наблюдателя» и отсутствия доступа
@@ -903,40 +968,5 @@ export const authStore = {
     authDataStatus = 'ready'
     lastDataError = null
     notify()
-  },
-
-  // ── Multi-company: create new company ────────────────────────────────────
-  async createCompany(params: { name: string; legalType: 'ooo' | 'ip'; inn?: string }) {
-    if (!currentUser) return
-    const now = new Date().toISOString()
-    // crypto.randomUUID() вместо Date.now() — ID компании раньше был
-    // временной меткой в миллисекундах, то есть перечисляемым/угадываемым.
-    // В сочетании с открытыми Firestore-правилами это позволяло бы читать
-    // чужие финансовые данные простым перебором.
-    const companyId = 'co_' + crypto.randomUUID()
-
-    const company: Company = {
-      id: companyId, name: params.name, legalType: params.legalType,
-      inn: params.inn, currency: 'RUB', createdAt: now, ownerId: currentUser.id,
-    }
-
-    // Add membership to user record
-    const existingCompanies = currentUser.companies ?? [{ companyId: currentUser.companyId, role: 'admin' as const }]
-    const updatedCompanies = [...existingCompanies, { companyId, role: 'admin' as const }]
-
-    await Promise.all([
-      setDoc(doc(db, 'companies', companyId), company),
-      setDoc(doc(db, 'company_data', companyId), {
-        accounts: [], categories: DEFAULT_CATEGORIES, counterparties: [],
-        transactions: [], projects: [], rules: [], budgets: [], recurring: [],
-      }),
-      updateDoc(doc(db, 'users', currentUser.id), { companies: updatedCompanies }),
-    ])
-
-    currentUser = { ...currentUser, companies: updatedCompanies }
-    allUserCompanies = [...allUserCompanies, company]
-
-    // Switch to newly created company
-    await authStore.switchCompany(companyId)
   },
 }

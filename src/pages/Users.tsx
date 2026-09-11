@@ -67,8 +67,10 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
     m.uid.toLowerCase().includes(term),
   )
 
-  async function refresh() {
-    await authStore.reloadCompanyRoster(companyId)
+  // SEC-007 R2: the store already reloads the roster inside each mutation,
+  // so this only re-renders. Calling reloadCompanyRoster here as well made
+  // every action fetch the roster twice.
+  function refresh() {
     forceRender(n => n + 1)
   }
 
@@ -105,7 +107,7 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
     setBusy(true)
     try {
       await authStore.changeMemberRole(companyId, editing.uid, formRole)
-      await refresh()
+      refresh()
       setEditing(null)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -121,7 +123,7 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
     setBusy(true)
     try {
       await action()
-      await refresh()
+      refresh()
     } catch (error) {
       setRowError({ uid: member.uid, message: memberErrorMessage(error) })
     } finally {
@@ -136,7 +138,7 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
     setBusy(true)
     try {
       await authStore.removeMember(companyId, target.uid)
-      await refresh()
+      refresh()
       setConfirmRemove(null)
     } catch (error) {
       setRowError({ uid: target.uid, message: memberErrorMessage(error) })

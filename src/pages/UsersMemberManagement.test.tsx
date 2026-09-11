@@ -174,7 +174,9 @@ describe('role form', () => {
     await clickAsync([...container.querySelectorAll('button')].find(b => b.textContent === 'Сохранить'))
 
     expect(mocks.changeMemberRole).toHaveBeenCalledWith('co', 'mate', 'admin')
-    expect(mocks.reloadCompanyRoster).toHaveBeenCalledWith('co')
+    // R2 finding 5: the store mutation already reloads membership AND roster,
+    // so the page must NOT issue a second roster read of its own.
+    expect(mocks.reloadCompanyRoster).not.toHaveBeenCalled()
   })
 
   it('keeps the dialog open and shows the refusal when the server rejects', async () => {

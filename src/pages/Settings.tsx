@@ -58,8 +58,8 @@ export default function Settings() {
     if (!activeCompanyId) return
     setMemberError('')
     try {
+      // The store reloads the roster as part of the mutation; only re-render.
       await authStore.removeMember(activeCompanyId, subjectUid)
-      await authStore.reloadCompanyRoster(activeCompanyId)
       forceRender(n => n + 1)
     } catch (error) {
       setMemberError(memberErrorMessage(error))
@@ -98,7 +98,6 @@ export default function Settings() {
   const [closingDateInput, setClosingDateInput] = useState(store.closingDate)
   const [closingSaved,     setClosingSaved]     = useState(false)
 
-  const users = company ? authStore.getCompanyUsers(company.id) : []
 
   // Категории по текущей вкладке
   const visibleCats = store.categories.filter(c => c.type === catTab)
@@ -325,7 +324,7 @@ export default function Settings() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-sm font-semibold text-slate-700">Пользователи</h3>
-            <p className="text-xs text-slate-400 mt-0.5">{users.length} в вашей компании</p>
+            <p className="text-xs text-slate-400 mt-0.5">{roster.length} в вашей компании</p>
           </div>
           {canOpenInvitationManagement(user, company?.id ?? null, activeCompanyId, status, auth.currentUser?.uid ?? null, role) && (
             <Link

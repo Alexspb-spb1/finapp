@@ -456,11 +456,56 @@ describe('positive application flows still work for legitimate same-company use'
       projects: [], rules: [], budgets: [], recurring: [], paymentCalendar: [],
     }))
   })
-  it('any authenticated user can create a brand-new company they own', async () => {
+  // SEC-007 R2: a signed-in user with NO canonical membership can no longer
+  // create a company. Doing so produced an orphan — the company document
+  // existed but no membership did, since clients cannot write memberships at
+  // all, so not even the creator could open it.
+  it('an authenticated user without a membership cannot create a company', async () => {
     const db = testEnv.authenticatedContext(ATTACKER_UID).firestore()
-    await assertSucceeds(setDoc(doc(db, 'companies', 'brand_new_co_synthetic'), {
+    await assertFails(setDoc(doc(db, 'companies', 'brand_new_co_synthetic'), {
       id: 'brand_new_co_synthetic', name: 'New Co', legalType: 'ip',
       currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: ATTACKER_UID,
+    }))
+  })
+
+  it('a legacy companies[] entry does not enable company creation either', async () => {
+    await seedUser(MULTI_COMPANY_UID, {
+      role: 'admin', companyId: 'orphan_target_synthetic',
+      companies: [{ companyId: 'orphan_target_synthetic', role: 'admin' }],
+    })
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(setDoc(doc(db, 'companies', 'orphan_target_synthetic'), {
+      id: 'orphan_target_synthetic', name: 'Orphan', legalType: 'ip',
+      currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: MULTI_COMPANY_UID,
+    }))
+  })
+
+  // The one legitimate client case survives: the membership exists but the
+  // company document itself vanished, so an admin may recreate it.
+  it('an active admin may recreate the missing document of their own company', async () => {
+    await seedMembership('recovery_co_synthetic', MULTI_COMPANY_UID, 'admin')
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertSucceeds(setDoc(doc(db, 'companies', 'recovery_co_synthetic'), {
+      id: 'recovery_co_synthetic', name: 'Recovered', legalType: 'ip',
+      currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: MULTI_COMPANY_UID,
+    }))
+  })
+
+  it.each(['viewer', 'accountant'] as const)('a %s cannot recreate their company document', async role => {
+    await seedMembership('recovery_denied_synthetic', MULTI_COMPANY_UID, role)
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(setDoc(doc(db, 'companies', 'recovery_denied_synthetic'), {
+      id: 'recovery_denied_synthetic', name: 'Denied', legalType: 'ip',
+      currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: MULTI_COMPANY_UID,
+    }))
+  })
+
+  it('a disabled admin cannot recreate their company document', async () => {
+    await seedMembership('recovery_disabled_synthetic', MULTI_COMPANY_UID, 'admin', 'disabled')
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
+    await assertFails(setDoc(doc(db, 'companies', 'recovery_disabled_synthetic'), {
+      id: 'recovery_disabled_synthetic', name: 'Disabled', legalType: 'ip',
+      currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: MULTI_COMPANY_UID,
     }))
   })
   it('cannot create a new company claiming someone else as owner', async () => {
