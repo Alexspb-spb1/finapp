@@ -6,6 +6,8 @@ import type { User } from '../types/auth'
 import { auth } from '../lib/firebase'
 import { canOpenInvitationManagement } from '../lib/invitationAccess'
 import InvitationManagement from '../components/invitations/InvitationManagement'
+import { memberErrorMessage } from '../lib/memberApi'
+import { RequireCapability } from '../components/auth/RequireCapability'
 
 const ROLES: User['role'][] = ['admin', 'accountant', 'viewer']
 
@@ -51,8 +53,17 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
   const [deleteId,  setDeleteId]  = useState<string | null>(null)
   const [form,      setForm]      = useState<FormState>(emptyForm())
   const [formError, setFormError] = useState('')
+  const [deleteError, setDeleteError] = useState('')
   const [saved,     setSaved]     = useState(false)
   const [resetSent, setResetSent] = useState(false)
+
+  // SEC-011: role and status come from the canonical roster, not from the
+  // legacy profile field, so a role changed on the server is what is shown.
+  const memberships = authStore.getCompanyMemberships()
+  const memberRole = (uid: string): User['role'] | null =>
+    memberships.find(m => m.uid === uid)?.role ?? null
+  const memberStatus = (uid: string) =>
+    memberships.find(m => m.uid === uid)?.status ?? null
 
   const allUsers = authStore.getCompanyUsers(companyId)
   const users = allUsers.filter(u =>
@@ -86,11 +97,25 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
       const payload: Parameters<typeof authStore.updateUser>[1] = {}
       if (form.name  !== modal.target.name)  payload.name  = form.name
       if (form.email !== modal.target.email) payload.email = form.email
-      if (form.role  !== modal.target.role)  payload.role  = form.role
       if (form.password)                     payload.password = form.password
 
-      const res = await authStore.updateUser(modal.target.id, payload)
-      if (!res.ok) { setFormError('Этот email уже занят другим пользователем'); return }
+      // SEC-007: the role is NOT part of the profile update. It lives in the
+      // canonical membership and is changed by an authorized, last-admin-
+      // protected, audited Cloud Function. A failure here is shown to the
+      // user; nothing is reported as saved that was not saved.
+      if (form.role !== memberRole(modal.target.id)) {
+        try {
+          await authStore.changeMemberRole(companyId, modal.target.id, form.role)
+        } catch (error) {
+          setFormError(memberErrorMessage(error))
+          return
+        }
+      }
+
+      if (Object.keys(payload).length) {
+        const res = await authStore.updateUser(modal.target.id, payload)
+        if (!res.ok) { setFormError('Этот email уже занят другим пользователем'); return }
+      }
     }
 
     setSaved(true)
@@ -98,9 +123,18 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
     setModal(null)
   }
 
-  // ── Confirm delete ──────────────────────────────────────────────
-  function confirmDelete() {
-    if (deleteId) { authStore.removeUser(deleteId); setDeleteId(null) }
+  // ── Confirm remove from company ─────────────────────────────────
+  // Revokes access to THIS company only; the person keeps their account and
+  // any other company they belong to.
+  async function confirmDelete() {
+    if (!deleteId) return
+    setDeleteError('')
+    try {
+      await authStore.removeMember(companyId, deleteId)
+      setDeleteId(null)
+    } catch (error) {
+      setDeleteError(memberErrorMessage(error))
+    }
   }
 
   const delTarget = allUsers.find(u => u.id === deleteId)
@@ -142,7 +176,11 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
         ) : (
           <ul className="divide-y divide-slate-50">
             {users.map(u => {
-              const RIcon = RoleIcon[u.role]
+              // Canonical role/status win over the legacy profile fields.
+              const canonicalRole = memberRole(u.id)
+              const effectiveRole = canonicalRole ?? u.role
+              const status = memberStatus(u.id)
+              const RIcon = RoleIcon[effectiveRole]
               const isMe = u.id === me?.id
               return (
                 <li key={u.id} className="flex items-center gap-4 px-5 py-4 hover:bg-slate-50 transition-colors">
@@ -166,12 +204,23 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
                   </div>
 
                   {/* Role badge */}
-                  <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${roleColor[u.role]}`}>
+                  <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${roleColor[effectiveRole]}`}>
                     <RIcon size={11} />
-                    {roleLabel[u.role]}
+                    {roleLabel[effectiveRole]}
                   </span>
+                  {status === 'disabled' && (
+                    <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">
+                      доступ отключён
+                    </span>
+                  )}
+                  {status === null && (
+                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-medium">
+                      нет доступа
+                    </span>
+                  )}
 
-                  {/* Actions */}
+                  {/* Actions — only for an admin of the ACTIVE company. */}
+                  <RequireCapability capability="member.manage">
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => openEdit(u)}
@@ -182,14 +231,15 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
                     </button>
                     {!isMe && (
                       <button
-                        onClick={() => setDeleteId(u.id)}
+                        onClick={() => { setDeleteError(''); setDeleteId(u.id) }}
                         className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                        title="Удалить"
+                        title="Убрать из компании"
                       >
                         <Trash2 size={14} />
                       </button>
                     )}
                   </div>
+                  </RequireCapability>
                 </li>
               )
             })}
@@ -352,10 +402,14 @@ function CompanyUsers({ me, companyId }: { me: User; companyId: string }) {
             <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-3">
               <Trash2 size={20} className="text-red-500" />
             </div>
-            <h3 className="text-base font-semibold text-slate-800 mb-1">Удалить пользователя?</h3>
-            <p className="text-sm text-slate-500 mb-5">
-              «{delTarget.name}» будет удалён. Это действие нельзя отменить.
+            <h3 className="text-base font-semibold text-slate-800 mb-1">Убрать из компании?</h3>
+            <p className="text-sm text-slate-500 mb-2">
+              «{delTarget.name}» потеряет доступ к этой компании. Аккаунт и доступ
+              к другим компаниям сохранятся.
             </p>
+            {deleteError && (
+              <p className="text-sm text-red-600 mb-3" role="alert">{deleteError}</p>
+            )}
             <div className="flex gap-3">
               <button
                 onClick={() => setDeleteId(null)}

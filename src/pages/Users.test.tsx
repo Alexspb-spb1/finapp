@@ -18,8 +18,12 @@ const mocks = vi.hoisted(() => ({
   auth: { currentUser: null as { uid: string } | null },
   getCompanyUsers: vi.fn(),
   updateUser: vi.fn(),
-  removeUser: vi.fn(),
   resetPassword: vi.fn(),
+  getCompanyMemberships: vi.fn(() => []),
+  removeMember: vi.fn(),
+  changeMemberRole: vi.fn(),
+  disableMember: vi.fn(),
+  restoreMember: vi.fn(),
 }))
 
 vi.mock('../hooks/useAuth', () => ({ useAuth: () => mocks.context }))
@@ -27,8 +31,14 @@ vi.mock('../lib/firebase', () => ({ auth: mocks.auth }))
 vi.mock('../store/authStore', () => ({ authStore: {
   getCompanyUsers: mocks.getCompanyUsers,
   updateUser: mocks.updateUser,
-  removeUser: mocks.removeUser,
   resetPassword: mocks.resetPassword,
+  // SEC-007/SEC-011: member management is server-side and the roster is
+  // canonical. `removeUser` no longer exists on the store.
+  getCompanyMemberships: mocks.getCompanyMemberships,
+  removeMember: mocks.removeMember,
+  changeMemberRole: mocks.changeMemberRole,
+  disableMember: mocks.disableMember,
+  restoreMember: mocks.restoreMember,
 } }))
 // Exercise the parent scope boundary without re-testing callable behavior.
 // A child-owned transient value exposes whether React preserves an old scope.

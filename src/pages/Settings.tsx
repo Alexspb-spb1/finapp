@@ -5,6 +5,8 @@ import { canOpenInvitationManagement } from '../lib/invitationAccess'
 import { UserPlus, Trash2, X, AlertCircle, KeyRound, User as UserIcon, Plus, Pencil, Tag, Folder, FolderOpen, ChevronRight, ChevronDown, Lock } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { authStore } from '../store/authStore'
+import { memberErrorMessage } from '../lib/memberApi'
+import { RequireCapability } from '../components/auth/RequireCapability'
 import { useStore } from '../store/useStore'
 import CategoryIcon from '../utils/categoryIcons'
 import type { User } from '../types/auth'
@@ -37,6 +39,24 @@ const roleColor: Record<User['role'], string> = {
 export default function Settings() {
   const { user, company, readOnly, isAdmin, activeCompanyId, status } = useAuth()
   const store = useStore()
+
+  const [memberError, setMemberError] = useState('')
+
+  // Canonical roster of the active company — the role shown here is the one
+  // the server enforces, not the legacy profile field.
+  const memberships = authStore.getCompanyMemberships()
+  const memberRole = (uid: string): User['role'] | null =>
+    memberships.find(m => m.uid === uid)?.role ?? null
+
+  async function handleRemoveMember(subjectUid: string) {
+    if (!activeCompanyId) return
+    setMemberError('')
+    try {
+      await authStore.removeMember(activeCompanyId, subjectUid)
+    } catch (error) {
+      setMemberError(memberErrorMessage(error))
+    }
+  }
 
   const [companyName, setCompanyName] = useState(company?.name ?? '')
   const [legalType, setLegalType] = useState<'ooo' | 'ip'>(company?.legalType ?? 'ooo')
@@ -310,6 +330,9 @@ export default function Settings() {
           )}
         </div>
 
+        {memberError && (
+          <p className="text-sm text-red-600 mb-3" role="alert">{memberError}</p>
+        )}
         <ul className="space-y-2">
           {users.map(u => (
             <li key={u.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
@@ -325,16 +348,22 @@ export default function Settings() {
                 </div>
                 <p className="text-xs text-slate-400 truncate">{u.email}</p>
               </div>
-              <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${roleColor[u.role]}`}>
-                {roleLabel[u.role]}
+              <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${roleColor[memberRole(u.id) ?? u.role]}`}>
+                {roleLabel[memberRole(u.id) ?? u.role]}
               </span>
-              {user?.role === 'admin' && u.id !== user?.id && (
-                <button
-                  onClick={() => authStore.removeUser(u.id)}
-                  className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                >
-                  <Trash2 size={14} />
-                </button>
+              {/* SEC-007/SEC-010: gated by the capability of the ACTIVE
+                  company, not by the legacy user.role field, and performed by
+                  the server callable rather than a direct profile delete. */}
+              {u.id !== user?.id && (
+                <RequireCapability capability="member.manage">
+                  <button
+                    onClick={() => void handleRemoveMember(u.id)}
+                    className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                    title="Убрать из компании"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </RequireCapability>
               )}
             </li>
           ))}

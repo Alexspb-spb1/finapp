@@ -8,13 +8,15 @@ import {
   type User as FirebaseUser,
 } from 'firebase/auth'
 import {
-  doc, getDoc, getDocFromServer, getDocs, setDoc, updateDoc, deleteDoc,
+  doc, getDoc, getDocFromServer, getDocs, setDoc, updateDoc,
   collection, query, where,
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import { callCreateCompany } from '../lib/companyApi'
 import type { User, Company } from '../types/auth'
-import { parseLegacyUserDocument, type DataError } from '../schemas/auth'
+import { parseLegacyUserDocument, parseMembershipDocument, type DataError } from '../schemas/auth'
+import type { Membership, Role } from '../schemas/auth'
+import { memberApi } from '../lib/memberApi'
 import { parseCompanyDocument } from '../schemas/company'
 import { isInvitationEntry } from '../lib/invitationEntry'
 import { confirmCompanyAccess } from '../lib/inviteAcceptanceApi'
@@ -24,6 +26,65 @@ let currentUser:    User    | null = null
 let currentCompany: Company | null = null
 let companyUsers:   User[]         = []
 let allUserCompanies: Company[]    = []
+
+// SEC-007/SEC-011: the canonical membership of the ACTIVE company —
+// companies/{companyId}/members/{uid}. This, and never the legacy
+// users/{uid}.role/companyId/companies[] fields, is what decides what the
+// signed-in user may do. It is reloaded whenever the active company changes
+// and cleared on sign-out, so a stale role can never survive a switch.
+let activeMembership: Membership | null = null
+let activeMembershipCompanyId: string | null = null
+// Canonical roster of the active company, keyed by uid. Used by the member
+// list instead of querying legacy profiles by users.companyId, which would
+// still list people whose access was revoked.
+let companyMemberships: Membership[] = []
+
+function clearCanonicalMembership() {
+  activeMembership = null
+  activeMembershipCompanyId = null
+  companyMemberships = []
+}
+
+/** Re-reads the canonical membership/roster after a server-side change. */
+async function refreshCanonicalMembership(companyId: string): Promise<void> {
+  const uid = auth.currentUser?.uid
+  if (!uid) { clearCanonicalMembership(); return }
+  await loadCanonicalMembership(companyId, uid)
+}
+
+/**
+ * Loads the caller's canonical membership plus the company roster.
+ *
+ * Fail-closed: any read failure, missing document or schema violation leaves
+ * `activeMembership` null, which yields a null effective role and therefore no
+ * capabilities at all. A disabled or still-invited membership is loaded but is
+ * not `active`, so it grants nothing either.
+ */
+async function loadCanonicalMembership(companyId: string, uid: string): Promise<void> {
+  activeMembershipCompanyId = companyId
+  try {
+    const [ownSnap, rosterSnap] = await Promise.all([
+      getDoc(doc(db, 'companies', companyId, 'members', uid)),
+      getDocs(collection(db, 'companies', companyId, 'members')),
+    ])
+
+    if (!ownSnap.exists()) { activeMembership = null; companyMemberships = []; return }
+    const parsed = parseMembershipDocument(companyId, uid, ownSnap.data())
+    activeMembership = parsed.ok ? parsed.data : null
+
+    const roster: Membership[] = []
+    for (const memberDoc of rosterSnap.docs) {
+      const parsedMember = parseMembershipDocument(companyId, memberDoc.id, memberDoc.data())
+      // A corrupted roster entry is skipped rather than shown with a guessed
+      // role; the caller's own membership above is what gates access anyway.
+      if (parsedMember.ok) roster.push(parsedMember.data)
+    }
+    companyMemberships = roster
+  } catch {
+    activeMembership = null
+    companyMemberships = []
+  }
+}
 
 // Observable data status — see src/hooks/useAuth.ts. `data_error` means a
 // Firestore document failed schema validation (see src/schemas/auth.ts,
@@ -49,7 +110,7 @@ let lastDataError: DataError | null = null
  * ever observes an intermediate/stale state. */
 function setDataErrorState(error: DataError) {
   console.error('[authStore] data_error:', error.source, error.issues)
-  currentUser = null; currentCompany = null; companyUsers = []
+  currentUser = null; currentCompany = null; companyUsers = []; clearCanonicalMembership()
   allUserCompanies = []
   activeCompanyId = null
   localStorage.removeItem(LS_ACTIVE_COMPANY)
@@ -237,7 +298,7 @@ onAuthStateChanged(auth, async firebaseUser => {
   // Invitation Auth never triggers legacy profile recovery or financial loading.
   if (isInvitationEntry) {
     if (!firebaseUser || firebaseUser.uid !== currentUser?.id) {
-      currentUser = null; currentCompany = null; companyUsers = []
+      currentUser = null; currentCompany = null; companyUsers = []; clearCanonicalMembership()
       allUserCompanies = []; activeCompanyId = null
       authDataStatus = firebaseUser ? 'loading' : 'signed_out'
       lastDataError = null
@@ -253,7 +314,7 @@ onAuthStateChanged(auth, async firebaseUser => {
       return
     }
     // Real logout (user explicitly signed out, or token expired)
-    currentUser = null; currentCompany = null; companyUsers = []
+    currentUser = null; currentCompany = null; companyUsers = []; clearCanonicalMembership()
     authDataStatus = 'signed_out'
     lastDataError = null
     notify()
@@ -280,7 +341,7 @@ onAuthStateChanged(auth, async firebaseUser => {
       // server `createCompany` callable (src/lib/companyApi.ts) — there is
       // no safe local substitute. Surface setup_incomplete so the UI can
       // offer authStore.completeCompanySetup() as a safe retry instead.
-      currentUser = null; currentCompany = null; companyUsers = []
+      currentUser = null; currentCompany = null; companyUsers = []; clearCanonicalMembership()
       allUserCompanies = []
       activeCompanyId = null
       localStorage.removeItem(LS_ACTIVE_COMPANY)
@@ -358,11 +419,16 @@ onAuthStateChanged(auth, async firebaseUser => {
       ...(currentCompany ? [currentCompany] : []),
       ...parsedExtraCompanies.data,
     ]
+
+    // SEC-011: the effective role comes from here, not from the profile that
+    // was just parsed above. Without this the user has no capabilities.
+    await loadCanonicalMembership(resolvedActiveId, currentUser.id)
+
     authDataStatus = 'ready'
     lastDataError = null
   } catch (err) {
     console.error('[authStore] onAuthStateChanged error:', err)
-    currentUser = null; currentCompany = null; companyUsers = []
+    currentUser = null; currentCompany = null; companyUsers = []; clearCanonicalMembership()
     authDataStatus = 'data_error'
     lastDataError = { code: 'data_error', source: 'onAuthStateChanged', issues: ['unexpected_error'] }
   }
@@ -424,6 +490,15 @@ export const authStore = {
     currentUser = profile.data; currentCompany = company.data
     companyUsers = [profile.data]; allUserCompanies = [company.data, ...otherCompanies.filter(value => value !== null)]
     activeCompanyId = companyId; authDataStatus = 'ready'; lastDataError = null
+    // SEC-011: load the real canonical membership rather than deriving a role
+    // from the profile. `access` already proves the membership exists and is
+    // active (getCompanyAccess runs requireActiveMember server-side), and the
+    // read below is what the rest of the app uses, so acceptance leaves the
+    // store in exactly the same shape as a normal sign-in.
+    await loadCanonicalMembership(companyId, expectedUser.uid)
+    if (activeMembership && activeMembership.role !== access.role) {
+      throw new Error('Access bridge mismatch')
+    }
     localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
     notify()
   },
@@ -630,11 +705,42 @@ export const authStore = {
   getAuthDataStatus(): AuthDataStatus { return authDataStatus },
   getDataError(): DataError | null { return lastDataError },
 
-  // ── Remove user (Firestore only — no Admin SDK needed) ────────────────────
-  async removeUser(userId: string) {
-    await deleteDoc(doc(db, 'users', userId))
-    companyUsers = companyUsers.filter(u => u.id !== userId)
+  // ── SEC-007: member management goes through Cloud Functions ──────────────
+  // The client no longer writes roles or memberships. Previously this deleted
+  // the colleague's whole users/{uid} profile, which both destroyed data the
+  // caller did not own and left every other company's access untouched; it
+  // was also already denied by Rules, so the failure was silent.
+  //
+  // Each of these revokes or changes access to the ACTIVE company only, never
+  // the global Firebase Auth account, and each is refused server-side unless
+  // the caller is an active admin of that company. The last active admin is
+  // protected transactionally.
+  async removeMember(companyId: string, subjectUid: string) {
+    const result = await memberApi.remove({ companyId, subjectUid })
+    await refreshCanonicalMembership(companyId)
     notify()
+    return result
+  },
+
+  async changeMemberRole(companyId: string, subjectUid: string, role: Role) {
+    const result = await memberApi.changeRole({ companyId, subjectUid, role })
+    await refreshCanonicalMembership(companyId)
+    notify()
+    return result
+  },
+
+  async disableMember(companyId: string, subjectUid: string) {
+    const result = await memberApi.disable({ companyId, subjectUid })
+    await refreshCanonicalMembership(companyId)
+    notify()
+    return result
+  },
+
+  async restoreMember(companyId: string, subjectUid: string) {
+    const result = await memberApi.restore({ companyId, subjectUid })
+    await refreshCanonicalMembership(companyId)
+    notify()
+    return result
   },
 
   // ── Update user profile ───────────────────────────────────────────────────
@@ -649,10 +755,14 @@ export const authStore = {
         if (conflict) return { ok: false, error: 'email_taken' }
       }
 
+      // SEC-007: `role` is no longer accepted here. A role lives in the
+      // canonical membership and is changed only by changeMemberRole(), which
+      // is authorized, last-admin-protected and audited server-side. Writing
+      // users/{uid}.role was already denied by Rules, so accepting it here
+      // only produced a silent no-op that looked like success.
       const updates: Partial<User> = {}
       if (data.name)  updates.name  = data.name
       if (data.email) updates.email = data.email.toLowerCase()
-      if (data.role)  updates.role  = data.role
 
       if (Object.keys(updates).length) {
         await updateDoc(doc(db, 'users', userId), updates)
@@ -698,16 +808,28 @@ export const authStore = {
   // ── Роль и права для активной компании ────────────────────────────────────
   // Роль может отличаться между компаниями (multi-company), поэтому берём роль
   // именно для активной компании.
-  getEffectiveRole(): User['role'] {
-    if (!currentUser) return 'viewer'
+  // SEC-011: derived ONLY from the canonical membership of the active
+  // company. Legacy users.role/companyId/companies[] are never consulted —
+  // they no longer grant anything in Rules either, so trusting them here
+  // would only produce a UI that disagrees with the server.
+  //
+  // Returns null when there is no usable membership: signed out, membership
+  // missing, disabled, still invited, corrupted, or the membership belongs to
+  // a different company than the active one. Callers must treat null as "no
+  // rights at all" — never as a viewer default.
+  getEffectiveRole(): Role | null {
+    if (!currentUser) return null
     const activeId = activeCompanyId ?? currentUser.companyId
-    if (activeId === currentUser.companyId) return currentUser.role
-    const membership = currentUser.companies?.find(c => c.companyId === activeId)
-    return membership?.role ?? currentUser.role
+    if (!activeId || activeMembershipCompanyId !== activeId) return null
+    if (!activeMembership || activeMembership.status !== 'active') return null
+    return activeMembership.role
   },
-  // Может ли менять данные: все, кроме «Наблюдателя»
-  canWrite() { return this.getEffectiveRole() !== 'viewer' },
-  // Админ компании: настройки компании и управление пользователями
+  getActiveMembership(): Membership | null { return activeMembership },
+  /** Canonical roster of the active company (uid/role/status). */
+  getCompanyMemberships(): Membership[] { return companyMemberships },
+  // Может ли менять данные: все, кроме «Наблюдателя» и отсутствия доступа
+  canWrite() { const role = this.getEffectiveRole(); return role !== null && role !== 'viewer' },
+  // Админ компании: настройки компании и управление участниками
   isAdmin() { return this.getEffectiveRole() === 'admin' },
 
   // ── Multi-company: getters ────────────────────────────────────────────────
@@ -724,6 +846,10 @@ export const authStore = {
     if (companyId === activeCompanyId) return
     activeCompanyId = companyId
     localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
+    // SEC-011: drop the previous company's canonical role immediately, so no
+    // render between here and the reload below can use the old company's
+    // capabilities against the new company.
+    clearCanonicalMembership()
     // SEC-006: immediately unmount company-scoped invitation UI before I/O.
     selectionListeners.forEach(listener => listener())
 
@@ -740,6 +866,9 @@ export const authStore = {
     const parsedUsers = parseLegacyUsersList(usersSnap.docs)
     if (!parsedUsers.ok) { setDataErrorState(parsedUsers.error); return }
     companyUsers = parsedUsers.data
+
+    // Role for the NEW company comes from that company's own membership.
+    if (currentUser) await loadCanonicalMembership(companyId, currentUser.id)
 
     authDataStatus = 'ready'
     lastDataError = null
