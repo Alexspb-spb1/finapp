@@ -12,6 +12,7 @@
 // relevant objects.
 import { z } from 'zod'
 import { Timestamp } from 'firebase-admin/firestore'
+import { FirestoreDocumentIdSchema } from './firestoreIds'
 
 const nonEmptyString = z.string().min(1)
 
@@ -48,15 +49,19 @@ export const CompanyScopedRequestSchema = z.object({
 }).strict()
 export type CompanyScopedRequest = z.infer<typeof CompanyScopedRequestSchema>
 
+// SEC-007: `companyId`/`subjectUid` are interpolated directly into
+// `companies/{companyId}/members/{subjectUid}`, so they must be validated as
+// real Firestore document IDs, not merely as non-empty strings. A bare
+// non-empty string would admit `.`, `..`, `__reserved__` and embedded `/`.
 export const MemberSubjectRequestSchema = z.object({
-  companyId: nonEmptyString,
-  subjectUid: nonEmptyString,
+  companyId: FirestoreDocumentIdSchema,
+  subjectUid: FirestoreDocumentIdSchema,
 }).strict()
 export type MemberSubjectRequest = z.infer<typeof MemberSubjectRequestSchema>
 
 export const SetMemberRoleRequestSchema = z.object({
-  companyId: nonEmptyString,
-  subjectUid: nonEmptyString,
+  companyId: FirestoreDocumentIdSchema,
+  subjectUid: FirestoreDocumentIdSchema,
   role: RoleSchema,
 }).strict()
 export type SetMemberRoleRequest = z.infer<typeof SetMemberRoleRequestSchema>

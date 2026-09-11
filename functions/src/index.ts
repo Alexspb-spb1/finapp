@@ -33,7 +33,19 @@ import { runResendInviteTransaction } from './lib/resendInviteTransaction'
 import { runAcceptInviteTransaction } from './lib/acceptInviteTransaction'
 import { verifyInvitationToken, requirePendingInvitation, requireCurrentInvitationLock, readInvitationCompanyName, maskInvitationEmail } from './lib/invitationAccess'
 import { decodeInvitationsCursor, buildInvitationsCursor, timestampFromCursorPayload, mapInvitationDocumentToListItem } from './lib/invitationListing'
-import { AuthzProbeRequestSchema, type AuthzProbeResponse } from './schemas/auth'
+import {
+  AuthzProbeRequestSchema,
+  type AuthzProbeResponse,
+  MemberSubjectRequestSchema,
+  SetMemberRoleRequestSchema,
+} from './schemas/auth'
+import {
+  runChangeMemberRoleTransaction,
+  runDisableMemberTransaction,
+  runRestoreMemberTransaction,
+  runRemoveMemberTransaction,
+  type MemberManagementResult,
+} from './lib/memberManagementTransactions'
 import { CreateCompanyRequestSchema, type CreateCompanyResponse } from './schemas/company'
 import {
   InviteMemberRequestSchema,
@@ -558,6 +570,128 @@ export const previewInvite = onCall(async request => {
 export const getCompanyAccess = onCall(async request => {
   try {
     return await readCompanyAccess(db, request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+// ── SEC-007: server-side member management ────────────────────────────────
+// Four callables replace the former client-side writes to the legacy
+// `users/{uid}` document (role edit, colleague delete). They mutate ONLY
+// `companies/{companyId}/members/{subjectUid}`, the canonical authorization
+// source (ADR-001), and never the global Firebase Auth account.
+//
+// Every one of them follows the same shape as the invitation callables:
+// requireAuth → requireVerifiedEmail → validateRequest → ONE transaction that
+// starts with requireNotInMaintenanceMode, then re-derives the caller's own
+// admin membership for that exact company, then acts. `now` is computed once
+// here, outside the transaction, so an internal retry rewrites identical
+// values. See lib/memberManagementTransactions.ts for the per-operation rules
+// (idempotency, last-admin protection, allowed status transitions).
+
+/** Shared plumbing: identical guard/transaction envelope for all four. */
+async function performMemberManagement<TInput>(
+  request: CallableRequest<unknown>,
+  schema: Parameters<typeof validateRequest<TInput>>[0],
+  run: (ctx: {
+    txn: Transaction
+    auth: ReturnType<typeof requireAuth>
+    input: TInput
+    nowTimestamp: Timestamp
+  }) => Promise<MemberManagementResult>,
+  runTransactionImpl: <T>(fn: (txn: Transaction) => Promise<T>) => Promise<T> = fn => db.runTransaction(fn),
+): Promise<MemberManagementResult> {
+  const auth = requireAuth(request)
+  requireVerifiedEmail(auth)
+  const input = validateRequest(schema, request.data)
+  const nowTimestamp = Timestamp.fromDate(new Date())
+
+  return runTransactionImpl(txn => run({ txn, auth, input, nowTimestamp }))
+}
+
+export async function performChangeMemberRole(
+  request: CallableRequest<unknown>,
+  runTransactionImpl?: <T>(fn: (txn: Transaction) => Promise<T>) => Promise<T>,
+): Promise<MemberManagementResult> {
+  return performMemberManagement(
+    request,
+    SetMemberRoleRequestSchema,
+    ({ txn, auth, input, nowTimestamp }) => runChangeMemberRoleTransaction({
+      db, txn, request, auth, input, generated: { nowTimestamp },
+    }),
+    runTransactionImpl,
+  )
+}
+
+export async function performDisableMember(
+  request: CallableRequest<unknown>,
+  runTransactionImpl?: <T>(fn: (txn: Transaction) => Promise<T>) => Promise<T>,
+): Promise<MemberManagementResult> {
+  return performMemberManagement(
+    request,
+    MemberSubjectRequestSchema,
+    ({ txn, auth, input, nowTimestamp }) => runDisableMemberTransaction({
+      db, txn, request, auth, input, generated: { nowTimestamp },
+    }),
+    runTransactionImpl,
+  )
+}
+
+export async function performRestoreMember(
+  request: CallableRequest<unknown>,
+  runTransactionImpl?: <T>(fn: (txn: Transaction) => Promise<T>) => Promise<T>,
+): Promise<MemberManagementResult> {
+  return performMemberManagement(
+    request,
+    MemberSubjectRequestSchema,
+    ({ txn, auth, input, nowTimestamp }) => runRestoreMemberTransaction({
+      db, txn, request, auth, input, generated: { nowTimestamp },
+    }),
+    runTransactionImpl,
+  )
+}
+
+export async function performRemoveMember(
+  request: CallableRequest<unknown>,
+  runTransactionImpl?: <T>(fn: (txn: Transaction) => Promise<T>) => Promise<T>,
+): Promise<MemberManagementResult> {
+  return performMemberManagement(
+    request,
+    MemberSubjectRequestSchema,
+    ({ txn, auth, input, nowTimestamp }) => runRemoveMemberTransaction({
+      db, txn, request, auth, input, generated: { nowTimestamp },
+    }),
+    runTransactionImpl,
+  )
+}
+
+export const changeMemberRole = onCall(async request => {
+  try {
+    return await performChangeMemberRole(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+export const disableMember = onCall(async request => {
+  try {
+    return await performDisableMember(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+export const restoreMember = onCall(async request => {
+  try {
+    return await performRestoreMember(request)
+  } catch (err) {
+    throw toSafeHttpsError(err)
+  }
+})
+
+export const removeMember = onCall(async request => {
+  try {
+    return await performRemoveMember(request)
   } catch (err) {
     throw toSafeHttpsError(err)
   }
