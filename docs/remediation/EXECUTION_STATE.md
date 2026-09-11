@@ -499,8 +499,15 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   invitation callables, the acceptance UI lifecycle and one real verification
   email remain emulator-verified only and are the named follow-up gate before
   real users are invited through the deployed backend.
-- No code change accompanies the closure; the tree is clean at `f9f82cf`,
-  equal to the PR 27 head, with `ci` and `functions` SUCCESS on that HEAD.
+- No code change accompanies the closure. `f9f82cf` is the last commit that
+  touched code and had `ci`/`functions` SUCCESS; later commits change only
+  `docs/remediation/`. Before merge, the PR 27 head must equal the local HEAD
+  and have its own exact-head `ci`/`functions` SUCCESS.
+- Containment of the residual synthetic state does not rest on the frontend
+  avoiding these callables: it does call them. It rests on the published Pages
+  bundle being built from repository-secret Firebase config separate from the
+  `finapp-staging` target, on the synthetic owner's credentials never leaving
+  private runtime material, and on membership-gated Rules.
 - Next: independent final audit by Astra as auditor only, owner PASS, then the
   SEC-006 checkbox, PR 27 Ready and expected-HEAD merge. Merge triggers Pages
   and therefore still needs a separate owner go-ahead as an external action.
