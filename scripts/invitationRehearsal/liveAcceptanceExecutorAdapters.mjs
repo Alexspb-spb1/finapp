@@ -1581,3 +1581,34 @@ export function createStaticLiveAdapterBindings({ executorOptions, browserBinder
 export const LIVE_PROVIDER_CONSTANTS = Object.freeze({
   urls: URLS, authFields: AUTH_FIELDS, invitationIndex: INDEX, fieldOverridesSha256: FIELD_HASH,
 })
+
+// gate-G-A (FINAPP-1.0-SEC-006-GATE-G-A-PACKAGE-R7): a minimal, generic REST
+// surface bound to the SAME already-guarded session/Client this file uses
+// everywhere else (createGuardedFirebaseToolsSessionLoader, internalSession)
+// — reused by gateGaStagingAdapters.mjs for real read/delete operations the
+// historical adapters above never needed (they only ever read and planned,
+// never deleted). Every call still goes through the same https-only,
+// exact-origin `clientFor`/`options` path as the rest of this file; the only
+// new capability exposed is `del`, plus generic get/post for the small set
+// of Firestore/Auth endpoints gate-G-A's cleanup and legacy-residual code
+// needs that the historical preflight adapters above did not already cover.
+const ALLOWED_REST_ORIGINS = Object.freeze([
+  'https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
+])
+async function exactDelete(Client, rawUrl) {
+  const { url, client } = clientFor(Client, rawUrl)
+  if (typeof client.delete !== 'function') blocked()
+  const response = await client.delete(url.pathname, options())
+  if (!record(response)) blocked()
+  return response.body
+}
+export function createGateGaStagingRestClient({ session }) {
+  const { Client } = internalSession(session)
+  const guardOrigin = rawUrl => { if (!ALLOWED_REST_ORIGINS.includes(new URL(rawUrl).origin)) blocked(); return rawUrl }
+  return Object.freeze({
+    documentsRoot: DOCUMENTS_URL,
+    async get(rawUrl, queryParams) { return exactGet(Client, guardOrigin(rawUrl), queryParams) },
+    async post(rawUrl, body) { return exactPost(Client, guardOrigin(rawUrl), body) },
+    async del(rawUrl) { return exactDelete(Client, guardOrigin(rawUrl)) },
+  })
+}
