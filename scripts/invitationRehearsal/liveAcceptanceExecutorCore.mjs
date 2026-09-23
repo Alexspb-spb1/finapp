@@ -8,7 +8,7 @@ import {
   buildFixturePlan, validateFixturePlan,
 } from './liveAcceptanceCore.mjs'
 
-export const ACTIVE_RULES_SHA256 = '15bbc0050dd1ed2259c921818794b4f234c4457ad3e66ee2d0fa1da6d148f89d'
+export const ACTIVE_RULES_SHA256 = 'f117e489f9549da9083c19bdf4104b3651aa500061aa52426f09cb6fe492adda'
 export const FIELD_OVERRIDES_SHA256 = 'af2e9e80c150cc9a6b2f4c5f5bae330dacb214d7a104188fa5ef4fcfad3c6aee'
 export const LIVE_FUNCTIONS = Object.freeze([
   'acceptInvite', 'cancelInvite', 'createCompany', 'getCompanyAccess',
