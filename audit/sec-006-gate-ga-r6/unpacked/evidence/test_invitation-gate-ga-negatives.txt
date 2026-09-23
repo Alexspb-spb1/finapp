@@ -1,0 +1,16 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-negatives
+> node scripts/invitationRehearsal/gateGaAdditionalNegativeSelfTest.mjs
+
+✔ negative (tampered manifest): an added, removed, or runId-altered target list is rejected by the existing reviewed validator (6.0108ms)
+✔ negative (corrupted journal): an out-of-order sequence number or an unknown status is rejected by the existing journal state machine (1.6945ms)
+✔ negative (corrupted journal file on disk): truncated / non-newline-terminated / embedded-NUL journal bytes are treated as unresumable evidence, not replay instructions (3.586ms)
+✔ reused run-id end-to-end: the exact 2026-09-11 run-id is refused by the guard used at claim time, independent of any cleanup logic (0.7861ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 18.5028

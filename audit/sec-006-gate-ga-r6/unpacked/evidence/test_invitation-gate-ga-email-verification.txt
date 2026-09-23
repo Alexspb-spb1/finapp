@@ -1,0 +1,27 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-email-verification
+> node scripts/invitationRehearsal/gateGaEmailVerificationSelfTest.mjs
+
+✔ claimOrResumeEmailIntent: fresh claim on first call, resume (not fresh) on every call after (102.558ms)
+✔ no-duplicate-send: markEmailSent is the ONLY transition out of MAY_BE_SENT, and a second run never gets fresh:true again (7.7348ms)
+✔ indeterminate send state: a checkpoint stuck at MAY_BE_SENT (process died mid-send) is never resent and markEmailSent from it is the only legal next transition (5.0626ms)
+✔ markEmailSent/markEmailVerified refuse from the wrong prior state (CAS-style) (10.7524ms)
+✔ checkpoint never carries the plaintext recipient — only its hash (3.7742ms)
+✔ pollForVerification: false -> false -> verified continues automatically (loop actually loops) (0.3612ms)
+✔ pollForVerification: verification timeout (0.2199ms)
+✔ pollForVerification: verified for a different uid/email is refused, not accepted (0.205ms)
+✔ pollForVerification: an Auth polling error propagates (fail-closed, not silently retried) (0.4552ms)
+✔ markEmailVerified is idempotent on an already-VERIFIED checkpoint (crash between verify-write and acceptInvite must resume, not throw) (9.329ms)
+✔ generateRecipientPassword is CSPRNG: distinct, long, unguessable from the recipient identity (0.2968ms)
+✔ the recipient password is generated once at claim and is stable across every subsequent read (never regenerated on resume) (6.9788ms)
+✔ a checkpoint missing recipientPassword (a pre-R6 shape) is treated as corrupt, never silently accepted (2.1466ms)
+✔ secret-scan: gateGaOrchestratorCore.mjs never passes recipientPassword (or the checkpoint object itself) to journal.append (0.5945ms)
+✔ resume after interrupt: a fresh process reading the SAME checkpoint resumes polling with the persisted recipientUid, no new claim/send (6.8819ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 165.1843
