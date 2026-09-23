@@ -1,0 +1,16 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-orchestrator-mutations
+> node scripts/invitationRehearsal/gateGaOrchestratorMutationChecks.mjs
+
+DETECTED M1 orchestrator stops calling claimRunId before external creation {"exitCode":1,"fail":1}
+DETECTED M2 recipient guard (adapter consultation) disabled {"exitCode":1,"fail":1}
+DETECTED M3 cleanup of the current run is skipped entirely (result faked instead of executed) {"exitCode":1,"fail":5}
+DETECTED M4 verify-clean outcome is ignored for the final PASS decision {"exitCode":1,"fail":1}
+DETECTED M5 cleanup no longer runs after a safely-classified STOP, only after PASS {"exitCode":1,"fail":3}
+DETECTED M6 final PASS no longer requires current-run cleanup/verify-clean or a bounded email count {"exitCode":1,"fail":1}
+DETECTED M7 legacy cleanup no longer requires the strict eligibility match (would act on a non-matching residual) {"exitCode":1,"fail":1}
+DETECTED M8 more than one email dispatch is no longer rejected (both the in-flow and final guards removed) {"exitCode":1,"fail":2}
+DETECTED M9 owner-in-the-loop Auth verification poll is bypassed (always treated as already verified) {"exitCode":1,"fail":3}
+DETECTED M10 durable email checkpoint (indeterminate-refusal + resume, no re-send) is bypassed {"exitCode":1,"fail":6}
+
+SUMMARY total=10 detected=10 undetected=0

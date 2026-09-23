@@ -1,0 +1,18 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-mutations
+> node scripts/invitationRehearsal/gateGaMutationChecks.mjs
+
+DETECTED M1 run-id guard forgets to actually forbid PRIOR_RUN_IDS {"exitCode":1,"pass":8,"fail":2}
+DETECTED M2 run-id guard stops checking for an existing manifest/evidence namespace collision {"exitCode":1,"pass":8,"fail":2}
+DETECTED M3 claimRunId stops re-checking assertRunIdAllowed before writing the durable claim {"exitCode":1,"pass":8,"fail":2}
+DETECTED M4 cleanup eligibility stops blocking on UNCERTAIN write-slots {"exitCode":1,"pass":17,"fail":2}
+DETECTED M5 cleanup ledger validator stops rejecting a CAS/destructive path overlap {"exitCode":1,"pass":18,"fail":1}
+DETECTED M6 cleanup ledger validator stops rejecting a foreign (out-of-namespace) document {"exitCode":1,"pass":18,"fail":1}
+DETECTED M7 cleanup stops refusing on an unexpected company subcollection {"exitCode":1,"pass":17,"fail":2}
+DETECTED M8 verify-clean stops detecting a real leftover document/Auth account {"exitCode":1,"pass":17,"fail":2}
+DETECTED M9 cleanup keeps deleting after a delete already failed instead of stopping immediately {"exitCode":1,"pass":18,"fail":1}
+DETECTED M10 legacy-residual evaluator stops noticing an unexpectedly present owner-B Auth account {"exitCode":1,"pass":11,"fail":1}
+DETECTED M11 legacy-residual evaluator stops rejecting unexpected subcollections {"exitCode":1,"pass":11,"fail":1}
+DETECTED M12 recipient guard stops requiring the recipient to be absent from staging Auth before sending {"exitCode":1,"pass":5,"fail":1}
+
+SUMMARY total=12 detected=12 undetected=0

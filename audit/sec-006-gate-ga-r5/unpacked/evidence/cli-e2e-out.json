@@ -1,0 +1,378 @@
+{
+  "status": "PASS",
+  "runId": "gate-1402bd816eb0b7235e4f4b34819813",
+  "flowOutcome": {
+    "status": "PASS",
+    "companyId": "0s5NHJ8s4u1XQB6WCW2D",
+    "role": "accountant"
+  },
+  "cleanup": {
+    "status": "CLEANUP_COMPLETE_VERIFIED",
+    "deleted": {
+      "authUids": [
+        "gaR4mudsaggo6c4ea668d6a5-admin",
+        "ZliZPPm42PESSMPbAr5MpD2Hhqa7"
+      ],
+      "firestorePaths": [
+        "companies/0s5NHJ8s4u1XQB6WCW2D",
+        "company_data/0s5NHJ8s4u1XQB6WCW2D",
+        "companies/0s5NHJ8s4u1XQB6WCW2D/members/gaR4mudsaggo6c4ea668d6a5-admin",
+        "users/gaR4mudsaggo6c4ea668d6a5-admin",
+        "user_bootstrap/gaR4mudsaggo6c4ea668d6a5-admin",
+        "invitations/RvXSc0AM6D6wMZ8zzxHd",
+        "users/ZliZPPm42PESSMPbAr5MpD2Hhqa7",
+        "companies/0s5NHJ8s4u1XQB6WCW2D/audit_events/3vP4cxT8a6iRFpPM6HPc",
+        "companies/0s5NHJ8s4u1XQB6WCW2D/audit_events/Jzhd83n1Xm4bhRW4SCsh",
+        "companies/0s5NHJ8s4u1XQB6WCW2D/audit_events/S8Iws6HKNf7TkG6R0Ff9"
+      ]
+    }
+  },
+  "legacyResidual": {
+    "eligible": false,
+    "reasons": [
+      "COMPANY_FIELDS_MISMATCH"
+    ]
+  },
+  "legacyCleanup": {
+    "status": "NOT_APPLICABLE"
+  },
+  "emailsSent": 1,
+  "journal": [
+    {
+      "seq": 0,
+      "status": "PRECONDITIONS_STARTED",
+      "at": "2026-09-23T07:30:58.069Z",
+      "details": {
+        "profile": "emulator",
+        "project": "demo-finapp"
+      }
+    },
+    {
+      "seq": 1,
+      "status": "SEAM_INTEGRITY_CHECKED",
+      "at": "2026-09-23T07:30:58.071Z",
+      "details": {
+        "ok": true,
+        "mismatchCount": 0
+      }
+    },
+    {
+      "seq": 2,
+      "status": "RUN_ID_CLAIMED",
+      "at": "2026-09-23T07:30:58.074Z",
+      "details": {
+        "runIdSha256": "6c2034e0a35d4f90238691db4656b5404f347f08b0e020a4b5e4a62ce1774f06"
+      }
+    },
+    {
+      "seq": 3,
+      "status": "RECIPIENT_CONFIRMED",
+      "at": "2026-09-23T07:30:58.084Z",
+      "details": {
+        "recipientSha256": "d3457c45357be88c2c0a35900ac173ce05264090a1f84970cf3c7b8acc170cbb"
+      }
+    },
+    {
+      "seq": 4,
+      "status": "LEGACY_RESIDUAL_EVALUATED",
+      "at": "2026-09-23T07:30:58.262Z",
+      "details": {
+        "namespace": "stage8-legacy-residual",
+        "runId": "stage8-mtww3p0r-1ae5cb84b43c285e",
+        "eligible": false,
+        "reasons": [
+          "COMPANY_FIELDS_MISMATCH"
+        ],
+        "targetCountSha256": null
+      }
+    },
+    {
+      "seq": 5,
+      "status": "READINESS_CHECKED",
+      "at": "2026-09-23T07:30:58.301Z",
+      "details": {
+        "allReady": true,
+        "readiness": [
+          {
+            "fn": "createCompany",
+            "ready": true,
+            "httpStatus": 401,
+            "verdict": "ready"
+          },
+          {
+            "fn": "inviteMember",
+            "ready": true,
+            "httpStatus": 401,
+            "verdict": "ready"
+          },
+          {
+            "fn": "acceptInvite",
+            "ready": true,
+            "httpStatus": 401,
+            "verdict": "ready"
+          },
+          {
+            "fn": "getCompanyAccess",
+            "ready": true,
+            "httpStatus": 401,
+            "verdict": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 6,
+      "status": "ADMIN_AND_COMPANY_CREATED",
+      "at": "2026-09-23T07:30:58.378Z",
+      "details": {
+        "companyIdSha256": "dd2732961cff722a30f47feb5441ebb76fc6a53423248443f22e08627324e6f3"
+      }
+    },
+    {
+      "seq": 7,
+      "status": "INVITATION_CREATED",
+      "at": "2026-09-23T07:30:58.468Z",
+      "details": {
+        "inviteIdSha256": "764ff7b6fd962764c25b7d4114321d4ba387133d21f1450fef98691c1195a5d9"
+      }
+    },
+    {
+      "seq": 8,
+      "status": "RECIPIENT_REGISTERED",
+      "at": "2026-09-23T07:30:58.473Z",
+      "details": {}
+    },
+    {
+      "seq": 9,
+      "status": "EMAIL_MAY_BE_SENT",
+      "at": "2026-09-23T07:30:58.473Z",
+      "details": {}
+    },
+    {
+      "seq": 10,
+      "status": "EMAIL_SENT",
+      "at": "2026-09-23T07:30:58.478Z",
+      "details": {
+        "dispatched": true
+      }
+    },
+    {
+      "seq": 11,
+      "status": "VERIFICATION_POLL_STARTED",
+      "at": "2026-09-23T07:30:58.481Z",
+      "details": {}
+    },
+    {
+      "seq": 12,
+      "status": "VERIFICATION_POLL_FINISHED",
+      "at": "2026-09-23T07:31:03.498Z",
+      "details": {
+        "verified": true,
+        "reason": null,
+        "attempts": 2
+      }
+    },
+    {
+      "seq": 13,
+      "status": "VERIFICATION_COMPLETE",
+      "at": "2026-09-23T07:31:03.502Z",
+      "details": {}
+    },
+    {
+      "seq": 14,
+      "status": "ACCEPTED",
+      "at": "2026-09-23T07:31:03.640Z",
+      "details": {
+        "companyIdSha256": "dd2732961cff722a30f47feb5441ebb76fc6a53423248443f22e08627324e6f3",
+        "role": "accountant"
+      }
+    },
+    {
+      "seq": 15,
+      "status": "REPLAY_IDEMPOTENT_CONFIRMED",
+      "at": "2026-09-23T07:31:03.733Z",
+      "details": {
+        "auditCountAfterAccept": 3,
+        "auditCountAfterReplay": 3
+      }
+    },
+    {
+      "seq": 16,
+      "status": "CLEANUP_ELIGIBILITY_EVALUATED",
+      "at": "2026-09-23T07:31:03.750Z",
+      "details": {
+        "eligible": true,
+        "reason": null
+      }
+    },
+    {
+      "seq": 17,
+      "status": "SUBCOLLECTION_CHECK",
+      "at": "2026-09-23T07:31:03.753Z",
+      "details": {
+        "clean": true
+      }
+    },
+    {
+      "seq": 18,
+      "status": "CAS_PRECONDITION_CHECK",
+      "at": "2026-09-23T07:31:03.753Z",
+      "details": {
+        "ok": true
+      }
+    },
+    {
+      "seq": 19,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.760Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "ed0148722a1e4607268980c938b6a652cc7fdebf4e832fa71aac4d9b40635b67",
+        "ok": true
+      }
+    },
+    {
+      "seq": 20,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.765Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "fe354095c86b3d7446b32ea5c8c018b93bb62c110f6d83c0c8e8ad7c752aab89",
+        "ok": true
+      }
+    },
+    {
+      "seq": 21,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.769Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "6cab24774a4f52f39986faa97e9c9aca15c2496483c0d78252b806110ba6bb32",
+        "ok": true
+      }
+    },
+    {
+      "seq": 22,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.773Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "356f8293ce53111264f3c6de817fa1506a675a5a65572b71c59ea17e8506d548",
+        "ok": true
+      }
+    },
+    {
+      "seq": 23,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.777Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "cec52083ff52e1fc80b57d843ad8369bdef2591a7fe43abd27f423250a7083dc",
+        "ok": true
+      }
+    },
+    {
+      "seq": 24,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.779Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "19278bbc0dd8ad5acc28246a58b51a88ab02c18989cd83ecb74bd022146832fd",
+        "ok": true
+      }
+    },
+    {
+      "seq": 25,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.781Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "7dcac974df34a1af62350339961b2a688af4454e7ed06fa79764fe6e963be991",
+        "ok": true
+      }
+    },
+    {
+      "seq": 26,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.783Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "1d329623278c79ba36c6bb3bcfdd35192365b2fbde9e5dcdadb4a4fa15c86c1a",
+        "ok": true
+      }
+    },
+    {
+      "seq": 27,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.786Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "e84d2b8228660562fa624ab7f4747766f99231d011e7ff6db41a27327af2aba0",
+        "ok": true
+      }
+    },
+    {
+      "seq": 28,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.789Z",
+      "details": {
+        "kind": "firestore",
+        "pathSha256": "22b20ae3a29d4a26da6da4cf62138964a81bfdfcfb191796ed8ab366288b84d7",
+        "ok": true
+      }
+    },
+    {
+      "seq": 29,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.791Z",
+      "details": {
+        "kind": "auth",
+        "ok": true
+      }
+    },
+    {
+      "seq": 30,
+      "status": "DELETE_ATTEMPTED",
+      "at": "2026-09-23T07:31:03.792Z",
+      "details": {
+        "kind": "auth",
+        "ok": true
+      }
+    },
+    {
+      "seq": 31,
+      "status": "VERIFY_CLEAN",
+      "at": "2026-09-23T07:31:03.940Z",
+      "details": {
+        "clean": true
+      }
+    },
+    {
+      "seq": 32,
+      "status": "CLEANUP_COMPLETE_VERIFIED",
+      "at": "2026-09-23T07:31:03.940Z",
+      "details": {}
+    },
+    {
+      "seq": 33,
+      "status": "LEGACY_CLEANUP_SKIPPED",
+      "at": "2026-09-23T07:31:03.940Z",
+      "details": {
+        "eligible": false,
+        "confirmed": false
+      }
+    },
+    {
+      "seq": 34,
+      "status": "FINAL_DECISION",
+      "at": "2026-09-23T07:31:03.940Z",
+      "details": {
+        "finalStatus": "PASS",
+        "flowStatus": "PASS",
+        "cleanupStatus": "CLEANUP_COMPLETE_VERIFIED",
+        "legacyCleanupStatus": "NOT_APPLICABLE",
+        "emailsSent": 1
+      }
+    }
+  ]
+}

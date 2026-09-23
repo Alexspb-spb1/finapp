@@ -1,0 +1,28 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-orchestrator
+> node scripts/invitationRehearsal/gateGaOrchestratorSelfTest.mjs
+
+✔ positive: full sequence reaches PASS with real-shaped fake adapters (baseline for mutation copies) (126.6471ms)
+✔ run-id is claimed exactly once before any external creation call (11.1675ms)
+✔ recipient guard is actually consulted (not bypassable by an absent adapter call) (11.2048ms)
+✔ cleanup runs and reaches CLEANUP_COMPLETE_VERIFIED with zero remainder on a real PASS (10.9842ms)
+✔ cleanup also runs after a safely-classified STOP, not only after PASS (3.6067ms)
+✔ final status cannot be PASS while any residual document remains (10.1011ms)
+✔ exactly one email dispatch is required for PASS (6.0578ms)
+✔ a second real email dispatch (fault-injected) is rejected, not just an absent one (5.4177ms)
+✔ legacy cleanup never runs on a non-matching residual, even when confirmation is supplied (11.6157ms)
+✔ verification polling continues across repeated false checks before succeeding (the poll loop actually loops end-to-end) (13.2195ms)
+✔ verification timeout results in SAFE_STOP, with cleanup of everything this run created (12.5958ms)
+✔ a second real email dispatch (fault-injected) never reaches PASS even though flowOutcome alone might look fine (6.2877ms)
+✔ indeterminate prior send (process died mid-dispatch) refuses to resend, never registers again, and still cleans up this run (6.1045ms)
+✔ resuming from a durable SENT checkpoint continues polling with the persisted recipientUid and reaches PASS without registering or sending again (10.7531ms)
+✔ verification reported for a different uid/email is refused, never accepted as PASS (7.5385ms)
+✔ a second full run for the same recipient after a prior PASS never registers or sends again, and still reaches PASS (13.65ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 16
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 273.01
