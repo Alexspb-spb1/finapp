@@ -1,0 +1,23 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-orchestrator-mutations
+> node scripts/invitationRehearsal/gateGaOrchestratorMutationChecks.mjs
+
+DETECTED M1 orchestrator stops calling claimRunId before external creation {"exitCode":1,"fail":3}
+DETECTED M2 recipient guard (adapter consultation) disabled {"exitCode":1,"fail":2}
+DETECTED M14 a fresh (non-resume) run no longer requires the recipient to be absent from Auth {"exitCode":1,"fail":1}
+DETECTED M3 cleanup of the current run is skipped entirely (result faked instead of executed) {"exitCode":1,"fail":8}
+DETECTED M4 verify-clean outcome is ignored for the final PASS decision {"exitCode":1,"fail":1}
+DETECTED M5 cleanup no longer runs after a safely-classified STOP, only after PASS {"exitCode":1,"fail":6}
+DETECTED M6 final PASS no longer requires current-run cleanup/verify-clean or a bounded email count {"exitCode":1,"fail":2}
+DETECTED M7 legacy cleanup no longer requires explicit legacyCleanupApproved (would act on an eligible-but-unapproved residual) {"exitCode":1,"fail":1}
+DETECTED M8 more than one email dispatch is no longer rejected (both the in-flow and final guards removed) {"exitCode":1,"fail":2}
+DETECTED M9 owner-in-the-loop Auth verification poll is bypassed (always treated as already verified) {"exitCode":1,"fail":4}
+DETECTED M11 expectedEmail is no longer passed to the verification poll (email mismatch would go undetected) {"exitCode":1,"fail":1}
+DETECTED M12 a PENDING_APPROVAL legacy residual is silently counted as clean in the final PASS decision {"exitCode":1,"fail":1}
+DETECTED M13 resume from an indeterminate CLAIMED phase no longer refuses — it retries admin creation blindly {"exitCode":1,"fail":1}
+DETECTED M10 durable email checkpoint (indeterminate-refusal + resume, no re-send) is bypassed {"exitCode":1,"fail":13}
+DETECTED M15 the private-directory ACL lockdown is no longer consulted before any checkpoint/manifest write {"exitCode":1,"fail":1}
+DETECTED M16 recipientUid is no longer durably recorded before the send attempt (the R7 crash-between-register-and-send window regresses) {"exitCode":1,"fail":8}
+DETECTED M17 resume no longer verifies the manifest was claimed under the SAME sourceHead {"exitCode":1,"fail":1}
+
+SUMMARY total=17 detected=17 undetected=0

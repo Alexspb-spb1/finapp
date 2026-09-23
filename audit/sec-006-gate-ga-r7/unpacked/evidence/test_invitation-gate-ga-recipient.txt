@@ -1,0 +1,18 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-recipient
+> node scripts/invitationRehearsal/gateGaRecipientSelfTest.mjs
+
+✔ assertNotProduction passes for the fixed staging project constant (0.79ms)
+✔ resolveRecipientPreflight refuses a missing or empty recipient (mandatory parameter, no default) (0.4099ms)
+✔ resolveRecipientPreflight never returns the plaintext email, only a hash and existence flags (1.765ms)
+✔ resolveRecipientPreflight reports absent:false when the account already exists in staging Auth (0.4623ms)
+✔ assertOwnerConfirmedRecipient refuses without a matching owner-confirmed hash (0.2678ms)
+✔ assertOwnerConfirmedRecipient refuses even a correctly-confirmed hash if the recipient already exists (existing recipient guard) (0.1435ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10.6487

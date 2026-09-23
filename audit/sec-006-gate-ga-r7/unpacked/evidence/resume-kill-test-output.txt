@@ -1,0 +1,2 @@
+RESUME_KILL_RESULT {"status":"PASS","runId":"gate-72d26c2ee475efbe4158da070ff6f0","emailsSent":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","adminCount":1,"companyCount":1,"invitationCount":1,"independentRemainderCount":0,"journalHasRunResumed":true,"journalHasAdminResumed":true,"journalHasInvitationResumed":true,"journalHasEmailResumedFromCheckpoint":true}
+GATE_GA_RESUME_KILL PASS

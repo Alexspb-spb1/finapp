@@ -1,0 +1,15 @@
+PASS positive-e2e-full-flow {"__pass":true,"status":"PASS","emailsSent":1,"remainder":0}
+PASS reused-run-id {"__pass":true,"status":"SAFE_STOP","reason":"RUN_ID_REFUSED"}
+PASS existing-recipient {"__pass":true,"status":"SAFE_STOP","reason":"RECIPIENT_REFUSED"}
+PASS stop-before-first-creation {"__pass":true,"status":"SAFE_STOP","cleanupStatus":"CLEANUP_COMPLETE_VERIFIED"}
+PASS stop-after-partial-creation {"__pass":true,"status":"SAFE_STOP","cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","deleted":{"authUids":["gaE2Emuecu33fifryk9-admin"],"firestorePaths":["companies/Xi09DC07NjgJhH17su6z","company_data/Xi09DC07NjgJhH17su6z","companies/Xi09DC07NjgJhH17su6z/members/gaE2Emuecu33fifryk9-admin","users/gaE2Emuecu33fifryk9-admin","user_bootstrap/gaE2Emuecu33fifryk9-admin","invitations/S6kaN8Vcfc03ePA1jVIg"]}}
+PASS foreign-document-in-ledger {"__pass":true,"cleanupStatus":"CLEANUP_REFUSED","reason":"cleanup_executor_blocked"}
+PASS unexpected-subcollection {"__pass":true,"cleanupStatus":"CLEANUP_REFUSED","reason":"UNEXPECTED_SUBCOLLECTION"}
+PASS tampered-manifest-runid {"__pass":true,"cleanupStatus":"CLEANUP_REFUSED"}
+PASS single-delete-failure-then-partial {"__pass":true,"cleanupStatus":"CLEANUP_PARTIAL","deleted":{"authUids":[],"firestorePaths":["companies/nYermlMsoNrsJyaWc8xX"]}}
+PASS verify-clean-catches-silent-delete-failure {"__pass":true,"cleanupStatus":"CLEANUP_VERIFY_MISMATCH","remainderFromModule":[{"kind":"firestore","path":"companies/lXnmHFaEWw5zwOo46Hra"}],"independentRemainder":[{"scope":"current","kind":"firestore","path":"companies/lXnmHFaEWw5zwOo46Hra"}]}
+PASS legacy-residual-matches-and-is-cleaned {"__pass":true,"eligible":true,"legacyCleanupStatus":"CLEANUP_COMPLETE_VERIFIED"}
+PASS legacy-residual-does-not-match-manifest-no-action {"__pass":true,"eligible":false,"reasons":["COMPANY_FIELDS_MISMATCH"],"legacyCleanupStatus":"NOT_APPLICABLE"}
+PASS corrupted-journal-marker-detectable {"__pass":true,"journalLength":37}
+
+SUMMARY total=13 pass=13 fail=0

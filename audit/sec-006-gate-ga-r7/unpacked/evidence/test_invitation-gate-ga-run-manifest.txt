@@ -1,0 +1,22 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-run-manifest
+> node scripts/invitationRehearsal/gateGaRunManifestSelfTest.mjs
+
+✔ readRunManifest returns null when nothing has been claimed yet (2.396ms)
+✔ claimRunManifest writes a CLAIMED manifest before any external write, with an empty ledger (5.5242ms)
+✔ claimRunManifest refuses to overwrite an existing manifest (never silently claims twice) (3.2664ms)
+✔ updateRunManifest advances phase and persists admin/invite/ledger, CAS-guarded by fromPhase (8.6515ms)
+✔ updateRunManifest refuses when fromPhase does not match the manifest currently on disk (CAS) (3.5229ms)
+✔ updateRunManifest refuses when no manifest exists yet (0.8102ms)
+✔ readRunManifest treats a corrupted manifest as a hard failure, never as absent (1.923ms)
+✔ readRunManifest refuses an ADMIN_CREATED/INVITED manifest missing the fields that phase requires (2.1474ms)
+✔ updateRunManifest is atomic replace: no stray temp file survives a successful update, and a leftover temp file from a simulated crash never corrupts a read (7.0933ms)
+✔ the manifest file never contains a plaintext recipient email — only its hash (3.4113ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 46.1659

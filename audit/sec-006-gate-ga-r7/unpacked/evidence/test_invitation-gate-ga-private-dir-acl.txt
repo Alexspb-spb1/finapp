@@ -1,0 +1,23 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-private-dir-acl
+> node scripts/invitationRehearsal/gateGaPrivateDirAclSelfTest.mjs
+
+﹣ non-Windows platform: both functions refuse (this mechanism is Windows-only by design) (1.2997ms) # SKIP
+✔ ensurePrivateDirectoryAcl creates the directory locked down to exactly current user + SYSTEM + Administrators, and verify agrees (2320.3886ms)
+✔ verifyPrivateDirectoryAcl is idempotent and safe to call repeatedly (3031.8118ms)
+✔ verifyPrivateDirectoryAcl refuses a directory with an extra grantee (e.g. Everyone) (2359.5593ms)
+✔ verifyPrivateDirectoryAcl refuses a directory with inheritance re-enabled (2395.5945ms)
+✔ verifyPrivateDirectoryAcl refuses a missing directory rather than silently treating it as fine (0.4045ms)
+✔ ensurePrivateDirectoryAcl is idempotent: calling it twice on an already-correct directory leaves it correct (3057.3256ms)
+✔ a relative or non-absolute dir is refused, never silently resolved (0.2214ms)
+✔ verifyPrivateFileAcl: a file created inside a locked-down directory inherits exactly the allowed principals and passes (2324.4372ms)
+✔ verifyPrivateFileAcl refuses a file with an extra grantee, even if the parent directory is correctly locked down (2359.018ms)
+✔ verifyPrivateFileAcl refuses a missing file (0.4504ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 17857.3203

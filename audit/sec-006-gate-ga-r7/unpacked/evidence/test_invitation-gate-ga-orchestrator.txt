@@ -1,0 +1,43 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-orchestrator
+> node scripts/invitationRehearsal/gateGaOrchestratorSelfTest.mjs
+
+✔ positive: full sequence reaches PASS with real-shaped fake adapters (baseline for mutation copies) (30.5158ms)
+✔ run-id is claimed exactly once before any external creation call (24.5977ms)
+✔ recipient guard is actually consulted (not bypassable by an absent adapter call) (21.2902ms)
+✔ cleanup runs and reaches CLEANUP_COMPLETE_VERIFIED with zero remainder on a real PASS (21.5968ms)
+✔ cleanup also runs after a safely-classified STOP, not only after PASS (11.0475ms)
+✔ final status cannot be PASS while any residual document remains (20.9894ms)
+✔ exactly one email dispatch is required for PASS (15.9307ms)
+✔ a second real email dispatch (fault-injected) is rejected, not just an absent one (15.8882ms)
+✔ legacy cleanup never runs on a non-matching residual, even when legacyCleanupApproved is supplied (21.3082ms)
+✔ an eligible legacy residual without legacyCleanupApproved is PENDING_APPROVAL, and blocks a full PASS even though the current run itself succeeded (21.0427ms)
+✔ an eligible legacy residual WITH legacyCleanupApproved is actually cleaned, and the current run still reaches PASS (21.9549ms)
+✔ verification polling continues across repeated false checks before succeeding (the poll loop actually loops end-to-end) (23.7363ms)
+✔ verification timeout results in SAFE_STOP, with cleanup of everything this run created (29.4521ms)
+✔ a second real email dispatch (fault-injected) never reaches PASS even though flowOutcome alone might look fine (15.1148ms)
+✔ indeterminate prior send (process died mid-dispatch) refuses to resend, never registers again, and still cleans up this run (12.8082ms)
+✔ resuming from a durable SENT checkpoint continues polling with the persisted recipientUid and reaches PASS without registering or sending again (21.213ms)
+✔ verification reported for a different uid/email is refused, never accepted as PASS (17.6991ms)
+✔ verification reported for the RIGHT uid but a DIFFERENT email is refused (expectedEmail is actually enforced, not just uid) (17.4657ms)
+✔ a second FRESH (non-resume) invocation reusing the same claimedDir is refused as a collision, not silently accepted (22.9427ms)
+✔ resume:true across two full orchestrator invocations for the same recipient never registers or sends again, and still reaches PASS (23.1795ms)
+✔ a FRESH run refuses when the recipient Auth account already exists (module E's absent requirement, unaffected by resume support) (4.9983ms)
+✔ resume:true allows the recipient Auth account to already exist (it is THIS run's own earlier registration), but still requires the confirmed hash to match (25.6287ms)
+✔ resume:true with no run manifest present is refused with zero adapter calls of any kind (0.9253ms)
+✔ resume:true with a corrupted run manifest is refused with zero adapter calls of any kind (2.1984ms)
+✔ resume:true with a manifest for a different recipient/project/profile is refused as a mismatch, zero adapter calls (3.4089ms)
+✔ resume:true with a manifest for a different sourceHead is refused as a mismatch, zero adapter calls (5.6865ms)
+✔ a failed private-directory ACL check (via the injectable ensureAcl) SAFE_STOPs before any adapter call of any kind — before any Auth user or email (0.8778ms)
+✔ an indeterminate resume with a durably-known recipientUid adds that uid to the cleanup ledger (nothing created is ever left outside the ledger) (17.2361ms)
+✔ resume:true with the run-id claim marker missing (manifest present but claim gone) is refused, zero adapter calls (3.4545ms)
+✔ resume from phase CLAIMED (admin/company creation never confirmed complete) refuses to guess, SAFE_STOPs with an empty-ledger no-op cleanup (6.0979ms)
+✔ resume from phase ADMIN_CREATED (invite never confirmed complete) refuses to guess, but still cleans up the admin/company that WAS confirmed (9.5836ms)
+ℹ tests 31
+ℹ suites 0
+ℹ pass 31
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 497.0371

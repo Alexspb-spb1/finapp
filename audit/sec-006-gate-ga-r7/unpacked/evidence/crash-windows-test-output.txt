@@ -1,0 +1,7 @@
+PASS ADMIN_CREATED {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-236bb9ffd9a7b4787dda6c67cc3186"}
+PASS RECIPIENT_REGISTERED {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-950d3424f210732c6b7d3495fdc2d3"}
+PASS EMAIL_SENT_PENDING_CHECKPOINT {"status":"SAFE_STOP","journalEmailSendCount":1,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-0c7c994a8b4aba654b8123d61000d4"}
+PASS EMAIL_SENT_CHECKPOINTED {"status":"PASS","journalEmailSendCount":1,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-105871d0f3fb5b30004fb9a75f89e9"}
+
+SUMMARY total=4 pass=4 fail=0
+GATE_GA_CRASH_WINDOWS PASS

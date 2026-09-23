@@ -1,0 +1,21 @@
+
+> finapp@0.0.0 test:invitation-gate-ga-staging-cli
+> node scripts/invitationRehearsal/gateGaStagingCliSelfTest.mjs
+
+✔ the real staging entrypoint calls the new orchestrated runtime and never the historical plan-only runtime directly (1.2934ms)
+✔ the staging adapter source no longer contains the completeVerification throw-stub (0.2725ms)
+✔ recipientPreflight uses the admin OAuth accounts:lookup endpoint, never the client API-key one (0.3237ms)
+✔ parseCodeSha256Sums parses standard sha256sum-format lines and rejects malformed ones (0.4442ms)
+✔ verifyPackageIntegrity passes on an untampered package and fails on a modified or missing file (9.8696ms)
+✔ createGateGaOrchestratedRuntime.run: package-integrity check runs before any adapter is built (no network before the seam check) (3.2612ms)
+✔ createGateGaOrchestratedRuntime.run: staging profile dispatches to buildStagingAdapters only, never buildEmulatorFirebaseHandles (6215.9244ms)
+✔ createGateGaOrchestratedRuntime.run: emulator profile dispatches to buildEmulatorFirebaseHandles only, never buildStagingAdapters (3150.473ms)
+✔ createGateGaOrchestratedRuntime.run: unknown profile is refused before any adapter is built (4.1147ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9392.7015

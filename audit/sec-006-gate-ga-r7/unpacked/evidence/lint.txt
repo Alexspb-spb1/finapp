@@ -1,0 +1,10 @@
+
+> finapp@0.0.0 lint
+> eslint .
+
+
+D:\projects\finapp\gate-ga-r7-execution-clone-final\src\pages\Balance.tsx
+  119:6  warning  React Hook useMemo has a missing dependency: 'isFinancialKind'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+✖ 1 problem (0 errors, 1 warning)
+
