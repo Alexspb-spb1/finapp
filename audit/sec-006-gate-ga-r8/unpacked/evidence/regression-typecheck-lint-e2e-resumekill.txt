@@ -1,0 +1,22 @@
+=== typecheck ===
+
+> finapp@0.0.0 typecheck
+> tsc -b --pretty false
+
+=== lint ===
+
+> finapp@0.0.0 lint
+> eslint .
+
+
+D:\projects\finapp\gate-ga-r8-execution-clone\src\pages\Balance.tsx
+  119:6  warning  React Hook useMemo has a missing dependency: 'isFinancialKind'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+✖ 1 problem (0 errors, 1 warning)
+
+=== E2E ===
+E2E_RESULT {"runTag":"gaE2Emufmw4ikrjhrm4","status":"PASS","flowStatus":"PASS","cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","legacyCleanupStatus":"NOT_APPLICABLE","emailsSent":1,"independentRemainderCount":0}
+GATE_GA_E2E PASS
+=== resume-kill ===
+RESUME_KILL_RESULT {"status":"PASS","runId":"gate-de6ef2c40c31ef3c79b0ad7f27f72f","emailsSent":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","adminCount":1,"companyCount":1,"invitationCount":1,"independentRemainderCount":0,"journalHasRunResumed":true,"journalHasAdminResumed":true,"journalHasInvitationResumed":true,"journalHasEmailResumedFromCheckpoint":true}
+GATE_GA_RESUME_KILL PASS
