@@ -1,0 +1,21 @@
+> finapp@0.0.0 typecheck
+> tsc -b --pretty false
+
+D:\projects\finapp\gate-ga-r9-execution-clone\src\pages\Balance.tsx
+  119:6  warning  React Hook useMemo has a missing dependency: 'isFinancialKind'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+✖ 1 problem (0 errors, 1 warning)
+
+PASS ADMIN_CREATED {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-9b6c6eb039502e40fea9fdacd8d142"}
+PASS RECIPIENT_REGISTERED {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-5cc564339701f165403d1717d4d4b9"}
+FAIL EMAIL_SENT_PENDING_CHECKPOINT [EMAIL_SENT_PENDING_CHECKPOINT] checkpoint signal never arrived (childExited=false). Child log:
+
+PASS EMAIL_SENT_CHECKPOINTED {"status":"PASS","journalEmailSendCount":1,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-42be917674ce92b6f7707df4074419"}
+PASS ADMIN_AUTH_CREATED_PRE_COMPANY {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-a02ec8c2b17c16bd5d2d1d834bda55"}
+PASS ADMIN_AND_COMPANY_CREATED_PRE_MANIFEST {"status":"PASS","journalEmailSendCount":1,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-8f53149ffcab9f741a974f01ece0b5"}
+PASS INVITE_CREATED_PRE_MANIFEST {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-bdd3f89f04aeb5f73dbbfe46992281"}
+PASS RECIPIENT_REGISTERED_PRE_UID_CHECKPOINT {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-0ef79ae328ee7483bc57d6e5ad25d2"}
+
+SUMMARY total=8 pass=7 fail=1
+
+[exited with code 0]

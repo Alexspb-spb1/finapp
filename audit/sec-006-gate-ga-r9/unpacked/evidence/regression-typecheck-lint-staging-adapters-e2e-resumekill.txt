@@ -1,0 +1,47 @@
+=== typecheck ===
+
+> finapp@0.0.0 typecheck
+> tsc -b --pretty false
+
+=== lint ===
+
+> finapp@0.0.0 lint
+> eslint .
+
+
+D:\projects\finapp\gate-ga-r9-execution-clone\src\pages\Balance.tsx
+  119:6  warning  React Hook useMemo has a missing dependency: 'isFinancialKind'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+✖ 1 problem (0 errors, 1 warning)
+
+=== staging adapters core self-test ===
+
+> finapp@0.0.0 test:invitation-gate-ga-staging-adapters
+> node --test scripts/invitationRehearsal/gateGaStagingAdaptersCoreSelfTest.mjs
+
+✔ createAdminAndCompany derives a deterministic email from runId (never runTag) and fires the pre-company checkpoint (2.7678ms)
+✔ createAdminAndCompany refuses without runId (identity cannot be derived) (0.5452ms)
+✔ reconcileAdminAndCompany reports not-found when nothing was ever created for this runId (0.3253ms)
+✔ reconcileAdminAndCompany reports orphaned when admin Auth exists but createCompany never committed (0.4791ms)
+✔ reconcileAdminAndCompany from a genuinely SEPARATE adapter instance (simulating process 2) finds what process 1 created, and signs in without ever knowing the original password (0.5514ms)
+✔ inviteRecipient returns a real, non-null lockPath matching computeInvitationLockId (0.3275ms)
+✔ reconcileInvitation reports not-found when nothing was ever created (0.2776ms)
+✔ reconcileInvitation finds a real invitation via the deterministic lock, from a separate adapter instance (0.3325ms)
+✔ findAuthUidByEmail resolves a real, previously-registered recipient uid, and null for an unknown one (0.3121ms)
+✔ normal (non-reconciled) cleanup deletes both the invitation and its lock document (0.6674ms)
+✔ constructor refuses a rest/identity/callable client missing the expected shape (fail-closed, not a silent no-op adapter) (0.3015ms)
+✔ source-level: the staging adapter exports the R9 recovery surface and no longer derives admin identity from runTag (1.3035ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 188.8722
+=== E2E ===
+E2E_RESULT {"runTag":"gaE2Emufq990syt8wc3","status":"PASS","flowStatus":"PASS","cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","legacyCleanupStatus":"NOT_APPLICABLE","emailsSent":1,"independentRemainderCount":0}
+GATE_GA_E2E PASS
+=== resume-kill ===
+RESUME_KILL_RESULT {"status":"PASS","runId":"gate-ead3a85d9b35940d17f59917d8a17b","emailsSent":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","adminCount":1,"companyCount":1,"invitationCount":1,"independentRemainderCount":0,"journalHasRunResumed":true,"journalHasAdminResumed":true,"journalHasInvitationResumed":true,"journalHasEmailResumedFromCheckpoint":true}
+GATE_GA_RESUME_KILL PASS
