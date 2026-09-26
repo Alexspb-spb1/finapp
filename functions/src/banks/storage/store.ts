@@ -71,9 +71,9 @@ export class BankStore {
   /** BANK-003 must verify bank consent/account ownership BEFORE calling this method.
    * Server overwrites grantedBy/generation; ledger mappings cannot be supplied here.
    */
-  async installVerifiedGrant(request: CallableRequest<unknown>, rawGrant: unknown): Promise<void> {
+  async installVerifiedGrant(request: CallableRequest<unknown>, rawGrant: unknown, transaction?: Transaction): Promise<void> {
     const grant = parseBankData(GrantSchema, rawGrant)
-    await this.db.runTransaction(async tx => {
+    const install = async (tx: Transaction) => {
       const { companyId, uid } = await authorizeBankRequest(this.db, request, 'manage', tx)
       const root = this.root(companyId)
       const connRef = root.collection('connections').doc(grant.connection.id)
@@ -98,7 +98,9 @@ export class BankStore {
       for (const doc of previousBindings.docs) tx.delete(doc.ref)
       for (const account of grant.accounts) tx.set(root.collection('bindings').doc(bindingId(grant.connection.id, account.accountKey)),
         { connectionId: grant.connection.id, account })
-    })
+    }
+    if (transaction) await install(transaction)
+    else await this.db.runTransaction(install)
   }
 
   async enqueue(request: CallableRequest<unknown>): Promise<JobRef> {
