@@ -40,8 +40,10 @@
 ## Порядок PR и включения
 
 1. BANK-000 Draft в main, только документация.
-2. BANK-001 отдельный stacked Draft в ветку BANK-000, только ядро/тесты/отчёт.
-3. После review BANK-000 — retarget BANK-001 и exact-head CI. Merge,
+2. BANK-001 отдельный Draft в main, только ядро/тесты/отчёт. Документы
+   BANK-000 — логическая зависимость, не runtime dependency. Такая база
+   позволяет существующему workflow проверить точный SHA обоих PR.
+3. Оба PR проходят независимый review и exact-head CI. Merge,
    deployment и облачные изменения не выполняются в этом задании.
 4. BANK-002/003/004 можно готовить без production-разрешений банка.
    Завершение sandbox/live отмечать отдельно от synthetic.

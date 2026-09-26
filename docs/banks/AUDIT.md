@@ -9,7 +9,7 @@
 | Активная execution-ветка | `execution/sec-006-gate-ga-r9-fix5`, `e1310e5` |
 | Активная audit-ветка | `audit/sec-006-gate-ga-r9-fix5`, `25b6f3c` |
 | Идентификаторы BANK | В файлах Markdown всех 46 полученных remote-веток и их именах BANK-000/001 не найдены |
-| Изоляция | Новый worktree `finapp-banks`, BANK-000 от main; BANK-001 — отдельная зависимая ветка |
+| Изоляция | Новый worktree `finapp-banks`, BANK-000 от main; BANK-001 — отдельная ветка от main, логически зависит от ADR BANK-000 |
 | Инструкции | `CLAUDE.md`, `REMEDIATION_PLAN.md`, ADR-001, `docs/remediation/EXECUTION_STATE.md`; AGENTS.md в дереве main отсутствует |
 | Runtime среды | Node 24.19.0 / npm 11.9.0 / Java 17; repo требует Node 24.16.0 / npm 11.13.0, Functions Node 22, CI Java 21 |
 
@@ -38,9 +38,9 @@
    не удаляем его тестовые остатки и не переносим их разрешения на банки.
 8. CI запускается для PR в main; Pages запускается после успешного push-CI
    main. Создание Draft PR не деплоит; merge main может деплоить, поэтому
-   не входит в текущую авторизацию. Для stacked PR до retarget в main
-   автоматический CI не гарантирован — нужны локальные проверки, затем
-   проверки актуального SHA при смене базы.
+   не входит в текущую авторизацию. BANK-001 направляем отдельным PR в
+   main (runtime не зависит от новых документов), чтобы existing CI
+   проверил его точный SHA. Никакого изменения workflow для этого не нужно.
 
 Команды baseline: `git status --short`, `git rev-parse HEAD`,
 `git for-each-ref --sort=-committerdate`, `git grep` по всем remote refs,
