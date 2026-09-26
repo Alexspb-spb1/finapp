@@ -81,7 +81,12 @@ async function signInSyntheticOwner(page, account) {
   return { signedIn: true }
 }
 
-function parseStagingConfig(bytes) {
+// Exported (gate-G-A, FINAPP-1.0-SEC-006-GATE-G-A-PACKAGE-R9) so
+// gateGaStagingAdapters.mjs can read the same reviewed .env.staging.local
+// web config for its own Identity Toolkit calls (accounts:signUp/
+// signInWithPassword/sendOobCode/update) without duplicating this parser or
+// its fingerprint check.
+export function parseStagingConfig(bytes) {
   const lines = Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean)
   const entries = new Map()
   for (const line of lines) {
