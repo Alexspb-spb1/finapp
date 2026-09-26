@@ -1,0 +1,3 @@
+DETECTED M1 durableWriteJsonFile reverts to a direct, non-atomic write at the final --out path {"exitCode":1,"fail":1}
+
+SUMMARY total=1 detected=1 undetected=0

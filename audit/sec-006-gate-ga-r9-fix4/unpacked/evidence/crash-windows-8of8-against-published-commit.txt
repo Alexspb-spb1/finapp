@@ -1,0 +1,13 @@
+PASS ADMIN_CREATED {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-3779a811638481cd40c86574ca0cd3"}
+PASS RECIPIENT_REGISTERED {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-a3ae50f3299cda20e6e91754a4a981"}
+PASS EMAIL_SENT_PENDING_CHECKPOINT {"status":"SAFE_STOP","journalEmailSendCount":1,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-4e8ed7453cbb2c5f05fdcbea413192"}
+PASS EMAIL_SENT_CHECKPOINTED {"status":"PASS","journalEmailSendCount":1,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-ed73a90ca4701d9afa3b70a415c1af"}
+PASS ADMIN_AUTH_CREATED_PRE_COMPANY {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-222a0066d6119083aeb0673211a3c1"}
+PASS ADMIN_AND_COMPANY_CREATED_PRE_MANIFEST {"status":"PASS","journalEmailSendCount":1,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-043597a200a2b84656f2581620ee9c"}
+PASS INVITE_CREATED_PRE_MANIFEST {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-6159cd0f5e519602527a5c420d257b"}
+PASS RECIPIENT_REGISTERED_PRE_UID_CHECKPOINT {"status":"SAFE_STOP","journalEmailSendCount":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","remainder":0,"runId":"gate-1f9687f5e37d3dac0981f44382fb4c"}
+
+SUMMARY total=8 pass=8 fail=0
+GATE_GA_CRASH_WINDOWS PASS
+
+[exited with code 0]

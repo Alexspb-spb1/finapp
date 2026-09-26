@@ -1,0 +1,51 @@
+=== typecheck ===
+
+> finapp@0.0.0 typecheck
+> tsc -b --pretty false
+
+=== lint ===
+
+> finapp@0.0.0 lint
+> eslint .
+
+
+D:\projects\finapp\gate-ga-r9f4-execution-clone\src\pages\Balance.tsx
+  119:6  warning  React Hook useMemo has a missing dependency: 'isFinancialKind'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+✖ 1 problem (0 errors, 1 warning)
+
+=== staging contract-gate (full runtime + factory path) ===
+
+> finapp@0.0.0 test:invitation-gate-ga-staging-contract-gate
+> node --test scripts/invitationRehearsal/gateGaStagingRuntimeContractGateSelfTest.mjs
+
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (9876.9355ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10007.3128
+=== out atomicity (real kill/fault) ===
+
+> finapp@0.0.0 test:invitation-gate-ga-out-atomicity
+> node --test scripts/invitationRehearsal/gateGaStagingRuntimeOutputAtomicitySelfTest.mjs
+
+✔ a real kill after the temp file is fully written but before fsync/rename leaves --out absent, never partial (104.3061ms)
+✔ an unkilled call leaves --out fully present with the complete, valid JSON and no stray temp file (22.3921ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3179.5031
+=== E2E ===
+E2E_RESULT {"runTag":"gaE2Emui9e5a274gfwl","status":"PASS","flowStatus":"PASS","cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","legacyCleanupStatus":"NOT_APPLICABLE","emailsSent":1,"independentRemainderCount":0}
+GATE_GA_E2E PASS
+=== resume-kill ===
+RESUME_KILL_RESULT {"status":"PASS","runId":"gate-41d4add49212c2a495b9c420b6b236","emailsSent":0,"cleanupStatus":"CLEANUP_COMPLETE_VERIFIED","adminCount":1,"companyCount":1,"invitationCount":1,"independentRemainderCount":0,"journalHasRunResumed":true,"journalHasAdminResumed":true,"journalHasInvitationResumed":true,"journalHasEmailResumedFromCheckpoint":true}
+GATE_GA_RESUME_KILL PASS

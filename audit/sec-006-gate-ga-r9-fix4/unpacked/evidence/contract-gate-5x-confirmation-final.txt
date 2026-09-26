@@ -1,0 +1,27 @@
+=== attempt 1 ===
+✖ 1 problem (0 errors, 1 warning)
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (9144.8046ms)
+ℹ pass 1
+ℹ fail 0
+=== attempt 2 ===
+✖ 1 problem (0 errors, 1 warning)
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (9049.2191ms)
+ℹ pass 1
+ℹ fail 0
+=== attempt 3 ===
+✖ 1 problem (0 errors, 1 warning)
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (9070.5009ms)
+ℹ pass 1
+ℹ fail 0
+=== attempt 4 ===
+✖ 1 problem (0 errors, 1 warning)
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (9055.8338ms)
+ℹ pass 1
+ℹ fail 0
+=== attempt 5 ===
+✖ 1 problem (0 errors, 1 warning)
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (9177.1891ms)
+ℹ pass 1
+ℹ fail 0
+
+[exited with code 0]

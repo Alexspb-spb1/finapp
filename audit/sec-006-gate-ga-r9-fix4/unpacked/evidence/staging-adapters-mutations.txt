@@ -1,0 +1,11 @@
+DETECTED M1 createAdminAndCompany reverts to a non-runId-derived (unrecoverable) admin email {"exitCode":1,"fail":null}
+DETECTED M2 reconcileAdminAndCompany is bypassed (always reports not-found) {"exitCode":1,"fail":null}
+DETECTED M3 reconcileAdminAndCompany method removed from the returned adapter object entirely {"exitCode":1,"fail":null}
+DETECTED M4 reconcileInvitation method removed from the returned adapter object entirely {"exitCode":1,"fail":null}
+DETECTED M5 findAuthUidByEmail method removed from the returned adapter object entirely {"exitCode":1,"fail":null}
+DETECTED M6 inviteRecipient reverts to the R8-published lockPath: null bug {"exitCode":1,"fail":null}
+DETECTED M7 nested Firestore mapValue fields (e.g. the bootstrap receipt's result.companyId) are no longer parsed {"exitCode":1,"fail":null}
+DETECTED M8 an orphaned admin (Auth exists, no bootstrap receipt) is no longer detected as orphaned {"exitCode":1,"fail":null}
+DETECTED M9 reconcileInvitation is changed to fabricate a recoverable token (never legitimate — the raw token is never persisted) {"exitCode":1,"fail":null}
+
+SUMMARY total=9 detected=9 undetected=0
