@@ -1,5 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { EventEmitter } from 'node:events'
+import type { DecodedIdToken } from 'firebase-admin/auth'
+import type { Request } from 'firebase-functions/v2/https'
+import type { Response } from 'express'
 import { initializeApp, deleteApp } from 'firebase-admin/app'
 import { getFirestore, Timestamp } from 'firebase-admin/firestore'
 import type { CallableRequest } from 'firebase-functions/v2/https'
@@ -9,6 +13,7 @@ import { SCOPES, type Tokens, type Profile } from '../../src/banks/sber/protocol
 import { BankStore } from '../../src/banks/storage/store'
 import { BankReadFailure } from '../../src/banks/storage/worker'
 import { setBankModuleEnabled } from '../../src/banks/storage/policy'
+import { createSberHttpHandlers } from '../../src/banks/sber/http'
 
 if (process.env.FIRESTORE_EMULATOR_HOST !== '127.0.0.1:8080' || process.env.GCLOUD_PROJECT !== 'demo-finapp') throw new Error('Sber tests require demo-finapp emulator')
 const app = initializeApp({ projectId: 'demo-finapp' }, 'sber-connections-test')
@@ -203,5 +208,42 @@ describe('BANK-003 OAuth isolation and durable refresh', () => {
     await new BankStore(db, () => now).disconnect(request(ref))
     release(value('-late')); expect(await result).toBe(true)
     expect((await credential().get()).data()?.version).toBe(0)
+  })
+  it('HTTP cookie binding reaches real transactional activation; swapped browser and replay cannot exchange', async () => {
+    // Admin SDK is substituted; Firestore, domain guards/state and encryption are real.
+    const token = { uid, sub: uid, email_verified: true, auth_time: now / 1000 - 60, exp: now / 1000 + 600 } as DecodedIdToken
+    const handlers = createSberHttpHandlers(config, { beginUrl: 'https://example.test/begin', returnUrl: 'https://example.test/banks' }, {
+      async verifyIdToken() { return token }, async createSessionCookie() { return 'synthetic.session.signature' },
+      async verifySessionCookie() { return token },
+    }, service, () => now)
+    const httpRequest = (method: string, originalUrl: string, cookie = '') => {
+      const headers = { origin: 'https://example.test', 'content-type': 'application/json', authorization: 'Bearer synthetic.id.signature', cookie }
+      return Object.assign(new EventEmitter(), { method, originalUrl, body: ref, rawBody: Buffer.from(JSON.stringify(ref)),
+        headers, rawHeaders: Object.entries(headers).flat(), aborted: false }) as unknown as Request
+    }
+    const httpResponse = () => {
+      const values: Record<string, unknown> = {}
+      const result = Object.assign(new EventEmitter(), { values, payload: { authorizationUrl: '' }, writableEnded: false,
+        set(h: Record<string, unknown>) { Object.assign(values, h); return this },
+        setHeader(k: string, v: unknown) { values[k] = v; return this }, status() { return this },
+        json(v: { authorizationUrl: string }) { this.payload = v; this.writableEnded = true; return this },
+        end() { this.writableEnded = true; return this },
+      })
+      return { result, res: result as unknown as Response }
+    }
+    const started = httpResponse(); await handlers.begin(httpRequest('POST', '/begin'), started.res)
+    const state = new URL(started.result.payload.authorizationUrl).searchParams.get('state')!
+    const browserCookie = String(started.result.values['Set-Cookie']).split(';')[0]
+    const query = `/callback?state=${state}&code=synthetic-code`
+    const wrongCookie = browserCookie.replace(/~[A-Za-z0-9_-]+$/, `~${'x'.repeat(43)}`)
+    const wrong = httpResponse(); await handlers.callback(httpRequest('GET', query, wrongCookie), wrong.res)
+    expect(wrong.result.values.Location).toBe('https://example.test/banks?bankConnection=failed')
+    expect(exchanges).toBe(0); expect((await credential().get()).exists).toBe(false)
+    const done = httpResponse(); await handlers.callback(httpRequest('GET', query, browserCookie), done.res)
+    expect(done.result.values.Location).toBe('https://example.test/banks?bankConnection=connected')
+    expect(exchanges).toBe(1); expect((await connection().get()).data()?.status).toBe('active')
+    expect(JSON.stringify((await credential().get()).data())).not.toContain(value().access_token)
+    const replay = httpResponse(); await handlers.callback(httpRequest('GET', query, browserCookie), replay.res)
+    expect(replay.result.values.Location).toBe('https://example.test/banks?bankConnection=failed'); expect(exchanges).toBe(1)
   })
 })

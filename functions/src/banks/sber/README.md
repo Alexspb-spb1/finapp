@@ -8,7 +8,7 @@ No bank credentials, live accounts, external requests or configuration were used
 
 1. A platform-verified admin initiates `begin` for a selected company/connection.
    The company's canonical `companies/{id}.inn` must already be present.
-   The future HTTP layer supplies a server-verified, HttpOnly session binding;
+   The private HTTP factory supplies a server-verified, HttpOnly session binding;
    neither caller UID nor session authority comes from request payload fields.
 2. The service persists only a hash of a 256-bit OAuth state. It pins user,
    session hash, company INN, tenant/policy/connection generations, config and
@@ -37,9 +37,9 @@ full bank-account directory.
 - Tokens are AES-256-GCM encrypted; authenticated context pins company,
   connection, generation and token version. Server keyring has no default key.
   Key IDs allow the runtime to retain old decryption keys during rotation.
-- Encryption keys, client secret, PFX/password and trusted CA bundle must come
-  from deployment's secret manager. This PR defines injected providers and does
-  not provision one, print secrets, or create environment files.
+- Encryption keys, client secret, PFX/password and trusted CA bundle come from
+  Firebase SecretParam readers in `runtimeSecrets.ts`; definitions are lazy and
+  sandbox/production names are separate. No secrets are provisioned or installed.
 - Refresh uses a durable 60-second lease, owner, monotonically increasing fence
   and token version CAS. Only one worker refreshes; late responses cannot replace
   a winner or reconnect. Access expiry is based conservatively on request start
@@ -52,10 +52,67 @@ full bank-account directory.
   reconnect/deletion and changing INN/config deny use. Disconnect blocks local
   access immediately; remote consent revocation is through the bank portal in
   this version (no automated revoke capability advertised).
-- Future HTTP handlers MUST verify the Firebase session, bind a Secure/HttpOnly
-  SameSite cookie, apply CSRF/origin controls to begin, avoid callback query/code
-  logging, send no-store/no-referrer, and clear callback URL/session state.
-  No callback/callable route or scheduler is included in this PR.
+- Private HTTP handlers implement verified Firebase sessions, Secure/HttpOnly
+  SameSite cookies, origin controls, no-store/no-referrer and clean redirects.
+  They are not mounted as Cloud Functions or browser routes. No scheduler exists.
+
+## HTTP/session boundary (implemented, not deployed)
+
+`createSberHttpHandlers` receives Admin `Auth`, the real `SberConnections` service,
+Sber config, and fixed begin/return URLs. All three URLs must share one HTTPS
+origin with distinct paths; request Host/Forwarded headers never select redirects.
+The future frontend and backend must use that same origin. Existing Pages hosting
+has NOT been changed to provide this routing.
+
+- Begin: POST, exact configured path, exact Origin, JSON <=2 KiB, no CORS,
+  optional Fetch Metadata must be same-origin. Only companyId/connectionId are
+  accepted. A bearer Firebase ID token is checked with revocation enabled,
+  verified email and sign-in within five minutes. Browser-supplied auth is ignored.
+  This implies reauthentication in the future UI for an older login.
+- A ten-minute Firebase session cookie is combined with fresh 256-bit randomness.
+  Only the SHA-256 binding reaches OAuth state storage. Cookie name is
+  `__Host-finapp-sber`, Path=/, Secure, HttpOnly, SameSite=Lax, no Domain.
+  One pending browser flow is supported; a new begin replaces its cookie.
+- Callback: top-level GET; exactly one state and code; reject duplicate/unknown
+  query parameters, duplicate security headers/cookies, expired/revoked sessions.
+  Admin SDK verifies the session cookie; existing transactional service rechecks
+  the initiating UID, cookie binding, admin membership, tenant/INN/generations.
+- Bank error/denial and malformed responses redirect to the same fixed failure
+  URL. Successful activation redirects to a fixed success URL. Both clear the
+  temporary cookie and exclude bank code/state/user/account data. UI MUST fetch
+  authorized connection status; a URL result flag is not authoritative evidence.
+- Callback passes abort on browser disconnect and a 30s deadline to the service.
+  SDK/provider exceptions are sanitized; handlers contain no request logging.
+
+Hosting/proxy access logs and error middleware are a separate deployment gate:
+they MUST exclude callback query strings, Authorization, Cookie and response
+Set-Cookie. Preserve this host-only cookie; do not assume a Firebase Hosting
+rewrite forwards arbitrary cookie names. Configure/test a compatible same-origin
+reverse proxy before mounting. Do not rename to a broadly shared auth cookie as
+a workaround. Browser navigation, actual Firebase Auth/session issuance and this
+proxy behavior have not been exercised; unit tests substitute Admin SDK.
+The Firestore integration test uses real domain transactions but synthetic Auth.
+
+## Secret manager readers (implemented, no secret installation)
+
+`defineSberSecretProviders(environment)` declares two Firebase secret parameters:
+`FINAPP_SBER_SANDBOX_KEYRING`/`FINAPP_SBER_SANDBOX_TRANSPORT` or their PRODUCTION
+counterparts. Nothing is read until the runtime readers are called. A future
+composition root must bind BOTH returned `bindings` to each relevant function.
+No environment-variable fallback, generated default key, or frontend secret exists.
+
+- KEYRING JSON: `currentKeyId`, `keys` map of ID to canonical base64 of exactly
+  32 bytes. Maximum eight keys. Current ID must exist. Retain previous IDs/material
+  for decryption; never replace material under an existing ID. Deploy a new ID,
+  retain old keys until all dependent ciphertext is rotated and verified, then
+  remove old keys in a separately reviewed operation. No bulk rotation is included.
+- TRANSPORT JSON: nonempty `clientSecret`, canonical `pfxBase64`, nonempty
+  `passphrase`, `ca` array of individual PEM certificates. Bounded JSON <=65000
+  bytes. Readers validate shape, NOT certificate validity/trust or PFX password;
+  Node's TLS stack must still validate the actual material at handshake.
+- Unavailable/malformed secrets or unknown key IDs fail closed with safe errors.
+  Read permissions, project/region, concrete versions, certificate rotation and
+  secret installation are unconfigured deployment gates. No secrets belong in chat.
 
 ## Signed bank responses — explicit remaining blocker
 
@@ -73,6 +130,15 @@ Do not wire a verifier that merely decodes JSON, returns true, or skips signatur
 validation. Before bank sandbox/pilot, implement and independently review the
 bank-compatible verifier/runtime and validate bank-supplied positive/negative
 fixtures. No production activation is allowed until this blocker is resolved.
+
+Additional public-document inspection on 2026-09-26: the token-schema example has
+an empty `{}` payload and a 4277-byte BER/CMS SignedData signature with GOST-2012
+OIDs; it is not a valid positive login fixture or an ordinary raw JWS signature.
+The OAuth page's linked `6020194e_sberca-root-ext.crt` is an RSA root CA, not a
+confirmed GOST signing leaf. Do not pin it as the token signer or invent a chain
+from it. Local OpenSSL exposes only its default provider. The exact CMS signed
+content, bank signing chain, revocation policy and GOST-compatible runtime need
+confirmation and bank-compatible test vectors before this gate can close.
 
 ## REST and monetary correctness
 
@@ -129,8 +195,9 @@ were executed or copied.
 ## Next concrete acceptance gates
 
 1. Review #31 dependency and this private implementation; complete exact-head CI.
-2. Implement bank-compatible signature verification and real server secret/session
-   providers; confirm exact issuer/claim availability/scopes and registered callback.
+2. Implement bank-compatible signature verification; provision and verify the
+   implemented secret/session adapters and mount HTTP behind a reviewed proxy.
+   Confirm exact issuer/claim availability/scopes and registered callback.
 3. Provide an approved sandbox execution package with artifact SHA, callback,
    platform client, TLS/CA setup, secret installation, company/account allowlist,
    test period, expected counts/amounts, safe-stop and rollback. No credentials in chat.
