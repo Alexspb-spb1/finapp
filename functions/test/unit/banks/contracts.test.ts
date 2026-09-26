@@ -67,4 +67,11 @@ describe('BANK-001 conservative identity decisions (no persistent dedupe claims)
   it('corrupted history with duplicate strong keys requires review', () => {
     expect(classifyOperation(operation(), [operation(), operation()]).kind).toBe('needs_review')
   })
+  it('weak cross-channel matches with different descriptions still require review', () => {
+    const file = operation({ providerOperationId: undefined, purpose: 'Formatted by file parser',
+      valueDate: '2026-09-02', source: { channel: 'file', deliveryId: 'file-1' } })
+    expect(classifyOperation(operation(), [file]).kind).toBe('needs_review')
+    expect(classifyOperation(file, [operation()]).kind).toBe('needs_review')
+    expect(classifyOperation(operation({ money: { currency: 'RUB', minorUnits: '999' } }), [file]).kind).toBe('new')
+  })
 })

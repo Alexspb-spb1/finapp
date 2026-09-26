@@ -35,7 +35,14 @@ export function classifyOperation(raw: BankOperation, history: readonly BankOper
       return { kind: fingerprint(incoming) === fingerprint(matches[0]) ? 'duplicate' : 'correction', key }
     }
   }
+  // File/email statements can omit valueDate or format purpose/counterparty
+  // differently from the API. Weak date/amount matches are review candidates,
+  // never automatic duplicates or confidently new transactions.
   const candidate = existing.some(value =>
-    (!key || !operationKey(value)) && fingerprint(value) === fingerprint(incoming))
+    (!key || !operationKey(value)) && value.companyId === incoming.companyId
+      && value.bankId === incoming.bankId && value.accountKey === incoming.accountKey
+      && value.bookingDate === incoming.bookingDate
+      && value.money.currency === incoming.money.currency
+      && value.money.minorUnits === incoming.money.minorUnits)
   return { kind: candidate ? 'needs_review' : 'new' }
 }

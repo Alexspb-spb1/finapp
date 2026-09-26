@@ -40,7 +40,7 @@ PARTIAL — независимое ядро реализовано и прове
 - Явный реестр адаптеров пуст по умолчанию. Есть только synthetic bank и
   bounded preview; контроль до/после await, защита scope от изменения
   адаптером, межкомпанейной подмены, cursor loop и чрезмерной загрузки.
-- 83 новых unit-теста и 7 Firestore integration tests. Второй тестовый API
+- 84 новых unit-теста и 7 Firestore integration tests. Второй тестовый API
   с другим курсором работает без изменения ядра.
 
 Затронуты только новые файлы `functions/src/banks/`,
@@ -57,8 +57,8 @@ PARTIAL — независимое ядро реализовано и прове
 | Root unit | PASS, 248/248 |
 | Root Rules emulator (Java 21.0.12.1) | PASS, 126/126 |
 | Functions lint/typecheck/build | PASS |
-| BANK unit | PASS, 83/83 |
-| Functions все unit, включая BANK | PASS, 437/437 |
+| BANK unit | PASS, 84/84 |
+| Functions все unit, включая BANK | PASS, 438/438 |
 | BANK private guard, настоящий Firestore emulator | PASS, 7/7 |
 | Full Functions emulator | BLOCKED locally: `listen EPERM /tmp/fire_emu_*.sock`; stopped with SIGINT after infrastructure error, не PASS |
 | test:run / test:e2e | NOT AVAILABLE: таких scripts нет; использован существующий test:unit |
@@ -69,8 +69,8 @@ PARTIAL — независимое ядро реализовано и прове
 Существенный вывод:
 
 ```text
-BANK:     Test Files 3 passed; Tests 83 passed
-Functions Test Files 19 passed; Tests 437 passed
+BANK:     Test Files 3 passed; Tests 84 passed
+Functions Test Files 19 passed; Tests 438 passed
 Root:     Test Files 17 passed; Tests 248 passed
 Rules:    Test Files 1 passed; Tests 126 passed
 BANK DB:  Test Files 1 passed; Tests 7 passed
