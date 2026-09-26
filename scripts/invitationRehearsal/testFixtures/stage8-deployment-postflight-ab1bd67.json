@@ -1,0 +1,206 @@
+{
+  "task": "SEC-006 Stage 8",
+  "mode": "postflight",
+  "status": "DEPLOYMENT_METADATA_VERIFIED",
+  "project": "finapp-staging",
+  "sourceHead": "ab1bd670ad04debd081af542e367c5dfc95e55ab",
+  "startedAt": "2026-09-08T11:34:49.493Z",
+  "finishedAt": "2026-09-08T11:34:52.939Z",
+  "billingEnabled": true,
+  "database": {
+    "name": "projects/finapp-staging/databases/(default)",
+    "type": "FIRESTORE_NATIVE",
+    "locationId": "eur3"
+  },
+  "functions": [
+    {
+      "name": "projects/finapp-staging/locations/us-central1/functions/acceptInvite",
+      "state": "ACTIVE",
+      "generation": 2,
+      "runtime": "nodejs22",
+      "region": "us-central1",
+      "resources": {
+        "memory": "256Mi",
+        "cpu": 1,
+        "concurrency": 1,
+        "minInstances": 0,
+        "maxInstances": 1,
+        "timeoutSeconds": 60
+      },
+      "revision": "acceptinvite-00001-guy",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceKind": "storage",
+      "sourceReferenceSha256": "1473073995ec652e895225c14f2524e5a958a39f1ad08ada443320f81e3e06b3",
+      "sourceProvenanceSha256": "65083fdf9d0e7ec6fec84900d896d0e2c63e9cabe9e68978c9d5e1f11e6f2404",
+      "rollbackArtifactAvailability": "NOT_VERIFIED"
+    },
+    {
+      "name": "projects/finapp-staging/locations/us-central1/functions/cancelInvite",
+      "state": "ACTIVE",
+      "generation": 2,
+      "runtime": "nodejs22",
+      "region": "us-central1",
+      "resources": {
+        "memory": "256Mi",
+        "cpu": 1,
+        "concurrency": 1,
+        "minInstances": 0,
+        "maxInstances": 1,
+        "timeoutSeconds": 60
+      },
+      "revision": "cancelinvite-00001-zow",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceKind": "storage",
+      "sourceReferenceSha256": "290c4547578df2bf43ef5acb3f099f4633c7fd89f6cd5e4989508d20e456069e",
+      "sourceProvenanceSha256": "ee9c690a12b6ca52d8f789890609f1592a98a3ffbc34467ee92b6606ad540178",
+      "rollbackArtifactAvailability": "NOT_VERIFIED"
+    },
+    {
+      "name": "projects/finapp-staging/locations/us-central1/functions/createCompany",
+      "state": "ACTIVE",
+      "generation": 2,
+      "runtime": "nodejs22",
+      "region": "us-central1",
+      "resources": {
+        "memory": "256Mi",
+        "cpu": 1,
+        "concurrency": 1,
+        "minInstances": 0,
+        "maxInstances": 1,
+        "timeoutSeconds": 60
+      },
+      "revision": "createcompany-00001-xiv",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceKind": "storage",
+      "sourceReferenceSha256": "037b59c09041dc8a2425c6864d9c85d519454d0afcc674bbf9e6ed270d90baa4",
+      "sourceProvenanceSha256": "5d6a9b84c16b7ae4903284263e61f5f41e3d095e488facfcfbe25ae055b387e9",
+      "rollbackArtifactAvailability": "NOT_VERIFIED"
+    },
+    {
+      "name": "projects/finapp-staging/locations/us-central1/functions/getCompanyAccess",
+      "state": "ACTIVE",
+      "generation": 2,
+      "runtime": "nodejs22",
+      "region": "us-central1",
+      "resources": {
+        "memory": "256Mi",
+        "cpu": 1,
+        "concurrency": 1,
+        "minInstances": 0,
+        "maxInstances": 1,
+        "timeoutSeconds": 60
+      },
+      "revision": "getcompanyaccess-00001-qeg",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceKind": "storage",
+      "sourceReferenceSha256": "ee5377479c6ebf88e141590a35f890c634c4e3370a79df698ade8b9c50c38e9c",
+      "sourceProvenanceSha256": "058df2cbe8ac27cbea24f58730dd8e6d03b89facf7c5c03a02fc8e56d1f6dc5d",
+      "rollbackArtifactAvailability": "NOT_VERIFIED"
+    },
+    {
+      "name": "projects/finapp-staging/locations/us-central1/functions/inviteMember",
+      "state": "ACTIVE",
+      "generation": 2,
+      "runtime": "nodejs22",
+      "region": "us-central1",
+      "resources": {
+        "memory": "256Mi",
+        "cpu": 1,
+        "concurrency": 1,
+        "minInstances": 0,
+        "maxInstances": 1,
+        "timeoutSeconds": 60
+      },
+      "revision": "invitemember-00001-cig",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceKind": "storage",
+      "sourceReferenceSha256": "58ad3a8ecaece6edf9f10d5a8893dc1d149f319439bd4a12d708230639805f99",
+      "sourceProvenanceSha256": "62625d9ff0d5b95a6b023d437b58bff6a671a284b3cad6f9e4bd17078532f7f1",
+      "rollbackArtifactAvailability": "NOT_VERIFIED"
+    },
+    {
+      "name": "projects/finapp-staging/locations/us-central1/functions/listInvitations",
+      "state": "ACTIVE",
+      "generation": 2,
+      "runtime": "nodejs22",
+      "region": "us-central1",
+      "resources": {
+        "memory": "256Mi",
+        "cpu": 1,
+        "concurrency": 1,
+        "minInstances": 0,
+        "maxInstances": 1,
+        "timeoutSeconds": 60
+      },
+      "revision": "listinvitations-00001-bix",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceKind": "storage",
+      "sourceReferenceSha256": "d03f6980f99a06ff881aa07acca5c0d749b9f44d3f33ef96b925e7873e7eb559",
+      "sourceProvenanceSha256": "5c7acde3d78fe6e44550144c1b05c02e166f9dee37c3058f4b18a91b4cd074b4",
+      "rollbackArtifactAvailability": "NOT_VERIFIED"
+    },
+    {
+      "name": "projects/finapp-staging/locations/us-central1/functions/previewInvite",
+      "state": "ACTIVE",
+      "generation": 2,
+      "runtime": "nodejs22",
+      "region": "us-central1",
+      "resources": {
+        "memory": "256Mi",
+        "cpu": 1,
+        "concurrency": 1,
+        "minInstances": 0,
+        "maxInstances": 1,
+        "timeoutSeconds": 60
+      },
+      "revision": "previewinvite-00001-raf",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceKind": "storage",
+      "sourceReferenceSha256": "462ef2cb3172d90c6201338551260fd0d37f44ac0e67a60efbb076c87f94ac6a",
+      "sourceProvenanceSha256": "500388bf2f425947dc9704f215dab9615e8725e6bd1a158a900688d79415a766",
+      "rollbackArtifactAvailability": "NOT_VERIFIED"
+    },
+    {
+      "name": "projects/finapp-staging/locations/us-central1/functions/resendInvite",
+      "state": "ACTIVE",
+      "generation": 2,
+      "runtime": "nodejs22",
+      "region": "us-central1",
+      "resources": {
+        "memory": "256Mi",
+        "cpu": 1,
+        "concurrency": 1,
+        "minInstances": 0,
+        "maxInstances": 1,
+        "timeoutSeconds": 60
+      },
+      "revision": "resendinvite-00001-nuv",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceKind": "storage",
+      "sourceReferenceSha256": "0b0c15e52336ca43d8f4f50e821373039ac23de576a74604d06c4b67adab6ef1",
+      "sourceProvenanceSha256": "db8933437e3cd6039941daa6e0c5918eb8168cb7d2a8d9338935531a4523b149",
+      "rollbackArtifactAvailability": "NOT_VERIFIED"
+    }
+  ],
+  "deploymentAllowlist": [
+    "acceptInvite",
+    "cancelInvite",
+    "createCompany",
+    "getCompanyAccess",
+    "inviteMember",
+    "listInvitations",
+    "previewInvite",
+    "resendInvite"
+  ],
+  "excludedFromDeployment": [
+    "authzProbe"
+  ],
+  "cloudMutations": 0,
+  "callableInvocations": 0,
+  "realEmailDeliveryVerified": false,
+  "limitations": [
+    "Metadata is not behavioral or real-email acceptance",
+    "Source fingerprints do not prove recoverable artifacts",
+    "This check does not grant deployment approval"
+  ]
+}
