@@ -1,0 +1,2 @@
+=== git log ===
+e1310e5314f4e6355a0fbd43eab378224044e1f6 gate-G-A R9 (audit follow-up, 2nd pass): fixed a real async/cleanup-order bug in withFetchSpy (the fetch spy was restored before the awaited callback ran), added a deterministic eager-fetch mutation check

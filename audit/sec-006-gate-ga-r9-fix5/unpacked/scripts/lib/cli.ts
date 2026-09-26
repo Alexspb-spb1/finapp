@@ -1,0 +1,208 @@
+// CLI argument parsing for scripts/backfill-memberships.ts — SEC-005.
+// Pure (no I/O) — takes an argv-like string array, returns validated
+// options or throws CliArgError with a safe message.
+import type { Environment } from './firebaseAdmin.ts'
+import type { ReportMode } from './report.ts'
+
+const KNOWN_MODES: readonly ReportMode[] = ['dry-run', 'apply', 'verify', 'rollback-from-report', 'rollback-from-plan']
+const KNOWN_ENVIRONMENTS: readonly Environment[] = ['emulator', 'staging', 'production']
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/i
+
+export class CliArgError extends Error {}
+
+export interface CliOptions {
+  mode: ReportMode
+  environment: Environment
+  project: string | undefined
+  confirmProject: string | undefined
+  decisionsFile: string | undefined
+  reportPath: string | undefined
+  fromReport: string | undefined
+  /** `--mode rollback-from-plan` only — a verified dry-run report to
+   * reconstruct emergency rollback candidates from (final-round fix #7). */
+  fromPlan: string | undefined
+  backupReference: string | undefined
+  rollbackReference: string | undefined
+  ackMaintenance: boolean
+  /** `--mode rollback-from-report` only (final-round fix #6) — the SHA-256
+   * the operator recorded when `apply` printed "Apply report SHA-256";
+   * verified against `--from-report`'s actual bytes BEFORE any Firestore
+   * read/delete — a tampered or swapped report is refused outright. */
+  expectedReportSha256: string | undefined
+  /** `--mode rollback-from-plan` only — explicit acknowledgement that this
+   * is a last-resort, weaker-evidence recovery path (no real apply report
+   * exists), never a default/automatic choice. */
+  ackEmergencyReconstruction: boolean
+  /** `--mode rollback-from-plan` only (final-round fix #1, second round) —
+   * the SHA-256 the operator recorded for `--from-plan` (e.g. when the
+   * resolved dry-run report was first produced); verified against
+   * `--from-plan`'s actual bytes BEFORE any JSON parsing or Firestore
+   * read/delete — a tampered, corrupted, or swapped plan is refused
+   * outright, with zero Firestore I/O. */
+  expectedPlanSha256: string | undefined
+}
+
+function readFlagValue(args: string[], index: number, flag: string): string {
+  const value = args[index + 1]
+  if (value === undefined || value.startsWith('--')) {
+    throw new CliArgError(`${flag} requires a value.`)
+  }
+  return value
+}
+
+/** Parses argv (WITHOUT `node script.ts` prefix). Never defaults
+ * --environment or --project — both must be explicit (task spec §6.3). */
+export function parseCliArgs(args: readonly string[]): CliOptions {
+  const opts: CliOptions = {
+    mode: 'dry-run',
+    environment: undefined as unknown as Environment,
+    project: undefined,
+    confirmProject: undefined,
+    decisionsFile: undefined,
+    reportPath: undefined,
+    fromReport: undefined,
+    fromPlan: undefined,
+    backupReference: undefined,
+    rollbackReference: undefined,
+    ackMaintenance: false,
+    expectedReportSha256: undefined,
+    ackEmergencyReconstruction: false,
+    expectedPlanSha256: undefined,
+  }
+
+  let environmentSet = false
+  let modeExplicit = false
+  let applyFlagUsed = false
+  const mutableArgs = [...args]
+
+  // Independent audit fixes, 4th round, item 3.7: EVERY flag — value-bearing
+  // or boolean — may appear at most once. There is no "last argument wins"
+  // anywhere in this parser; a repeated flag is always an ambiguous command
+  // and is refused outright, never silently resolved by taking the final
+  // occurrence.
+  const seenFlags = new Set<string>()
+  function markSeenOnce(flag: string): void {
+    if (seenFlags.has(flag)) {
+      throw new CliArgError(`${flag} was specified more than once — ambiguous, refusing (no "last argument wins").`)
+    }
+    seenFlags.add(flag)
+  }
+
+  for (let i = 0; i < mutableArgs.length; i++) {
+    const arg = mutableArgs[i]!
+    switch (arg) {
+      case '--mode': {
+        markSeenOnce(arg)
+        const value = readFlagValue(mutableArgs, i, arg); i++
+        if (!KNOWN_MODES.includes(value as ReportMode)) throw new CliArgError(`Unknown --mode: ${value}`)
+        opts.mode = value as ReportMode
+        modeExplicit = true
+        break
+      }
+      case '--apply': {
+        markSeenOnce(arg)
+        opts.mode = 'apply'
+        applyFlagUsed = true
+        break
+      }
+      case '--environment': {
+        markSeenOnce(arg)
+        const value = readFlagValue(mutableArgs, i, arg); i++
+        if (!KNOWN_ENVIRONMENTS.includes(value as Environment)) throw new CliArgError(`Unknown --environment: ${value}`)
+        opts.environment = value as Environment
+        environmentSet = true
+        break
+      }
+      case '--project': { markSeenOnce(arg); opts.project = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--confirm-project': { markSeenOnce(arg); opts.confirmProject = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--decisions-file': { markSeenOnce(arg); opts.decisionsFile = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--report-path': { markSeenOnce(arg); opts.reportPath = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--from-report': { markSeenOnce(arg); opts.fromReport = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--from-plan': { markSeenOnce(arg); opts.fromPlan = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--backup-reference': { markSeenOnce(arg); opts.backupReference = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--rollback-reference': { markSeenOnce(arg); opts.rollbackReference = readFlagValue(mutableArgs, i, arg); i++; break }
+      case '--ack-maintenance-readonly': { markSeenOnce(arg); opts.ackMaintenance = true; break }
+      // Final-round fix #3 (third pass): normalized to lowercase HERE, at
+      // the single point of entry, so every downstream comparison
+      // (sha256Hex() always produces lowercase; PowerShell's
+      // Get-FileHash, which the docs point operators at, produces
+      // UPPERCASE by default) is a simple, case-sensitive `===` — no
+      // caller needs to remember to compare case-insensitively.
+      case '--expected-report-sha256': { markSeenOnce(arg); opts.expectedReportSha256 = readFlagValue(mutableArgs, i, arg).toLowerCase(); i++; break }
+      case '--ack-emergency-reconstruction': { markSeenOnce(arg); opts.ackEmergencyReconstruction = true; break }
+      case '--expected-plan-sha256': { markSeenOnce(arg); opts.expectedPlanSha256 = readFlagValue(mutableArgs, i, arg).toLowerCase(); i++; break }
+      default:
+        throw new CliArgError(`Unknown argument: ${arg}`)
+    }
+  }
+
+  // Independent audit fixes, 4th round, item 3.7: `--apply` and an explicit
+  // `--mode` are two different ways of expressing the SAME setting — using
+  // both is never a legitimate combination (even `--apply --mode apply`,
+  // which happens to agree, is refused: there is no reason to specify the
+  // same thing twice, and allowing "agreeing" duplicates while rejecting
+  // "disagreeing" ones would itself be an inconsistent, surprising rule).
+  if (applyFlagUsed && modeExplicit) {
+    throw new CliArgError('--apply and --mode must not both be specified — ambiguous (use exactly one to select the mode).')
+  }
+
+  // Independent audit fixes, 5th round, item 5: a mode-specific ALLOWLIST,
+  // not merely mode-specific REQUIREMENTS — the 4th round only checked that
+  // required flags for a mode were present, never that a flag belonging to
+  // a DIFFERENT mode was absent. `--mode dry-run --from-report x
+  // --expected-report-sha256 y` parsed successfully even though dry-run
+  // never reads either flag — silently accepting a nonsensical, misleading
+  // command instead of refusing it outright.
+  // Independent audit fixes, 5th round (review of the 5th round's own fix),
+  // item 2: `--decisions-file` is read unconditionally near the top of
+  // main() (readDecisionsFile()), but its result is only ever USED for
+  // dry-run/verify/apply's buildPlan() — for rollback-from-report/
+  // rollback-from-plan, main() returns from a dedicated rollback function
+  // before decisionsResult is touched again. Treating it as universal let
+  // `--mode rollback-from-report --decisions-file x` parse successfully
+  // even though `x` is silently ignored — moved out of UNIVERSAL_FLAGS and
+  // into only the three modes that actually consume it.
+  const UNIVERSAL_FLAGS = new Set(['--mode', '--apply', '--environment', '--project', '--confirm-project', '--report-path'])
+  const MODE_ALLOWED_FLAGS: Record<ReportMode, ReadonlySet<string>> = {
+    'dry-run': new Set(['--decisions-file']),
+    verify: new Set(['--decisions-file']),
+    apply: new Set(['--decisions-file', '--backup-reference', '--rollback-reference', '--ack-maintenance-readonly', '--expected-plan-sha256']),
+    'rollback-from-report': new Set(['--from-report', '--expected-report-sha256', '--ack-maintenance-readonly']),
+    'rollback-from-plan': new Set(['--from-plan', '--expected-plan-sha256', '--ack-emergency-reconstruction', '--ack-maintenance-readonly']),
+  }
+  const allowedForMode = MODE_ALLOWED_FLAGS[opts.mode]
+  for (const flag of seenFlags) {
+    if (UNIVERSAL_FLAGS.has(flag) || allowedForMode.has(flag)) continue
+    throw new CliArgError(`${flag} is not valid for --mode ${opts.mode} — refusing an unambiguous but nonsensical combination (allowed for this mode: ${allowedForMode.size > 0 ? [...allowedForMode].join(', ') : 'none beyond the universal flags'}).`)
+  }
+
+  if (!environmentSet) throw new CliArgError('--environment is required (emulator|staging|production) — there is no default.')
+  if (!opts.reportPath) throw new CliArgError('--report-path is required (absolute path outside the repository).')
+  if (opts.mode === 'rollback-from-report') {
+    if (!opts.fromReport) {
+      throw new CliArgError('--mode rollback-from-report requires --from-report <path to the apply report>.')
+    }
+    if (!opts.expectedReportSha256) {
+      throw new CliArgError('--mode rollback-from-report requires --expected-report-sha256 <the SHA-256 printed by apply as "Apply report SHA-256"> — verified against --from-report\'s actual bytes before any deletion, so a tampered or swapped report is refused outright.')
+    }
+  }
+  if (opts.expectedReportSha256 !== undefined && !SHA256_HEX_PATTERN.test(opts.expectedReportSha256)) {
+    throw new CliArgError('--expected-report-sha256 must be a 64-character hex SHA-256 digest.')
+  }
+  if (opts.mode === 'rollback-from-plan') {
+    if (!opts.fromPlan) {
+      throw new CliArgError('--mode rollback-from-plan requires --from-plan <path to a verified dry-run report>.')
+    }
+    if (!opts.ackEmergencyReconstruction) {
+      throw new CliArgError('--mode rollback-from-plan requires --ack-emergency-reconstruction — this is a last-resort, weaker-evidence recovery path for when the actual apply report has been lost; it must never be a default choice.')
+    }
+    if (!opts.expectedPlanSha256) {
+      throw new CliArgError('--mode rollback-from-plan requires --expected-plan-sha256 <the SHA-256 recorded for --from-plan> — verified against --from-plan\'s actual bytes before any parsing or Firestore access, so a tampered or swapped plan is refused outright.')
+    }
+  }
+  if (opts.expectedPlanSha256 !== undefined && !SHA256_HEX_PATTERN.test(opts.expectedPlanSha256)) {
+    throw new CliArgError('--expected-plan-sha256 must be a 64-character hex SHA-256 digest.')
+  }
+
+  return opts
+}

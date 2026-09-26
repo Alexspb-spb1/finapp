@@ -1,0 +1,258 @@
+=== staging-adapters ===
+✔ createAdminAndCompany derives a deterministic email from runId (never runTag) and fires the pre-company checkpoint (3.0814ms)
+✔ createAdminAndCompany refuses without runId (identity cannot be derived) (0.7225ms)
+✔ reconcileAdminAndCompany reports not-found when nothing was ever created for this runId (0.3566ms)
+✔ reconcileAdminAndCompany reports orphaned when admin Auth exists but createCompany never committed (0.5355ms)
+✔ reconcileAdminAndCompany from a genuinely SEPARATE adapter instance (simulating process 2) finds what process 1 created, and signs in without ever knowing the original password (0.6893ms)
+✔ inviteRecipient returns a real, non-null lockPath matching computeInvitationLockId (0.3504ms)
+✔ reconcileInvitation reports not-found when nothing was ever created (0.2826ms)
+✔ reconcileInvitation finds a real invitation via the deterministic lock, from a separate adapter instance (0.3107ms)
+✔ findAuthUidByEmail resolves a real, previously-registered recipient uid, and null for an unknown one (0.3543ms)
+✔ normal (non-reconciled) cleanup deletes both the invitation and its lock document (0.6379ms)
+✔ constructor refuses a rest/identity/callable client missing the expected shape (fail-closed, not a silent no-op adapter) (0.2797ms)
+✔ source-level: the staging adapter exports the R9 recovery surface and no longer derives admin identity from runTag (1.3524ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 196.9014
+=== staging-adapters-mutations ===
+DETECTED M1 createAdminAndCompany reverts to a non-runId-derived (unrecoverable) admin email {"exitCode":1,"fail":null}
+DETECTED M2 reconcileAdminAndCompany is bypassed (always reports not-found) {"exitCode":1,"fail":null}
+DETECTED M3 reconcileAdminAndCompany method removed from the returned adapter object entirely {"exitCode":1,"fail":null}
+DETECTED M4 reconcileInvitation method removed from the returned adapter object entirely {"exitCode":1,"fail":null}
+DETECTED M5 findAuthUidByEmail method removed from the returned adapter object entirely {"exitCode":1,"fail":null}
+DETECTED M6 inviteRecipient reverts to the R8-published lockPath: null bug {"exitCode":1,"fail":null}
+DETECTED M7 nested Firestore mapValue fields (e.g. the bootstrap receipt's result.companyId) are no longer parsed {"exitCode":1,"fail":null}
+DETECTED M8 an orphaned admin (Auth exists, no bootstrap receipt) is no longer detected as orphaned {"exitCode":1,"fail":null}
+DETECTED M9 reconcileInvitation is changed to fabricate a recoverable token (never legitimate — the raw token is never persisted) {"exitCode":1,"fail":null}
+
+SUMMARY total=9 detected=9 undetected=0
+=== out-atomicity ===
+✔ a real kill after the temp file is fully written but before fsync/rename leaves --out absent, never partial (94.6484ms)
+✔ an unkilled call leaves --out fully present with the complete, valid JSON and no stray temp file (259.4588ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3161.0899
+=== out-atomicity-mutations ===
+DETECTED M1 durableWriteJsonFile reverts to a direct, non-atomic write at the final --out path {"exitCode":1,"fail":1}
+
+SUMMARY total=1 detected=1 undetected=0
+=== gate-ga-mutations ===
+DETECTED M1 run-id guard forgets to actually forbid PRIOR_RUN_IDS {"exitCode":1,"pass":8,"fail":2}
+DETECTED M2 run-id guard stops checking for an existing manifest/evidence namespace collision {"exitCode":1,"pass":8,"fail":2}
+DETECTED M3 claimRunId stops re-checking assertRunIdAllowed before writing the durable claim {"exitCode":1,"pass":8,"fail":2}
+DETECTED M4 cleanup eligibility stops blocking on UNCERTAIN write-slots {"exitCode":1,"pass":17,"fail":2}
+DETECTED M5 cleanup ledger validator stops rejecting a CAS/destructive path overlap {"exitCode":1,"pass":18,"fail":1}
+DETECTED M6 cleanup ledger validator stops rejecting a foreign (out-of-namespace) document {"exitCode":1,"pass":18,"fail":1}
+DETECTED M7 cleanup stops refusing on an unexpected company subcollection {"exitCode":1,"pass":17,"fail":2}
+DETECTED M8 verify-clean stops detecting a real leftover document/Auth account {"exitCode":1,"pass":17,"fail":2}
+DETECTED M9 cleanup keeps deleting after a delete already failed instead of stopping immediately {"exitCode":1,"pass":18,"fail":1}
+DETECTED M10 legacy-residual evaluator stops noticing an unexpectedly present owner-B Auth account {"exitCode":1,"pass":11,"fail":1}
+DETECTED M11 legacy-residual evaluator stops rejecting unexpected subcollections {"exitCode":1,"pass":11,"fail":1}
+DETECTED M12 recipient guard stops requiring the recipient to be absent from staging Auth before sending {"exitCode":1,"pass":5,"fail":1}
+
+SUMMARY total=12 detected=12 undetected=0
+=== gate-ga-orchestrator ===
+✔ positive: full sequence reaches PASS with real-shaped fake adapters (baseline for mutation copies) (219.8229ms)
+✔ run-id is claimed exactly once before any external creation call (25.0921ms)
+✔ recipient guard is actually consulted (not bypassable by an absent adapter call) (23.3914ms)
+✔ cleanup runs and reaches CLEANUP_COMPLETE_VERIFIED with zero remainder on a real PASS (25.8019ms)
+✔ cleanup also runs after a safely-classified STOP, not only after PASS (11.8524ms)
+✔ final status cannot be PASS while any residual document remains (22.7971ms)
+✔ exactly one email dispatch is required for PASS (17.5061ms)
+✔ a second real email dispatch (fault-injected) is rejected, not just an absent one (16.3245ms)
+✔ legacy cleanup never runs on a non-matching residual, even when legacyCleanupApproved is supplied (23.1504ms)
+✔ an eligible legacy residual without legacyCleanupApproved is PENDING_APPROVAL, and blocks a full PASS even though the current run itself succeeded (22.9054ms)
+✔ an eligible legacy residual WITH legacyCleanupApproved is actually cleaned, and the current run still reaches PASS (24.8591ms)
+✔ verification polling continues across repeated false checks before succeeding (the poll loop actually loops end-to-end) (25.9191ms)
+✔ verification timeout results in SAFE_STOP, with cleanup of everything this run created (31.0715ms)
+✔ a second real email dispatch (fault-injected) never reaches PASS even though flowOutcome alone might look fine (17.4597ms)
+✔ indeterminate prior send (process died mid-dispatch) refuses to resend, never registers again, and still cleans up this run (14.1863ms)
+✔ resuming from a durable SENT checkpoint continues polling with the persisted recipientUid and reaches PASS without registering or sending again (23.2981ms)
+✔ verification reported for a different uid/email is refused, never accepted as PASS (20.1165ms)
+✔ verification reported for the RIGHT uid but a DIFFERENT email is refused (expectedEmail is actually enforced, not just uid) (19.7084ms)
+✔ a second FRESH (non-resume) invocation reusing the same claimedDir is refused as a collision, not silently accepted (24.4345ms)
+✔ resume:true across two full orchestrator invocations for the same recipient never registers or sends again, and still reaches PASS (25.4884ms)
+✔ a FRESH run refuses when the recipient Auth account already exists (module E's absent requirement, unaffected by resume support) (5.1976ms)
+✔ resume:true allows the recipient Auth account to already exist (it is THIS run's own earlier registration), but still requires the confirmed hash to match (27.6765ms)
+✔ resume:true with no run manifest present is refused with zero adapter calls of any kind (0.9248ms)
+✔ resume:true with a corrupted run manifest is refused with zero adapter calls of any kind (2.2529ms)
+✔ resume:true with a manifest for a different recipient/project/profile is refused as a mismatch, zero adapter calls (3.5307ms)
+✔ resume:true with a manifest for a different sourceHead is refused as a mismatch, zero adapter calls (6.1129ms)
+✔ an adapter missing a required method (e.g. a staging build without reconcileAdminAndCompany) is refused before ANY other check, zero adapter calls, zero ACL/run-id/manifest writes of any kind (0.9135ms)
+✔ an adapter missing a legacyAdapters sub-method is refused by the same contract gate (0.7309ms)
+✔ a failed private-directory ACL check (via the injectable ensureAcl) SAFE_STOPs before any adapter call of any kind — before any Auth user or email (0.7627ms)
+✔ an indeterminate resume with a durably-known recipientUid adds that uid to the cleanup ledger (nothing created is ever left outside the ledger) (16.6515ms)
+✔ resume:true with the run-id claim marker missing (manifest present but claim gone) is refused, zero adapter calls (3.8014ms)
+✔ resume from phase CLAIMED with nothing externally created: reconciliation confirms absence, SAFE_STOPs with an empty-ledger no-op cleanup (6.6116ms)
+✔ resume from phase CLAIMED with an orphaned admin Auth account (createCompany never committed): reconciled and cleaned up, never guessed forward (7.2142ms)
+✔ resume from phase CLAIMED with admin+company both confirmed externally: reconciled and the run continues to PASS (22.6491ms)
+✔ resume from phase ADMIN_CREATED with nothing externally created: reconciliation confirms absence, but still cleans up the admin/company that WAS confirmed (9.2837ms)
+✔ resume from phase ADMIN_CREATED where inviteMember already completed externally: reconciled (found via the lock) and cleaned up — never resumed into accept (no token) (9.2851ms)
+✔ MAY_BE_SENT checkpoint with recipientUid unknown but the Auth account real: recovered by exact email lookup, durably recorded, then cleaned up (17.1413ms)
+ℹ tests 37
+ℹ suites 0
+ℹ pass 37
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 784.1002
+=== gate-ga-orchestrator-mutations ===
+DETECTED M1 orchestrator stops calling claimRunId before external creation {"exitCode":1,"fail":3}
+DETECTED M2 recipient guard (adapter consultation) disabled {"exitCode":1,"fail":2}
+DETECTED M14 a fresh (non-resume) run no longer requires the recipient to be absent from Auth {"exitCode":1,"fail":1}
+DETECTED M3 cleanup of the current run is skipped entirely (result faked instead of executed) {"exitCode":1,"fail":11}
+DETECTED M4 verify-clean outcome is ignored for the final PASS decision {"exitCode":1,"fail":1}
+DETECTED M5 cleanup no longer runs after a safely-classified STOP, only after PASS {"exitCode":1,"fail":9}
+DETECTED M6 final PASS no longer requires current-run cleanup/verify-clean or a bounded email count {"exitCode":1,"fail":2}
+DETECTED M7 legacy cleanup no longer requires explicit legacyCleanupApproved (would act on an eligible-but-unapproved residual) {"exitCode":1,"fail":1}
+DETECTED M8 more than one email dispatch is no longer rejected (both the in-flow and final guards removed) {"exitCode":1,"fail":2}
+DETECTED M9 owner-in-the-loop Auth verification poll is bypassed (always treated as already verified) {"exitCode":1,"fail":4}
+DETECTED M11 expectedEmail is no longer passed to the verification poll (email mismatch would go undetected) {"exitCode":1,"fail":1}
+DETECTED M12 a PENDING_APPROVAL legacy residual is silently counted as clean in the final PASS decision {"exitCode":1,"fail":1}
+DETECTED M13 resume from an indeterminate CLAIMED phase no longer refuses — it retries admin creation blindly {"exitCode":1,"fail":3}
+DETECTED M10 durable email checkpoint (indeterminate-refusal + resume, no re-send) is bypassed {"exitCode":1,"fail":15}
+DETECTED M15 the private-directory ACL lockdown is no longer consulted before any checkpoint/manifest write {"exitCode":1,"fail":1}
+DETECTED M16 recipientUid is no longer durably recorded before the send attempt (the R7 crash-between-register-and-send window regresses) {"exitCode":1,"fail":9}
+DETECTED M17 resume no longer verifies the manifest was claimed under the SAME sourceHead {"exitCode":1,"fail":1}
+DETECTED M18 admin/company reconciliation on resume from CLAIMED is bypassed (always reports not-found) {"exitCode":1,"fail":2}
+DETECTED M19 an orphaned admin Auth account found on resume is no longer added to the cleanup ledger {"exitCode":1,"fail":1}
+DETECTED M20 invitation reconciliation on resume from ADMIN_CREATED is bypassed (always reports not-found) {"exitCode":1,"fail":1}
+DETECTED M21 recipientUid recovery-by-email for an indeterminate MAY_BE_SENT checkpoint is bypassed {"exitCode":1,"fail":1}
+DETECTED M22 a reconciled invitation's lock document is no longer added to the cleanup ledger {"exitCode":1,"fail":1}
+DETECTED M23 the adapter-contract gate is no longer consulted before any external action {"exitCode":1,"fail":2}
+
+SUMMARY total=23 detected=23 undetected=0
+=== gate-ga-recipient ===
+✔ assertNotProduction passes for the fixed staging project constant (0.7874ms)
+✔ resolveRecipientPreflight refuses a missing or empty recipient (mandatory parameter, no default) (0.4114ms)
+✔ resolveRecipientPreflight never returns the plaintext email, only a hash and existence flags (1.7628ms)
+✔ resolveRecipientPreflight reports absent:false when the account already exists in staging Auth (0.4927ms)
+✔ assertOwnerConfirmedRecipient refuses without a matching owner-confirmed hash (0.2562ms)
+✔ assertOwnerConfirmedRecipient refuses even a correctly-confirmed hash if the recipient already exists (existing recipient guard) (0.1441ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10.4846
+=== gate-ga-negatives ===
+✔ negative (tampered manifest): an added, removed, or runId-altered target list is rejected by the existing reviewed validator (6.4694ms)
+✔ negative (corrupted journal): an out-of-order sequence number or an unknown status is rejected by the existing journal state machine (1.6733ms)
+✔ negative (corrupted journal file on disk): truncated / non-newline-terminated / embedded-NUL journal bytes are treated as unresumable evidence, not replay instructions (368.3378ms)
+✔ reused run-id end-to-end: the exact 2026-09-11 run-id is refused by the guard used at claim time, independent of any cleanup logic (1.2363ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 383.839
+=== gate-ga-run-manifest ===
+✔ readRunManifest returns null when nothing has been claimed yet (1.7786ms)
+✔ claimRunManifest writes a CLAIMED manifest before any external write, with an empty ledger (162.0828ms)
+✔ claimRunManifest refuses to overwrite an existing manifest (never silently claims twice) (3.6682ms)
+✔ updateRunManifest advances phase and persists admin/invite/ledger, CAS-guarded by fromPhase (9.1918ms)
+✔ updateRunManifest refuses when fromPhase does not match the manifest currently on disk (CAS) (4.1567ms)
+✔ updateRunManifest refuses when no manifest exists yet (0.9936ms)
+✔ readRunManifest treats a corrupted manifest as a hard failure, never as absent (2.2989ms)
+✔ readRunManifest refuses an ADMIN_CREATED/INVITED manifest missing the fields that phase requires (2.3096ms)
+✔ updateRunManifest is atomic replace: no stray temp file survives a successful update, and a leftover temp file from a simulated crash never corrupts a read (7.6171ms)
+✔ the manifest file never contains a plaintext recipient email — only its hash (3.8339ms)
+✔ verifyFileAcl fires after both claimRunManifest and updateRunManifest (5.8895ms)
+✔ a throwing verifyFileAcl blocks claimRunManifest from being considered safe (3.0611ms)
+✔ a throwing verifyFileAcl blocks updateRunManifest from being considered safe (5.6252ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 220.92
+=== gate-ga-private-dir-acl ===
+﹣ non-Windows platform: both functions refuse (this mechanism is Windows-only by design) (0.8869ms) # SKIP
+✔ ensurePrivateDirectoryAcl creates the directory locked down to exactly current user + SYSTEM + Administrators, and verify agrees (2078.9312ms)
+✔ verifyPrivateDirectoryAcl is idempotent and safe to call repeatedly (2945.6487ms)
+✔ verifyPrivateDirectoryAcl refuses a directory with an extra grantee (e.g. Everyone) (2397.203ms)
+✔ verifyPrivateDirectoryAcl refuses a directory with inheritance re-enabled (2180.6562ms)
+✔ verifyPrivateDirectoryAcl refuses a missing directory rather than silently treating it as fine (0.4153ms)
+✔ ensurePrivateDirectoryAcl is idempotent: calling it twice on an already-correct directory leaves it correct (3289.7653ms)
+✔ a relative or non-absolute dir is refused, never silently resolved (0.2794ms)
+✔ verifyPrivateFileAcl: a file created inside a locked-down directory inherits exactly the allowed principals and passes (2379.3224ms)
+✔ verifyPrivateFileAcl refuses a file with an extra grantee, even if the parent directory is correctly locked down (2503.9761ms)
+✔ verifyPrivateFileAcl refuses a missing file (0.4906ms)
+✔ ensurePrivateDirectoryAcl on a brand-new path uses atomic creation and is correct on the first call (2179.7946ms)
+✔ verifyPrivateDirectoryAcl refuses a rule granted weaker rights than FullControl (2650.4459ms)
+✔ verifyPrivateDirectoryAcl refuses a rule missing ContainerInherit/ObjectInherit (would silently stop protecting new files) (2518.886ms)
+✔ verifyPrivateDirectoryAcl refuses a directory missing one of the three required principals (2384.3113ms)
+✔ verifyPrivateFileAcl refuses a file granted weaker rights than FullControl (2942.9946ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 30462.2943
+=== gate-ga-durable-journal ===
+✔ append writes one immutable file per event and events replay in seq order (13.0275ms)
+✔ reopening a journal continues seq numbering rather than restarting at 0 (9.6701ms)
+✔ a stray .tmp file left by a simulated crash mid-write does not corrupt reads and is simply ignored (11.063ms)
+✔ a genuinely corrupt (unparseable) committed event file still blocks — real corruption is not the same as an interrupted write (5.329ms)
+✔ an event file whose seq does not match its filename/position is rejected (tamper-evident) (7.5873ms)
+✔ no stray temp file remains after a successful append (real crash-atomicity proof, mirroring the checkpoint/manifest pattern) (3.6459ms)
+✔ ensureAcl/verifyFileAcl hooks are invoked (directory once, each successful append once) so a real ACL failure would block (5.4891ms)
+✔ a throwing verifyFileAcl blocks append from being considered safe (propagates, does not swallow) (3.4575ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 66.5348
+=== gate-ga-email-verification ===
+✔ claimOrResumeEmailIntent: fresh claim on first call, resume (not fresh) on every call after (175.4015ms)
+✔ no-duplicate-send: markEmailSent is the ONLY transition out of MAY_BE_SENT, and a second run never gets fresh:true again (9.8163ms)
+✔ indeterminate send state: a checkpoint stuck at MAY_BE_SENT (process died mid-send) is never resent and markEmailSent from it is the only legal next transition (4.738ms)
+✔ markEmailSent/markEmailVerified refuse from the wrong prior state (CAS-style) (13.959ms)
+✔ recordRegisteredRecipient is idempotent on the SAME uid, but refuses a DIFFERENT uid for the same recipient (contradiction, not silently overwritten) (7.2471ms)
+✔ recipientUid is durably recoverable after registration, even before the email is ever sent (the R7 crash-between-register-and-send window) (6.2708ms)
+✔ checkpoint never carries the plaintext recipient — only its hash (3.5927ms)
+✔ pollForVerification: false -> false -> verified continues automatically (loop actually loops) (0.3632ms)
+✔ pollForVerification: verification timeout (0.2771ms)
+✔ pollForVerification: verified for a different uid/email is refused, not accepted (0.3071ms)
+✔ pollForVerification: an Auth polling error propagates (fail-closed, not silently retried) (0.5285ms)
+✔ markEmailVerified is idempotent on an already-VERIFIED checkpoint (crash between verify-write and acceptInvite must resume, not throw) (12.2909ms)
+✔ generateRecipientPassword is CSPRNG: distinct, long, unguessable from the recipient identity (0.3145ms)
+✔ the recipient password is generated once at claim and is stable across every subsequent read (never regenerated on resume) (10.1164ms)
+✔ a checkpoint missing recipientPassword (a pre-R6 shape) is treated as corrupt, never silently accepted (2.155ms)
+✔ secret-scan: gateGaOrchestratorCore.mjs never passes recipientPassword (or the checkpoint object itself) to journal.append (0.6054ms)
+✔ checkpoint updates are atomic replace, not in-place overwrite: no stray temp file survives a successful update, and the real file is always fully valid JSON (13.0156ms)
+✔ a stray leftover atomic-replace temp file (simulating a crash mid-write) never corrupts a read of the real checkpoint (7.9656ms)
+✔ resume after interrupt: a fresh process reading the SAME checkpoint resumes polling with the persisted recipientUid, no new claim/send (9.2693ms)
+✔ verifyFileAcl fires after every checkpoint create/replace: claim, register, send, and verify (12.1498ms)
+✔ a throwing verifyFileAcl blocks the write from being considered safe (propagates out of claim/record/send/verify) (3.0889ms)
+✔ markEmailVerified (previously the one checkpoint write without an ACL re-check) is now covered: a throwing verifyFileAcl blocks it too (11.6639ms)
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 313.4641

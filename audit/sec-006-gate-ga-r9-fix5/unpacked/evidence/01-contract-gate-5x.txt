@@ -1,0 +1,50 @@
+=== contract-gate run 1 ===
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (11075.4424ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11200.131
+=== contract-gate run 2 ===
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (10395.5387ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10522.3258
+=== contract-gate run 3 ===
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (9829.3224ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9952.9932
+=== contract-gate run 4 ===
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (10523.5829ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10646.8784
+=== contract-gate run 5 ===
+✔ a real staging build missing a recovery method (reconcileAdminAndCompany) is refused with ZERO session/auth/network calls of any kind (11032.7672ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11154.9429
