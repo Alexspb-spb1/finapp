@@ -25,44 +25,53 @@ DEPLOYMENT_CHECK_13FN_BLOCKED: guard, baseline-receipt provenance, billing, endp
 ```
 Exit code: `2`. No `--out` file was written (confirmed by absence on disk).
 
-## Diagnostic steps taken (read-only; no code edited; no new live call beyond what's listed)
+## Diagnostic steps taken (read-only; no code edited)
+
+Five steps, in order. **Two of them (steps 2 and 3) performed real
+network reads** against `finapp-staging` (both read-only: project/billing/
+database/functions metadata GETs). No live call of any kind was made
+after step 5 / Attempt 2 below.
 
 1. Re-verified locally, no network: `guard()` (project/head/status/env),
    `commitIsReachable` (`git merge-base --is-ancestor`), and
    `validateBaselineReceiptProvenance()` against the real receipt bytes —
    all passed in isolation.
-2. Re-verified, with one real network round (auth + a single `project`
-   metadata GET, through the exact same `deploymentTransport`/session
-   code the CLI uses) — succeeded (HTTP 200).
-3. Ran a full manual reproduction of `run13FunctionDeploymentCheck` itself
-   (same imported function, real `authorize`/`get` implementations,
-   5 real GETs: project/billing/database/functionsV1/functionsV2) — this
-   is the **one** additional live network sequence beyond the original
-   attempt and the final successful retry. It succeeded and returned a
-   genuine `DEPLOYMENT_METADATA_VERIFIED_13FN` result with all 13
-   functions and zero baseline drift — proving the check's own logic and
-   the real staging state were fine; the failure in Attempt 1 was
-   somewhere in the CLI wrapper's own invocation path, not in the
-   underlying check.
+2. **[network]** Re-verified authorize() plus a single `project` metadata
+   GET, through the exact same `deploymentTransport`/session code the CLI
+   uses — succeeded (HTTP 200). One real network round-trip.
+3. **[network]** Ran a full manual reproduction of
+   `run13FunctionDeploymentCheck` itself (same imported function, real
+   `authorize`/`get` implementations, 5 real GETs: project/billing/
+   database/functionsV1/functionsV2). A second, separate real network
+   sequence. It succeeded and returned a genuine
+   `DEPLOYMENT_METADATA_VERIFIED_13FN` result with all 13 functions and
+   zero baseline drift — proving the check's own logic and the real
+   staging state were fine at that moment; the failure in Attempt 1 was
+   somewhere else in the CLI wrapper's own invocation path, not in the
+   underlying check itself or in the network access it performs.
 4. To pin the exact failure line in the CLI wrapper, created a **local,
    uncommitted, never-pushed** debug copy of `gateGaDeploymentCheck13.mjs`
    with one line changed (`catch {` → `catch (e) { console.error(...) }`)
-   to surface the swallowed error, and ran it — no new live network call;
-   it failed locally on `guard()` with `inventory_blocked`, because the
-   act of creating that debug copy inside the checkout had made
-   `git status` non-empty (an untracked file), which `guard()`'s own
-   dirty-worktree check correctly refused. This explained the *mechanism*
-   the CLI wrapper uses to fail closed, but not why Attempt 1 — on a tree
-   that was independently confirmed clean immediately beforehand — hit
-   the same condition.
+   to surface the swallowed error, and ran it — no network call; it
+   failed locally on `guard()` with `inventory_blocked`, because the act
+   of creating that debug copy inside the checkout had made `git status`
+   non-empty (an untracked file), which `guard()`'s own dirty-worktree
+   check correctly refused. This explained the *mechanism* the CLI
+   wrapper uses to fail closed in general, but did NOT explain why
+   Attempt 1 — on a tree independently confirmed clean immediately
+   beforehand, with no debug files yet created — hit that same failure
+   mode.
 5. Deleted both debug files, re-confirmed `git status --porcelain
-   --untracked-files=all` was empty again.
+   --untracked-files=all` was empty again. No network call in this step.
 
-No root cause more specific than "a transient dirty-tree/junction-timing
-condition at the exact moment of Attempt 1" was established. The
-underlying check logic, the real network path, and the CLI wrapper's own
-argument/path validation were all independently proven correct via steps
-1–4 above; none of them reproduce the failure when run clean.
+**The root cause of Attempt 1's failure was not established and is not
+claimed here.** Steps 1–4 rule out several candidate explanations
+(the check's own logic, the real network path, the CLI wrapper's
+argument/path validation, and the receipt's provenance were all
+independently verified correct when run clean) without identifying what
+actually happened during Attempt 1 itself. No further live diagnostic was
+attempted, per instruction, so the question was left genuinely open
+rather than resolved by inference.
 
 ## Attempt 2 — the documented command, exact retry: PASS
 
@@ -95,7 +104,9 @@ Exit code: `0`.
   --untracked-files=all` empty. No further live call was made after
   Attempt 2.
 
-**This was not a first-try clean pass — it took one blocked attempt, four
-read-only diagnostic steps (three of them purely local, one with one
-additional real-network reproduction), and one exact retry.** Reported
-here in full rather than only as a final PASS.
+**This was not a first-try clean pass — it took one blocked attempt, five
+read-only diagnostic steps (three purely local, two involving real
+network reads), and one exact retry that succeeded.** Reported here in
+full, with an unresolved root cause left explicitly unresolved, rather
+than presented as only a final PASS or backed by an unverified
+explanation.

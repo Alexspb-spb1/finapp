@@ -41,56 +41,84 @@ function expectFailure(name, dir) {
   mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
     'if (sha256Bytes(receiptBytes) !== functionsSha256) blocked()',
     'if (false) blocked()')
-  expectFailure('M1 the core hash-equality check (the whole point of this module) removed', dir)
+  expectFailure('M1 the core functions-hash-equality check removed', dir)
 }
 {
-  const dir = copyDir('m2-no-status-check')
+  const dir = copyDir('m2-no-checker-sourcehead-check')
   mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    "receipt.status !== 'DEPLOYMENT_METADATA_VERIFIED_13FN' ||",
-    'false ||')
-  expectFailure('M2 receipt status check removed (would accept a BLOCKED receipt)', dir)
+    "receipt.sourceHead !== expectedCheckerSourceHead || receipt.billingEnabled !== true ||",
+    'receipt.billingEnabled !== true ||')
+  expectFailure('M2 checker sourceHead binding check removed (would accept a receipt from any checker commit)', dir)
 }
 {
-  const dir = copyDir('m3-no-task-check')
+  const dir = copyDir('m3-no-baseline-receipt-hash-binding')
   mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    'receipt.task !== DEPLOYMENT_CHECK_13FN_TASK ||',
-    'false ||')
-  expectFailure('M3 receipt task-string check removed (would accept any unrelated JSON blob)', dir)
-}
-{
-  const dir = copyDir('m4-no-project-check')
-  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    'receipt.project !== expectedProject ||',
-    'false ||')
-  expectFailure('M4 receipt project check removed (would accept evidence from a different project)', dir)
-}
-{
-  const dir = copyDir('m5-no-staleness-check')
-  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    'if (!Number.isSafeInteger(instant) || finishedAt > instant || instant - finishedAt > maxReceiptAgeMs) blocked()',
-    'if (!Number.isSafeInteger(instant)) blocked()')
-  expectFailure('M5 receipt staleness/future-timestamp check removed', dir)
-}
-{
-  const dir = copyDir('m6-no-baseline-sourcehead-binding')
-  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    'receipt.baselineDriftCheckedAgainstSourceHead !== EXPECTED_BASELINE_SOURCE_HEAD) blocked()',
+    'receipt.baselineDriftCheckedAgainstReceiptSha256 !== expectedBaselineReceiptSha256) blocked()',
     'false) blocked()')
-  expectFailure('M6 pinned baseline sourceHead binding check removed', dir)
+  expectFailure('M3 baseline-receipt-hash binding check removed', dir)
 }
 {
-  const dir = copyDir('m7-build-draft-skips-binding-check')
+  const dir = copyDir('m4-no-family-name-validity-check')
   mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    "  const functionsSha256 = sha256Bytes(functionsReceiptBytes)\n  validateFunctionsShaBinding({ functionsSha256, receiptBytes: functionsReceiptBytes, expectedProject: parsed['--project'], now })",
+    'if (!shortName || !BASELINE_CALLABLES.includes(shortName) || seenBaseline.has(shortName) ||\n          fn.driftCheckedAgainstSourceHead !== expectedBaselineSourceHead) blocked()',
+    'if (false) blocked()')
+  expectFailure('M4 per-entry baseline name/uniqueness/drift-binding check removed', dir)
+}
+{
+  const dir = copyDir('m5-no-exact-set-size-check')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    'if (seenBaseline.size !== BASELINE_CALLABLES.length || seenMemberManagement.size !== MEMBER_MANAGEMENT_CALLABLES.length) blocked()',
+    'if (false) blocked()')
+  expectFailure('M5 exact-13-unique-names-across-both-families check removed (the exact gap the audit found)', dir)
+}
+{
+  const dir = copyDir('m6-no-freshness-check')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    'at > instant || instant - at > maxReceiptAgeMs) blocked()',
+    'false) blocked()')
+  expectFailure('M6 shared receipt-freshness check removed (affects all three receipt types)', dir)
+}
+{
+  const dir = copyDir('m7-drafts-skip-functions-binding-check')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    "  const functionsSha256 = sha256Bytes(functionsReceiptBytes)\n  validateFunctionsShaBinding({ functionsSha256, receiptBytes: functionsReceiptBytes, expectedProject: parsed['--project'], expectedCheckerSourceHead, now })",
     '  const functionsSha256 = sha256Bytes(functionsReceiptBytes)')
   expectFailure('M7 buildApprovalDraft no longer calls validateFunctionsShaBinding before emitting a draft', dir)
 }
 {
-  const dir = copyDir('m8-ttl-drifted-from-reviewed-source')
+  const dir = copyDir('m8-drafts-skip-mailbox-validation')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    "  validateMailboxReceipt({ receiptBytes: mailboxReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedCheckerSourceHead, now })\n",
+    '')
+  expectFailure('M8 buildApprovalDraft no longer validates the mailbox receipt (would accept forged mailbox bytes)', dir)
+}
+{
+  const dir = copyDir('m9-drafts-skip-auth-metadata-validation')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    "  validateAuthMetadataReceipt({ receiptBytes: authMetadataReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedCheckerSourceHead, now })\n",
+    '')
+  expectFailure('M9 buildApprovalDraft no longer validates the auth-metadata receipt (would accept forged auth bytes)', dir)
+}
+{
+  const dir = copyDir('m10-drafts-skip-owner-confirmation')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    'if (ownerConfirmsApproval !== true) blocked()',
+    'if (false) blocked()')
+  expectFailure('M10 explicit ownerConfirmsApproval requirement removed', dir)
+}
+{
+  const dir = copyDir('m11-drafts-skip-review-ci-status')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    "if (reviewStatus !== 'PASS' || ciStatus !== 'PASS') blocked()",
+    'if (false) blocked()')
+  expectFailure('M11 explicit reviewStatus/ciStatus requirement removed', dir)
+}
+{
+  const dir = copyDir('m12-ttl-drifted-from-reviewed-source')
   mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
     'export const APPROVAL_TTL_MS = 60 * 60 * 1000',
     'export const APPROVAL_TTL_MS = 45 * 60 * 1000')
-  expectFailure('M8 APPROVAL_TTL_MS silently drifted from the reviewed executor\'s real constant', dir)
+  expectFailure('M12 APPROVAL_TTL_MS silently drifted from the reviewed executor\'s real constant', dir)
 }
 
 fs.rmSync(MUTANTS_ROOT, { recursive: true, force: true })

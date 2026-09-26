@@ -53,6 +53,7 @@
     "test:invitation-gate-ga-deployment-check-13fn-mutations": "node scripts/invitationRehearsal/gateGaDeploymentCheck13MutationChecks.mjs",
     "test:invitation-gate-ga-approval-evidence-binding": "node --test scripts/invitationRehearsal/gateGaApprovalEvidenceBindingSelfTest.mjs",
     "test:invitation-gate-ga-approval-evidence-binding-mutations": "node scripts/invitationRehearsal/gateGaApprovalEvidenceBindingMutationChecks.mjs",
+    "test:invitation-gate-ga-secure-executor": "node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs",
     "test:release-artifact-preflight": "node --test --test-isolation=none scripts/invitationRehearsal/releaseArtifactSelfTest.mjs",
     "test:unit": "vitest run src",
     "lint": "eslint .",
