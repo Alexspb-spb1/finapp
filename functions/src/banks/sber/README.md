@@ -103,6 +103,7 @@ reverse proxy before mounting. Do not rename to a broadly shared auth cookie as
 a workaround. Browser navigation, actual Firebase Auth/session issuance and this
 proxy behavior have not been exercised; unit tests substitute Admin SDK.
 The Firestore integration test uses real domain transactions but synthetic Auth.
+The proposed routes and browser/proxy acceptance checks are in `ROUTING.md`.
 
 ## Secret manager readers (implemented, no secret installation)
 

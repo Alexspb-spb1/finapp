@@ -276,3 +276,22 @@ callback URL и не запускать OAuth до выбора и провер�
 Сертификат не является подтверждённым signer leaf для ГОСТ/CMS ответа, не
 установлен как доверенный в runtime и не закрывает подпись. Требуются
 подписанные sandbox fixtures и подтверждение доверенной signing chain от банка.
+
+## Продолжение 2026-09-28 — маршрут OAuth для продукта
+
+Проверен текущий hosting: SPA выпускается GitHub Pages с базовым путём
+`/finapp/`; в `firebase.json` Hosting не настроен, HTTP-фабрика Sber не
+экспортируется. GitHub Pages не может принять серверный OAuth callback.
+Firebase Hosting rewrite также не совместим с текущим host-only cookie:
+официальная документация передаёт функции только cookie `__session`, а
+обработчик использует `__Host-finapp-sber`. Источник:
+https://firebase.google.com/docs/hosting/manage-cache
+
+Добавлен `functions/src/banks/sber/ROUTING.md`: единый HTTPS origin для SPA,
+begin/callback/result; конкретные относительные пути, требование сохранить
+Cookie/Set-Cookie, исключить query/секреты из логов и пройти browser round-trip
+с negative/replay cases. Фактический host и полный Redirect URI пока нельзя
+назвать: отдельный совместимый ingress не выбран/развёрнут. Никаких изменений
+`firebase.json`, GitHub Pages, Functions index, облака и кабинета Сбера нет.
+Это локальный design gate, не доказательство proxy/browser behavior. BANK-003
+остаётся PARTIAL наряду с GOST/CMS и test fixtures.
