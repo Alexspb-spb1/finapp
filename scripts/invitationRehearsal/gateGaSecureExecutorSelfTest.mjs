@@ -297,6 +297,11 @@ function buildDemoApprovalPair({ realHead, functionsReceiptBytes, journalPath, o
 function runRealExecute({ dir, realHead, functionsReceiptPath, approvalBytes, recipient, recipientConfirmedSha256, journalPath, outPath }) {
   const approvalPath = path.join(dir, `approval-${Math.random().toString(36).slice(2, 8)}.json`)
   fs.writeFileSync(approvalPath, approvalBytes)
+  // The matching-hash companion must stop on its own missing-host check,
+  // even when the parent test suite is running with emulators available.
+  const childEnv = { ...process.env }
+  delete childEnv.FIRESTORE_EMULATOR_HOST
+  delete childEnv.FIREBASE_AUTH_EMULATOR_HOST
   const started = Date.now()
   const result = spawnSync(process.execPath, [
     path.join(HERE, 'gateGaSecureExecutor.mjs'), '--execute',
@@ -306,7 +311,7 @@ function runRealExecute({ dir, realHead, functionsReceiptPath, approvalBytes, re
     '--journal', journalPath, '--out', outPath,
     '--recipient', recipient, '--recipient-confirmed-sha256', recipientConfirmedSha256,
     '--resume', 'false', '--legacy-cleanup-approved', 'false',
-  ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000, env: { ...process.env } })
+  ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000, env: childEnv })
   return { result, elapsedMs: Date.now() - started, outPath, journalPath }
 }
 
