@@ -1,7 +1,10 @@
 # FINAPP-1.0-SEC-006-GATE-G-A-APPROVAL-EVIDENCE-BINDING — closing the functionsSha256 gap
 
 ## Итоговый статус
-READY_FOR_REVIEW (2nd fix pass responding to CHANGES_REQUIRED)
+READY_FOR_REVIEW for items 1–4a/4b (code fixes, all proven by new/updated
+tests). Item 4c (crash-window/resume-kill/E2E regression) is explicitly
+**NOT VERIFIED** in this environment — see that section for exactly why
+and what was tried. Not claimed as a passing regression run.
 
 ## Branch / commit
 - branch: `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING`
@@ -170,18 +173,43 @@ real CLI subprocess's un-injectable `Date.now()` — fixed the same way:
 one fresh timestamp computed once per test, reused across all three
 receipts' fixture bytes.
 
-**4c — crash-window/resume-kill/E2E regression: run for real this round,
-not skipped.** This environment's system Java (Temurin 17) is
-incompatible with the current `firebase-tools`' emulator requirement
-(21+), as reported last round. This round, a compatible runtime was
-found already installed on this machine — Android Studio's bundled JBR,
-`21.0.10` — and used via a `JAVA_HOME` override, without installing any
-new software. The Firebase emulator suite (Auth, Firestore, Functions
-host) started successfully under it. **Crash-window, resume-kill, and
-mutation regression relevant to this round's changes were run for real
-against the clean, committed state of this exact branch** (see results
-table). This closes the previously-disclosed gap rather than leaving it
-as a permanent unverified footnote.
+**4c — crash-window/resume-kill/E2E regression: genuine progress, but
+still UNVERIFIED — not claimed ready to run.** This environment's system
+Java (Temurin 17) was incompatible with `firebase-tools`' emulator
+requirement (21+), as reported last round. This round, a compatible
+runtime already installed on this machine (Android Studio's bundled JBR,
+`21.0.10`) was pointed to via a `JAVA_HOME` override — no new software
+installed — and the emulator suite (Auth, Firestore, Functions host)
+started under it. That got further than last round: the functions
+package had never been built in this clone at all (`functions/lib` was
+missing, causing an immediate load failure); this round it was built
+fresh from this clone's own reviewed `functions/src` (byte-identical to
+fix5, confirmed via `git diff`), using `functions/node_modules` linked
+from the main dev worktree (identical `package-lock.json`, confirmed
+byte-for-byte).
+
+**That build then surfaced a second, separate, deeper blocker:**
+restarting the emulator suite to pick up the built functions produced
+`Failed to load function definition from source: ... Cannot determine
+backend specification. Timeout after 10000`, alongside a printed warning
+that this host's global Node (`v24.16.0`) does not match what
+`functions/package.json` declares (`engines.node: "22"`). No alternate
+Node 22 runtime is installed on this machine (checked: no `nvm`, no
+second `node.exe` under `Program Files\nodejs`), and installing one is a
+real, separate system change this report does not make unilaterally
+without being asked — unlike the JDK case, there was no already-installed
+compatible runtime to point at instead.
+
+**Consequence, stated plainly, not glossed over:** crash-window,
+resume-kill, and the standalone E2E check remain **NOT VERIFIED** in this
+environment this round. The Java-version blocker reported last round is
+resolved; a different, Node-version-related blocker in the Functions
+emulator's own backend-specification introspection was found in its
+place and is not resolved. This is a real limitation of the current
+local environment, not of the code changed this round — the emulator-
+independent tests that exercise this round's actual changes (35/35 +
+14/14 evidence-binding; 8/8 secure-executor, including 3 real-subprocess
+tests) are unaffected and green regardless.
 
 ---
 
@@ -195,8 +223,9 @@ as a permanent unverified footnote.
 | `node scripts/invitationRehearsal/gateGaApprovalEvidenceBindingMutationChecks.mjs` | PASS 14/14 DETECTED | |
 | `node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs` | PASS 8/8 | includes 3 new real-subprocess tests against the real file |
 | `node --test scripts/invitationRehearsal/deploymentCheckSelfTest.mjs` (unchanged) | PASS 19/19 | |
-| `test:invitation-gate-ga-crash-windows` (JDK 21 via Android Studio JBR, `JAVA_HOME` override) | **PASS 8/8** | run against this round's clean, committed HEAD — see below |
-| `test:invitation-gate-ga-resume-kill` | PASS | |
+| `test:invitation-gate-ga-crash-windows` | **NOT AVAILABLE** | Java blocker resolved (JDK 21 via Android Studio JBR, no install needed) but a separate, deeper Node 22-vs-24 blocker found in the Functions emulator's backend-spec introspection — see item 4c |
+| `test:invitation-gate-ga-resume-kill` | **NOT AVAILABLE** | same root cause as above |
+| standalone emulator E2E | **NOT AVAILABLE** | same root cause as above |
 | `git status --short` / `git diff` vs fix5 on all original files | empty | provably untouched, this round and every round |
 
 ## Фактический вывод существенных тестов
@@ -220,8 +249,10 @@ DETECTED M12 APPROVAL_TTL_MS silently drifted from the reviewed executor's real 
 SUMMARY total=14 detected=14 undetected=0
 ```
 
-Crash-window (8 scenarios, real two-process, real JDK-21-backed emulator
-suite, this round's committed HEAD): `SUMMARY total=8 pass=8 fail=0`.
+Crash-window / resume-kill / E2E: **not run to completion this round** —
+see item 4c for the exact new blocker found (Node 22-vs-24 mismatch in
+the Functions emulator, discovered only after resolving last round's Java
+blocker). Not claimed as PASS.
 
 ---
 
