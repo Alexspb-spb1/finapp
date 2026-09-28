@@ -23,6 +23,10 @@ jobs:
           node-version: 24.16.0
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Verify package bytes from Windows checkout
+        shell: bash
+        run: |
+          node -e 'const fs=require("fs"),crypto=require("crypto"),path=require("path");const dir="scripts/invitationRehearsal";const lines=fs.readFileSync(path.join(dir,"CODE-SHA256SUMS.txt"),"utf8").trim().split("\n");let bad=0;for(const line of lines){const m=/^([a-f0-9]{64})\s+\*?(.+)$/.exec(line.trimEnd());if(!m)throw Error("invalid manifest");const actual=crypto.createHash("sha256").update(fs.readFileSync(path.join(dir,m[2]))).digest("hex");if(actual!==m[1]){console.error("PACKAGE_BYTE_MISMATCH",m[2]);bad++}}if(bad)process.exit(1);console.log("PACKAGE_BYTES_VERIFIED",lines.length)'
       - run: npm ci
       - run: npm run test:invitation-gate-ga-secure-executor
       - uses: actions/setup-node@v4
