@@ -55,6 +55,17 @@ full bank-account directory.
 - Private HTTP handlers implement verified Firebase sessions, Secure/HttpOnly
   SameSite cookies, origin controls, no-store/no-referrer and clean redirects.
   They are not mounted as Cloud Functions or browser routes. No scheduler exists.
+- Every Sber API request through `MtlsTransport`, including token, user-info and
+  statements, now requires a `FirestoreSberRateGate`. It is shared by all
+  connections for the same platform client and environment (not per company).
+  The bank's platform documentation requires more than two seconds between
+  requests. A Firestore transaction grants one request slot; release after
+  response/error starts a 2200 ms cooldown. A 45-second crash lease exceeds
+  the 20-second HTTP timeout. Waiting is abortable and bounded to 25 seconds;
+  failure never bypasses the gate. No network occurs inside a transaction.
+  Gate state lives under private `bankSberRequestGates/{environment}-{clientHash}`.
+  Actual bank timing, cross-region clock skew, long process pauses and multi
+  instance operation require sandbox/observability validation before activation.
 
 ## HTTP/session boundary (implemented, not deployed)
 
@@ -139,6 +150,11 @@ confirmed GOST signing leaf. Do not pin it as the token signer or invent a chain
 from it. Local OpenSSL exposes only its default provider. The exact CMS signed
 content, bank signing chain, revocation policy and GOST-compatible runtime need
 confirmation and bank-compatible test vectors before this gate can close.
+Further inspection on 2026-09-28: the CMS example embeds a certificate from a
+test organization, and contains no embedded content. It cannot establish the
+production Sber token signing identity or serve as a positive bank token fixture.
+The SberBusiness ID platform guide also documents the greater-than-two-second
+API interval; this triggered the private rate gate above.
 
 ## REST and monetary correctness
 
@@ -187,6 +203,7 @@ or full third-party documentation are committed; tests are invented synthetic da
 - https://developers.sber.ru/docs/ru/sber-api/specifications/oauth/oauth-user-info-get
 - https://developers.sber.ru/docs/ru/sber-api/specifications/statement/transactions
 - https://developers.sber.ru/docs/ru/sber-api/start/tls
+- https://developers.sber.ru/docs/ru/sber-api/scenarios/profile-creation/sbbid/overview
 
 The Postman collection has an older unversioned token path; current resource
 specification v2 takes precedence. No Postman scripts (including token logging)

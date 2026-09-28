@@ -188,3 +188,51 @@ https://firebase.google.com/docs/functions/config-env
 Полный банковский BANK-003 ещё не принят. Следующий разрешённый шаг остаётся
 BANK-003: GOST/CMS verification + точный пакет sandbox deployment, затем independent
 review/CI; BANK-004/005 не начаты.
+
+## Продолжение 2026-09-28 — интервал запросов Sber API
+
+Baseline: чистая ветка `feature/bank-integrations-bank-003` HEAD
+`48be0cd27c70d3ae31019f078d6ffa93074e77ec`; Draft #32 без review.
+Официальная инструкция SberBusiness ID для платформ требует интервал между
+запросами к Sber API **больше 2 секунд**. Исходный transport мог отправить
+token→user-info подряд и не сериализовал подключения разных компаний.
+Источник: https://developers.sber.ru/docs/ru/sber-api/scenarios/profile-creation/sbbid/overview
+
+Добавлено: обязательный Firestore-backed `FirestoreSberRateGate` в `MtlsTransport`.
+Ключ gate общий на environment+platform client, а не отдельный для каждого
+пользователя. Отправка только после атомарного claim; 2200 мс после ответа
+или ошибки, fence/owner, crash lease 45 секунд, ограниченное ожидание и abort.
+Отказ чтения/записи или повреждённый gate запрещает запрос к банку.
+Правила Firestore сохраняют deny-all; rules regression включает новый путь.
+Нет deployment, bank calls, секретов, миграций ledger или company_data.
+
+Остаточные ограничения: реальные межрегиональные часы и большие паузы процесса,
+поведение банка при высокой конкуренции и взаимодействие с actual mTLS требуют
+проверки sandbox. Подписанные токены по-прежнему отклоняются до production
+GOST/CMS verifier. Публичный пример содержит сертификат тестовой организации,
+без content; не использовать его как positive production signature fixture.
+
+Проверки (локальный Node 22.23.3 Functions; root exact Node 24.16.0):
+
+| Проверка | Результат |
+|---|---|
+| Firestore gate narrow suite | 4/4 PASS |
+| Bank Firestore combined suite | 67/67 PASS (4 files; 4 новых) |
+| Functions unit | 546/546 PASS (24 files; 2 новых) |
+| Functions lint/typecheck/build | PASS |
+| Firestore Rules | 129/129 PASS (новый gate path включён) |
+| `git diff --check` | PASS |
+| Root code checks | BASELINE REUSED — frontend не менялся; до этого продолжения 248/248, lint/typecheck/build PASS |
+| `npm ci` | BASELINE REUSED — прежняя успешная установка, lockfiles не менялись |
+| Full Functions emulator и GitHub CI на stacked PR | NOT VERIFIED — прежний Unix socket EPERM; workflow слушает base=main |
+| test:run / test:e2e | NOT AVAILABLE — scripts отсутствуют |
+
+Первый узкий прогон: 3/4, неверная категория ошибки при повреждённом gate
+(`invalid_bank_data` вместо безопасного `transient`). Исправлено fail-closed
+преобразованием ошибки; повтор узкого и общего набора PASS. Никаких real Sber
+запросов, операций с банковскими аккаунтами, secret installation и deployment.
+Независимое review отсутствует. Риск skew/долгой паузы между instances остаётся
+ограничением для sandbox acceptance.
+
+Итог продолжения: PARTIAL. Следующий разрешённый шаг остаётся BANK-003 —
+GOST/CMS verifier, bank-provided signers/trust и sandbox proof; BANK-004 не начат.

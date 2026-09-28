@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'node:https'
 import { BankError } from '../errors'
 import { BankReadFailure } from '../storage/worker'
 import { API_ORIGINS, STATEMENT_PATH, type SberConfig } from './protocol'
+import type { SberRateGate } from './rateGate'
 
 export type Resource = 'token' | 'profile' | 'statement'
 export interface WireRequest { resource: Resource; token?: string; form?: URLSearchParams; query?: URLSearchParams }
@@ -12,7 +13,8 @@ export interface TlsSecrets { pfx: Buffer; passphrase: string; ca: string[] }
 const paths: Record<Resource, string> = { token: '/ic/sso/api/v2/oauth/token', profile: '/ic/sso/api/v2/oauth/user-info', statement: STATEMENT_PATH }
 /** Fixed hosts/resources, verified mTLS, no redirects, bounded response and total timeout. */
 export class MtlsTransport implements SberTransport {
-  constructor(private readonly environment: SberConfig['environment'], private readonly secrets: () => Promise<TlsSecrets>) {}
+  constructor(private readonly environment: SberConfig['environment'], private readonly secrets: () => Promise<TlsSecrets>,
+    private readonly gate: SberRateGate) {}
   async send(input: WireRequest, signal: AbortSignal): Promise<WireResponse> {
     const origin = API_ORIGINS[this.environment]
     if (!origin || !Object.hasOwn(paths, input.resource)) throw new BankError('bank_access_denied')
@@ -22,7 +24,8 @@ export class MtlsTransport implements SberTransport {
     const url = new URL(paths[input.resource], origin)
     url.search = input.query?.toString() ?? ''
     const body = input.form?.toString()
-    return new Promise((resolve, reject) => {
+    return this.gate.run(leaseUntil => new Promise((resolve, reject) => {
+      if (signal.aborted || Date.now() + 20_000 >= leaseUntil) { reject(new BankReadFailure('transient')); return }
       const fail = () => reject(new BankReadFailure('transient'))
       let req: ClientRequest
       try { req = httpsRequest(url, { method: input.resource === 'token' ? 'POST' : 'GET',
@@ -48,7 +51,7 @@ export class MtlsTransport implements SberTransport {
       req.on('error', fail)
       if (body) req.write(body)
       req.end()
-    })
+    }), signal)
   }
 }
 export function requireSuccess(response: WireResponse, now = Date.now()): string {

@@ -6,7 +6,7 @@ import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, Timestamp } from '
 let env: RulesTestEnvironment
 const companyId = 'synthetic-bank-company'
 const uid = 'synthetic-bank-admin'
-const paths = ['bankOAuthStates/synthetic-state', 'bankCompanies/synthetic-bank-company',
+const paths = ['bankOAuthStates/synthetic-state', 'bankSberRequestGates/sandbox-synthetic', 'bankCompanies/synthetic-bank-company',
   ...['connections', 'bindings', 'operations', 'jobs', 'matchBuckets', 'observations', 'outbox', 'credentials'].map(name => `bankCompanies/${companyId}/${name}/synthetic`),
   `bankCompanies/${companyId}/jobs/synthetic/receipts/0`,
   `bankCompanies/${companyId}/jobs/synthetic/cursors/synthetic`]
