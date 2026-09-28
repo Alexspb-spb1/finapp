@@ -20,6 +20,14 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const sha256 = value => createHash('sha256').update(value).digest('hex')
+// Deliberately DIFFERENT throughout this file, matching the real
+// playbook exactly: the functions receipt is produced by
+// gateGaDeploymentCheck13.mjs from the checker checkout (CHECKER_HEAD),
+// while the mailbox/auth-metadata receipts AND the --execute run itself
+// happen from the G-A executor checkout (HEAD) — the executor's own
+// --expected-head. Using a single shared value for all three, as the
+// prior fixtures did, hid a real bug (see the "split expected source
+// head" tests below).
 const HEAD = 'a'.repeat(40)
 const CHECKER_HEAD = 'b'.repeat(40)
 
@@ -69,13 +77,13 @@ function realMailboxReceipt(overrides = {}) {
     task: 'SEC-006 Stage 8 mailbox discovery', status: 'MAILBOX_DISCOVERY_COMPLETE', project: PROJECT,
     capturedAt: '2026-09-26T15:00:00.000Z', accountExists: false, account: null,
     profile: { profileExists: false, profileFieldsSha256: null }, cloudMutations: 0, emailsSent: 0,
-    sourceHead: CHECKER_HEAD, ...overrides,
+    sourceHead: HEAD, ...overrides,
   }))
 }
 function realAuthMetadataReceipt(overrides = {}) {
   return Buffer.from(JSON.stringify({
     task: 'SEC-006 Stage 8 Auth verification-template shape discovery',
-    status: 'AUTH_VERIFICATION_TEMPLATE_SHAPE_DISCOVERED', project: PROJECT, sourceHead: CHECKER_HEAD,
+    status: 'AUTH_VERIFICATION_TEMPLATE_SHAPE_DISCOVERED', project: PROJECT, sourceHead: HEAD,
     observedAt: '2026-09-26T15:00:00.000Z', emailPasswordEnabled: true, userSignupDisabled: false,
     verificationMethodPresent: true, verificationTemplateMetadataPresent: true, callbackDomainPresent: true,
     metadataSha256: sha256('metadata'), ...overrides,
@@ -153,6 +161,27 @@ test('validateFunctionsShaBinding: a receipt from the wrong checker commit (sour
   assert.throws(() => validateFunctionsShaBinding({ functionsSha256: sha256(bytes), receiptBytes: bytes, expectedCheckerSourceHead: 'c'.repeat(40), now: AT }), /approval_evidence_binding_blocked/)
 })
 
+test('validateFunctionsShaBinding: a receipt whose sourceHead is the (correct-for-discovery) executor HEAD instead of the checker HEAD is rejected — reproduces the real playbook\'s mismatch exactly', () => {
+  const bytes = realFunctionsReceipt({ sourceHead: HEAD })
+  assert.throws(() => validateFunctionsShaBinding({ functionsSha256: sha256(bytes), receiptBytes: bytes, expectedCheckerSourceHead: CHECKER_HEAD, now: AT }), /approval_evidence_binding_blocked/)
+})
+
+test('validateFunctionsShaBinding: a function whose full resource path embeds a foreign project (only the trailing name segment is correct) is rejected', () => {
+  const receipt = JSON.parse(realFunctionsReceipt().toString('utf8'))
+  const idx = receipt.functions.findIndex(f => f.name.endsWith('/acceptInvite'))
+  receipt.functions[idx] = { ...receipt.functions[idx], name: 'projects/some-other-project/locations/us-central1/functions/acceptInvite' }
+  const bytes = Buffer.from(JSON.stringify(receipt))
+  assert.throws(() => validateFunctionsShaBinding({ functionsSha256: sha256(bytes), receiptBytes: bytes, expectedCheckerSourceHead: CHECKER_HEAD, now: AT }), /approval_evidence_binding_blocked/)
+})
+
+test('validateFunctionsShaBinding: a function whose full resource path embeds the wrong region is rejected', () => {
+  const receipt = JSON.parse(realFunctionsReceipt().toString('utf8'))
+  const idx = receipt.functions.findIndex(f => f.name.endsWith('/acceptInvite'))
+  receipt.functions[idx] = { ...receipt.functions[idx], name: `projects/${PROJECT}/locations/europe-west1/functions/acceptInvite` }
+  const bytes = Buffer.from(JSON.stringify(receipt))
+  assert.throws(() => validateFunctionsShaBinding({ functionsSha256: sha256(bytes), receiptBytes: bytes, expectedCheckerSourceHead: CHECKER_HEAD, now: AT }), /approval_evidence_binding_blocked/)
+})
+
 test('validateFunctionsShaBinding: a receipt bound to the wrong baseline receipt SHA-256 is rejected', () => {
   const receipt = JSON.parse(realFunctionsReceipt().toString('utf8'))
   receipt.baselineDriftCheckedAgainstReceiptSha256 = 'd'.repeat(64)
@@ -176,38 +205,48 @@ test('validateFunctionsShaBinding: a stale or future-timestamped receipt is reje
 
 // ---- validateMailboxReceipt / validateAuthMetadataReceipt ----
 
-test('validateMailboxReceipt: positive, and wrong task/status/project/sourceHead/nonzero-mutations are rejected', () => {
+test('validateMailboxReceipt: positive (bound to the EXECUTOR head, not the checker head), and wrong task/status/project/sourceHead/nonzero-mutations are rejected', () => {
   const bytes = realMailboxReceipt()
-  const result = validateMailboxReceipt({ receiptBytes: bytes, expectedSourceHead: CHECKER_HEAD, now: AT })
+  const result = validateMailboxReceipt({ receiptBytes: bytes, expectedSourceHead: HEAD, now: AT })
   assert.equal(result.accountExists, false)
   for (const overrides of [{ task: 'x' }, { status: 'x' }, { project: 'x' }, { sourceHead: 'f'.repeat(40) }, { cloudMutations: 1 }, { emailsSent: 1 }, { accountExists: 'no' }]) {
     const b = realMailboxReceipt(overrides)
-    assert.throws(() => validateMailboxReceipt({ receiptBytes: b, expectedSourceHead: CHECKER_HEAD, now: AT }), /approval_evidence_binding_blocked/)
+    assert.throws(() => validateMailboxReceipt({ receiptBytes: b, expectedSourceHead: HEAD, now: AT }), /approval_evidence_binding_blocked/)
   }
+})
+
+test('validateMailboxReceipt: a receipt whose sourceHead is the (correct-for-functions) CHECKER_HEAD instead of the executor HEAD is rejected — the two are never interchangeable', () => {
+  const bytes = realMailboxReceipt({ sourceHead: CHECKER_HEAD })
+  assert.throws(() => validateMailboxReceipt({ receiptBytes: bytes, expectedSourceHead: HEAD, now: AT }), /approval_evidence_binding_blocked/)
 })
 
 test('validateMailboxReceipt: a fabricated/synthetic byte string (not this schema at all) is rejected', () => {
   const bytes = Buffer.from('totally-made-up-not-json-shaped-like-a-receipt')
-  assert.throws(() => validateMailboxReceipt({ receiptBytes: bytes, expectedSourceHead: CHECKER_HEAD, now: AT }), /approval_evidence_binding_blocked/)
+  assert.throws(() => validateMailboxReceipt({ receiptBytes: bytes, expectedSourceHead: HEAD, now: AT }), /approval_evidence_binding_blocked/)
 })
 
 test('validateMailboxReceipt: stale receipt is rejected', () => {
   const bytes = realMailboxReceipt({ capturedAt: '2026-09-26T10:00:00.000Z' })
-  assert.throws(() => validateMailboxReceipt({ receiptBytes: bytes, expectedSourceHead: CHECKER_HEAD, now: AT }), /approval_evidence_binding_blocked/)
+  assert.throws(() => validateMailboxReceipt({ receiptBytes: bytes, expectedSourceHead: HEAD, now: AT }), /approval_evidence_binding_blocked/)
 })
 
-test('validateAuthMetadataReceipt: positive, and wrong task/status/project/sourceHead/flags are rejected', () => {
+test('validateAuthMetadataReceipt: positive (bound to the EXECUTOR head), and wrong task/status/project/sourceHead/flags are rejected', () => {
   const bytes = realAuthMetadataReceipt()
-  validateAuthMetadataReceipt({ receiptBytes: bytes, expectedSourceHead: CHECKER_HEAD, now: AT })
+  validateAuthMetadataReceipt({ receiptBytes: bytes, expectedSourceHead: HEAD, now: AT })
   for (const overrides of [{ task: 'x' }, { status: 'x' }, { project: 'x' }, { sourceHead: 'f'.repeat(40) }, { emailPasswordEnabled: false }, { userSignupDisabled: true }, { verificationMethodPresent: false }, { metadataSha256: 'not-hex' }]) {
     const b = realAuthMetadataReceipt(overrides)
-    assert.throws(() => validateAuthMetadataReceipt({ receiptBytes: b, expectedSourceHead: CHECKER_HEAD, now: AT }), /approval_evidence_binding_blocked/)
+    assert.throws(() => validateAuthMetadataReceipt({ receiptBytes: b, expectedSourceHead: HEAD, now: AT }), /approval_evidence_binding_blocked/)
   }
+})
+
+test('validateAuthMetadataReceipt: a receipt whose sourceHead is the (correct-for-functions) CHECKER_HEAD instead of the executor HEAD is rejected', () => {
+  const bytes = realAuthMetadataReceipt({ sourceHead: CHECKER_HEAD })
+  assert.throws(() => validateAuthMetadataReceipt({ receiptBytes: bytes, expectedSourceHead: HEAD, now: AT }), /approval_evidence_binding_blocked/)
 })
 
 test('validateAuthMetadataReceipt: a fabricated/synthetic byte string is rejected', () => {
   const bytes = Buffer.from('also-not-a-real-receipt')
-  assert.throws(() => validateAuthMetadataReceipt({ receiptBytes: bytes, expectedSourceHead: CHECKER_HEAD, now: AT }), /approval_evidence_binding_blocked/)
+  assert.throws(() => validateAuthMetadataReceipt({ receiptBytes: bytes, expectedSourceHead: HEAD, now: AT }), /approval_evidence_binding_blocked/)
 })
 
 // ---- buildApprovalDraft ----
@@ -226,7 +265,7 @@ function draftInputs(overrides = {}) {
     functionsReceiptBytes: realFunctionsReceipt(),
     authMetadataReceiptBytes: realAuthMetadataReceipt(),
     stagingFingerprint: 'c'.repeat(64),
-    expectedCheckerSourceHead: CHECKER_HEAD,
+    expectedFunctionsCheckerSourceHead: CHECKER_HEAD, expectedDiscoverySourceHead: HEAD,
     reviewStatus: 'PASS', ciStatus: 'PASS', ownerConfirmsApproval: true,
     approvedAt: '2026-09-26T15:00:00.000Z',
     now: AT,
@@ -315,18 +354,26 @@ test('buildApprovalDraft: expiresAt is always exactly approvedAt + 1h, regardles
 test('CLI integration: gateGaBuildApprovalDraft.mjs, run as a real process against real files, produces a file the real validateExecutionApproval genuinely accepts', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-ga-approval-cli-integration-'))
   try {
+    // The real CLI process has no injectable `now` — it always checks
+    // freshness against real wall-clock time. Compute ONE timestamp ONCE
+    // and reuse that exact same string for all three receipts' fixed
+    // fixture bytes (never call `new Date()` a second time for "the same"
+    // receipt elsewhere — doing so was the exact flake the audit found:
+    // two independently-timestamped copies of what's meant to be the same
+    // fixture hash differently).
+    const freshNow = new Date().toISOString()
     const mailboxPath = path.join(dir, 'mailbox.json')
     const functionsPath = path.join(dir, 'functions.json')
     const authPath = path.join(dir, 'auth.json')
     const approvalPath = path.join(dir, 'approval.json')
-    fs.writeFileSync(mailboxPath, realMailboxReceipt())
-    fs.writeFileSync(functionsPath, realFunctionsReceipt())
-    fs.writeFileSync(authPath, realAuthMetadataReceipt())
+    fs.writeFileSync(mailboxPath, realMailboxReceipt({ capturedAt: freshNow }))
+    fs.writeFileSync(functionsPath, realFunctionsReceipt({ finishedAt: freshNow }))
+    fs.writeFileSync(authPath, realAuthMetadataReceipt({ observedAt: freshNow }))
 
     const result = spawnSync(process.execPath, [
       path.join(HERE, 'gateGaBuildApprovalDraft.mjs'),
       '--mailbox-receipt', mailboxPath, '--functions-receipt', functionsPath, '--auth-metadata-receipt', authPath,
-      '--staging-fingerprint', 'c'.repeat(64), '--expected-checker-source-head', CHECKER_HEAD,
+      '--staging-fingerprint', 'c'.repeat(64), '--expected-functions-checker-source-head', CHECKER_HEAD, '--expected-discovery-source-head', HEAD,
       '--review-status', 'PASS', '--ci-status', 'PASS', '--owner-confirms-approval', 'true',
       '--out', approvalPath,
       '--', '--profile', 'staging', '--project', PROJECT, '--expected-head', HEAD,
@@ -360,18 +407,21 @@ test('CLI integration: gateGaBuildApprovalDraft.mjs, run as a real process again
 test('CLI integration: a forged --functions-receipt (well-formed JSON, wrong schema) is refused by the real CLI process, no approval file written', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-ga-approval-cli-integration-neg-'))
   try {
+    // Fresh mailbox/auth so the refusal is attributable to the forged
+    // functions receipt specifically, not incidentally to staleness.
+    const freshNow = new Date().toISOString()
     const mailboxPath = path.join(dir, 'mailbox.json')
     const functionsPath = path.join(dir, 'functions.json')
     const authPath = path.join(dir, 'auth.json')
     const approvalPath = path.join(dir, 'approval.json')
-    fs.writeFileSync(mailboxPath, realMailboxReceipt())
+    fs.writeFileSync(mailboxPath, realMailboxReceipt({ capturedAt: freshNow }))
     fs.writeFileSync(functionsPath, JSON.stringify({ not: 'a real receipt' }))
-    fs.writeFileSync(authPath, realAuthMetadataReceipt())
+    fs.writeFileSync(authPath, realAuthMetadataReceipt({ observedAt: freshNow }))
 
     const result = spawnSync(process.execPath, [
       path.join(HERE, 'gateGaBuildApprovalDraft.mjs'),
       '--mailbox-receipt', mailboxPath, '--functions-receipt', functionsPath, '--auth-metadata-receipt', authPath,
-      '--staging-fingerprint', 'c'.repeat(64), '--expected-checker-source-head', CHECKER_HEAD,
+      '--staging-fingerprint', 'c'.repeat(64), '--expected-functions-checker-source-head', CHECKER_HEAD, '--expected-discovery-source-head', HEAD,
       '--review-status', 'PASS', '--ci-status', 'PASS', '--owner-confirms-approval', 'true',
       '--out', approvalPath,
       '--', '--profile', 'staging', '--project', PROJECT, '--expected-head', HEAD,

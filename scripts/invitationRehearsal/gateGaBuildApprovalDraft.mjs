@@ -29,7 +29,8 @@ const HELP = [
   '  --functions-receipt <absolute-private-JSON, from gateGaDeploymentCheck13.mjs>',
   '  --auth-metadata-receipt <absolute-private-JSON, from authVerificationShapeDiscovery.mjs>',
   '  --staging-fingerprint <exact-64-hex>',
-  '  --expected-checker-source-head <exact-40-hex, the commit the three receipts above were produced from>',
+  '  --expected-functions-checker-source-head <exact-40-hex, the commit gateGaDeploymentCheck13.mjs ran from>',
+  '  --expected-discovery-source-head <exact-40-hex, the commit mailboxDiscovery.mjs/authVerificationShapeDiscovery.mjs ran from>',
   '  --review-status PASS --ci-status PASS   (your own explicit attestation; never inferred)',
   '  --owner-confirms-approval true          (your own explicit decision to approve; never inferred)',
   '  --out <new-absolute-private-JSON>',
@@ -56,7 +57,8 @@ try {
 
   const accepted = [
     '--mailbox-receipt', '--functions-receipt', '--auth-metadata-receipt', '--staging-fingerprint',
-    '--expected-checker-source-head', '--review-status', '--ci-status', '--owner-confirms-approval', '--out',
+    '--expected-functions-checker-source-head', '--expected-discovery-source-head',
+    '--review-status', '--ci-status', '--owner-confirms-approval', '--out',
   ]
   if (own.length !== accepted.length * 2) throw new Error('arguments')
   const parsed = {}
@@ -69,7 +71,8 @@ try {
   const functionsReceiptBytes = readPrivateFile('functions_receipt', parsed['--functions-receipt'])
   const authMetadataReceiptBytes = readPrivateFile('auth_metadata_receipt', parsed['--auth-metadata-receipt'])
   const stagingFingerprint = parsed['--staging-fingerprint']
-  const expectedCheckerSourceHead = parsed['--expected-checker-source-head']
+  const expectedFunctionsCheckerSourceHead = parsed['--expected-functions-checker-source-head']
+  const expectedDiscoverySourceHead = parsed['--expected-discovery-source-head']
   const reviewStatus = parsed['--review-status']
   const ciStatus = parsed['--ci-status']
   const ownerConfirmsApproval = parsed['--owner-confirms-approval'] === 'true'
@@ -84,7 +87,7 @@ try {
   // script is allowed to call "now". Never pass a stored/older timestamp.
   const draft = buildApprovalDraft({
     draftArgs, mailboxReceiptBytes, functionsReceiptBytes, authMetadataReceiptBytes, stagingFingerprint,
-    expectedCheckerSourceHead, reviewStatus, ciStatus, ownerConfirmsApproval,
+    expectedFunctionsCheckerSourceHead, expectedDiscoverySourceHead, reviewStatus, ciStatus, ownerConfirmsApproval,
   })
 
   const bytes = Buffer.from(`${JSON.stringify(draft, null, 2)}\n`)

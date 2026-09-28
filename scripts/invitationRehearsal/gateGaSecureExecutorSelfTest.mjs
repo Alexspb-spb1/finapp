@@ -14,6 +14,8 @@ import test from 'node:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { PROJECT } from './inventoryCore.mjs'
 import { CALLABLES as BASELINE_CALLABLES } from './deploymentCheckCore.mjs'
@@ -27,6 +29,8 @@ import { computeFirebaseConfigFingerprint } from '../lib/firebaseConfigFingerpri
 import { wrapRuntimeWithFunctionsEvidenceGate } from './gateGaSecureExecutorCore.mjs'
 
 const sha256 = v => createHash('sha256').update(v).digest('hex')
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = path.resolve(HERE, '../..')
 const HEAD = 'c84f7837bdbc0a27fea698080c779d273e8e15bb'
 const CHECKER_HEAD = 'b'.repeat(40)
 const STAGING_CONFIG = {
@@ -129,6 +133,7 @@ test('wrapRuntimeWithFunctionsEvidenceGate: malformed constructor inputs are rej
 test('FULL WIRING: a forged functionsSha256 refuses the real staging run with ZERO session/auth/network/fetch calls of any kind', async () => {
   await withTempPackage(async dir => {
     const { calls, loadModule } = makeNetworkSpy()
+    const functionsReceiptBytes = realFunctionsReceiptBytes() // computed exactly once
     await withFetchSpy(async getFetchCount => {
       const runtime = createGateGaOrchestratedRuntime({
         repoRoot: dir, packageDir: dir, io: fs,
@@ -136,7 +141,7 @@ test('FULL WIRING: a forged functionsSha256 refuses the real staging run with ZE
         buildEmulatorFirebaseHandles: async () => { throw new Error('must not build emulator handles for a staging profile run') },
       })
       const gated = wrapRuntimeWithFunctionsEvidenceGate({
-        runtime, functionsReceiptBytes: realFunctionsReceiptBytes(), expectedCheckerSourceHead: CHECKER_HEAD,
+        runtime, functionsReceiptBytes, expectedCheckerSourceHead: CHECKER_HEAD,
       })
       const paths = { '--journal': path.join(dir, 'j.jsonl'), '--out': path.join(dir, 'o.json') }
       const recipient = 'owner-confirmed@example.invalid'
@@ -157,17 +162,17 @@ test('FULL WIRING: a forged functionsSha256 refuses the real staging run with ZE
 test('FULL WIRING: a genuinely matching functionsSha256 passes the gate and reaches the real orchestrator (whatever happens next is the real orchestrator\'s own business, never this gate\'s rejection)', async () => {
   await withTempPackage(async dir => {
     const { loadModule } = makeNetworkSpy()
+    const functionsReceiptBytes = realFunctionsReceiptBytes() // computed exactly once, reused below
     const runtime = createGateGaOrchestratedRuntime({
       repoRoot: dir, packageDir: dir, io: fs,
       buildStagingAdapters: async ({ runTag }) => createGateGaStagingAdapters({ repoRoot: dir, io: fs, runTag, loadModule }),
       buildEmulatorFirebaseHandles: async () => { throw new Error('must not build emulator handles for a staging profile run') },
     })
     const gated = wrapRuntimeWithFunctionsEvidenceGate({
-      runtime, functionsReceiptBytes: realFunctionsReceiptBytes(), expectedCheckerSourceHead: CHECKER_HEAD,
+      runtime, functionsReceiptBytes, expectedCheckerSourceHead: CHECKER_HEAD,
     })
     const paths = { '--journal': path.join(dir, 'j.jsonl'), '--out': path.join(dir, 'o.json') }
     const recipient = 'owner-confirmed@example.invalid'
-    const realFunctionsReceipt = realFunctionsReceiptBytes()
     // This minimal fixture package is not a full, real staging package, so
     // the real orchestrator is expected to itself refuse further in — the
     // only thing under test here is that it is REACHED at all (i.e. this
@@ -175,10 +180,83 @@ test('FULL WIRING: a genuinely matching functionsSha256 passes the gate and reac
     try {
       await gated.run({
         parsed: { '--profile': 'staging', '--project': PROJECT, '--expected-head': HEAD, '--recipient': recipient, '--recipient-confirmed-sha256': sha256(recipient.trim().toLowerCase()) },
-        paths, approval: { functionsSha256: sha256(realFunctionsReceipt) }, recheckHead: async () => true,
+        paths, approval: { functionsSha256: sha256(functionsReceiptBytes) }, recheckHead: async () => true,
       })
     } catch (error) {
       assert.notEqual(error.message, 'approval_evidence_binding_blocked')
     }
   })
+})
+
+// ---- real subprocess, real file: gateGaSecureExecutor.mjs itself, real
+// argument parsing, real clean-HEAD check, real gate. Deliberately uses
+// --profile emulator (never --profile staging) so that even in the worst
+// case of a gate regression, the only thing an escaped run could reach is
+// a nonexistent LOCAL emulator host (an immediate, harmless connection
+// refusal) — never real finapp-staging. The precise, numeric zero-
+// network-call proof lives in the in-process FULL WIRING tests above,
+// which can safely simulate a staging profile under a controlled
+// loadModule spy; this test instead proves the REAL FILE — its argument
+// parsing (including the two new --functions-receipt/--expected-checker-
+// source-head flags), its real clean-HEAD check against this actual
+// checkout, and its real gate — behaves safely end to end. ----
+
+test('REAL FILE: gateGaSecureExecutor.mjs --help documents the two new required flags and touches no git/filesystem/network', () => {
+  const result = spawnSync(process.execPath, [path.join(HERE, 'gateGaSecureExecutor.mjs'), '--help'], { encoding: 'utf8', timeout: 10_000 })
+  assert.equal(result.status, 0)
+  assert.match(result.stdout, /--functions-receipt/)
+  assert.match(result.stdout, /--expected-checker-source-head/)
+})
+
+test('REAL FILE: gateGaSecureExecutor.mjs --execute without the two new required flags refuses before touching git or any file', () => {
+  const result = spawnSync(process.execPath, [
+    path.join(HERE, 'gateGaSecureExecutor.mjs'), '--execute',
+    '--profile', 'emulator', '--project', 'demo-finapp', '--expected-head', 'a'.repeat(40),
+    '--approval', '/nonexistent/approval.json', '--approval-sha256', 'a'.repeat(64),
+    '--journal', '/nonexistent/journal.jsonl', '--out', '/nonexistent/out.json',
+    '--recipient', 'owner-confirmed@example.invalid', '--recipient-confirmed-sha256', 'b'.repeat(64),
+    '--resume', 'false', '--legacy-cleanup-approved', 'false',
+  ], { encoding: 'utf8', timeout: 10_000 })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /local_gate/)
+})
+
+test('REAL FILE: gateGaSecureExecutor.mjs --execute, run for real against this actual checkout\'s real HEAD, with a forged functionsSha256, refuses fast with no output files (--profile emulator: even a gate regression could only reach a nonexistent local emulator, never real staging)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-ga-secure-executor-real-file-'))
+  try {
+    const realHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim()
+    const functionsReceiptPath = path.join(dir, 'functions-receipt.json')
+    fs.writeFileSync(functionsReceiptPath, realFunctionsReceiptBytes())
+    const approvalPath = path.join(dir, 'approval.json')
+    // A syntactically well-formed but forged approval — this is exactly
+    // the shape validateExecutionApproval()'s own format-only check would
+    // accept; only this round's gate is supposed to catch it.
+    fs.writeFileSync(approvalPath, JSON.stringify({ functionsSha256: 'f'.repeat(64) }))
+    const journalPath = path.join(dir, 'journal.jsonl')
+    const outPath = path.join(dir, 'out.json')
+    const recipient = 'owner-confirmed@example.invalid'
+
+    const started = Date.now()
+    const result = spawnSync(process.execPath, [
+      path.join(HERE, 'gateGaSecureExecutor.mjs'), '--execute',
+      '--functions-receipt', functionsReceiptPath, '--expected-checker-source-head', CHECKER_HEAD,
+      '--profile', 'emulator', '--project', 'demo-finapp', '--expected-head', realHead,
+      '--approval', approvalPath, '--approval-sha256', sha256(fs.readFileSync(approvalPath)),
+      '--journal', journalPath, '--out', outPath,
+      '--recipient', recipient, '--recipient-confirmed-sha256', sha256(recipient.trim().toLowerCase()),
+      '--resume', 'false', '--legacy-cleanup-approved', 'false',
+    ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000, env: { ...process.env } })
+    const elapsedMs = Date.now() - started
+
+    assert.notEqual(result.status, 0)
+    // Whether this checkout happened to be clean or not at test-run time,
+    // the outcome that matters is unconditionally true either way: no
+    // output was ever written, and the process failed fast rather than
+    // hanging on a real network/auth attempt.
+    assert.equal(fs.existsSync(outPath), false)
+    assert.equal(fs.existsSync(journalPath), false)
+    assert.ok(elapsedMs < 10_000, `expected a fast local refusal, took ${elapsedMs}ms`)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

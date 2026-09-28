@@ -100,10 +100,19 @@ export function validateFunctionsShaBinding({
       receipt.baselineDriftCheckedAgainstReceiptSha256 !== expectedBaselineReceiptSha256) blocked()
   checkFreshness({ timestamp: receipt.finishedAt, now, maxReceiptAgeMs })
 
+  // Full exact resource-path check, not just the trailing segment: a name
+  // like `projects/OTHER-PROJECT/locations/us-central1/functions/
+  // acceptInvite` would previously pass `.split('/').pop() ===
+  // 'acceptInvite'` even though the embedded project in the name itself
+  // was wrong — nothing cross-checked the function's OWN resource path
+  // against the receipt's top-level `project` field. Mirrors the exact
+  // path shape deploymentCheckCore.mjs's checkFunction() requires.
   const seenBaseline = new Set(), seenMemberManagement = new Set()
   for (const fn of receipt.functions) {
     if (!record(fn) || typeof fn.name !== 'string') blocked()
     const shortName = fn.name.split('/').pop()
+    const expectedFullName = `projects/${expectedProject}/locations/us-central1/functions/${shortName}`
+    if (fn.name !== expectedFullName) blocked()
     if (fn.family === 'baseline') {
       if (!shortName || !BASELINE_CALLABLES.includes(shortName) || seenBaseline.has(shortName) ||
           fn.driftCheckedAgainstSourceHead !== expectedBaselineSourceHead) blocked()
@@ -212,7 +221,7 @@ function isAbsolutePathString(value) {
  */
 export function buildApprovalDraft({
   draftArgs, mailboxReceiptBytes, functionsReceiptBytes, authMetadataReceiptBytes, stagingFingerprint,
-  expectedCheckerSourceHead, reviewStatus, ciStatus, ownerConfirmsApproval,
+  expectedFunctionsCheckerSourceHead, expectedDiscoverySourceHead, reviewStatus, ciStatus, ownerConfirmsApproval,
   approvedAt = new Date().toISOString(), now = () => Date.now(),
 }) {
   if (ownerConfirmsApproval !== true) blocked()
@@ -220,10 +229,18 @@ export function buildApprovalDraft({
   if (!iso(approvedAt) || !hex64(stagingFingerprint)) blocked()
   const parsed = parseDraftArgs(draftArgs)
 
-  validateMailboxReceipt({ receiptBytes: mailboxReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedCheckerSourceHead, now })
-  validateAuthMetadataReceipt({ receiptBytes: authMetadataReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedCheckerSourceHead, now })
+  // Deliberately TWO different expected commits, not one: the functions
+  // receipt is produced by gateGaDeploymentCheck13.mjs from whichever
+  // checkout hosts that tool, while the mailbox/auth-metadata receipts
+  // are produced by mailboxDiscovery.mjs/authVerificationShapeDiscovery.mjs
+  // run from the checkout at the G-A executor's own --expected-head. A
+  // single shared "checker source head" silently accepted real receipts
+  // whose true sourceHead values differ exactly as they do in the real
+  // playbook — this was found and is fixed here.
+  validateMailboxReceipt({ receiptBytes: mailboxReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedDiscoverySourceHead, now })
+  validateAuthMetadataReceipt({ receiptBytes: authMetadataReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedDiscoverySourceHead, now })
   const functionsSha256 = sha256Bytes(functionsReceiptBytes)
-  validateFunctionsShaBinding({ functionsSha256, receiptBytes: functionsReceiptBytes, expectedProject: parsed['--project'], expectedCheckerSourceHead, now })
+  validateFunctionsShaBinding({ functionsSha256, receiptBytes: functionsReceiptBytes, expectedProject: parsed['--project'], expectedCheckerSourceHead: expectedFunctionsCheckerSourceHead, now })
 
   const commandSha256 = approvalCommandSha256({
     mode: 'execute', '--profile': parsed['--profile'], '--project': parsed['--project'], '--expected-head': parsed['--expected-head'],

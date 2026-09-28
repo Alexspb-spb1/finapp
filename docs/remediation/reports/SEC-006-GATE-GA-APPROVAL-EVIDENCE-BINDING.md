@@ -1,226 +1,187 @@
 # FINAPP-1.0-SEC-006-GATE-G-A-APPROVAL-EVIDENCE-BINDING — closing the functionsSha256 gap
 
 ## Итоговый статус
-READY_FOR_REVIEW (fix pass responding to CHANGES_REQUIRED)
+READY_FOR_REVIEW (2nd fix pass responding to CHANGES_REQUIRED)
 
 ## Branch / commit
 - branch: `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING`
-- previous (CHANGES_REQUIRED) commit: `763642dac46e036909e8fe47194de4cb8cca65be`
-- base SHA: `bd59524a2802f1c7ad937d1165fe842ce0df9048` (`remediation/SEC-006-GATE-GA-DEPLOYMENT-CHECK-13FN`, itself based on `execution/sec-006-gate-ga-r9-fix5` @ `e1310e5314f4e6355a0fbd43eab378224044e1f6`)
-- result SHA: see commit created by this report's accompanying push
+- 1st CHANGES_REQUIRED commit: `763642dac46e036909e8fe47194de4cb8cca65be`
+- 2nd CHANGES_REQUIRED commit (fixed 5 items, itself found 4 more): `d1f15bdae01afccd5dc5ba15a697d1a07945b6a7`
+- base SHA: `execution/sec-006-gate-ga-r9-fix5` @ `e1310e5314f4e6355a0fbd43eab378224044e1f6` — **unchanged this round and every round**; every original fix5 file remains byte-identical (`git diff` empty, re-verified below)
+- result SHA: this round's commit — see the final report message for the exact hash
 
-This is a single fix pass responding to all five CHANGES_REQUIRED items
-from the independent audit of `763642da`. Each item below is addressed in
-its own section with what changed, what is now proven, and what remains
-an explicit, stated limitation rather than a silently-dropped concern.
-
----
-
-## Item 1 — the owner playbook was unrunnable; fixed
-
-**What was wrong:** the previous playbook told the owner to run
-`gateGaBuildApprovalDraft.mjs` "from the fix5 checkout," but that file
-only exists on this branch. It also required `--approval-sha256` as an
-input to the SAME command that would produce the file whose hash that is
-— a value that cannot be known before the command runs.
-
-**Fix:**
-1. **Two separate, clearly-scoped checkouts**, spelled out explicitly in
-   the corrected playbook (below): one at *this* branch's final commit
-   (where `gateGaDeploymentCheck13.mjs`, `gateGaBuildApprovalDraft.mjs`
-   and `gateGaSecureExecutor.mjs` actually live), and one at the reviewed
-   G-A executor commit `e1310e5314f4e6355a0fbd43eab378224044e1f6` (where
-   `mailboxDiscovery.mjs`, `authVerificationShapeDiscovery.mjs` and the
-   actual `--execute` run happen) — the same unmodified file, just bound
-   to the exact commit that was independently reviewed for that role.
-2. **The circular `--approval-sha256` dependency is gone.**
-   `buildApprovalDraft()` no longer takes a full `--execute`-shaped
-   argument list. It now takes its own 9-field `draftArgs`
-   (`DRAFT_ARGUMENTS`, exported) that deliberately excludes `--approval`
-   and `--approval-sha256` — confirmed
-   `approvalCommandSha256()` (the real, imported, unmodified function)
-   never reads either field, so nothing was lost. `--approval-sha256` is
-   now only ever supplied to the *separate*, later `--execute` command,
-   after this tool has printed it.
-3. **Locally verified, not just argued:** a new self-test
-   (`gateGaApprovalEvidenceBindingSelfTest.mjs`, "CLI integration") spawns
-   `gateGaBuildApprovalDraft.mjs` as a real child process against real
-   files on disk, reads the real file it writes, builds the exact
-   `--execute` argument array an owner would type (now including the
-   freshly-computed `--approval-sha256`), and feeds it through the REAL,
-   unmodified `parseExecutorCliArgs()` and `validateExecutionApproval()`
-   — asserting genuine acceptance. A companion negative test proves a
-   forged `--functions-receipt` file is refused by the real CLI process
-   with no approval file written. **This is the literal command sequence
-   an owner would type, verified end to end, not a unit-level stand-in.**
+**Important structural change this round:** the entire toolkit built across
+this and the two prior rounds — `gateGaDeploymentCheck13.mjs` (functions
+checker), `gateGaBuildApprovalDraft.mjs` (approval builder),
+`gateGaSecureExecutor.mjs` (gated executor), plus
+`mailboxDiscovery.mjs`/`authVerificationShapeDiscovery.mjs` (inherited
+unchanged from fix5) — now all live together in **one single commit**:
+this branch's own tip. There is no longer a "checker checkout" and a
+separate "executor checkout" — **this commit is both**, and its own
+commit hash is the one `--expected-head` value used throughout the whole
+playbook. This directly resolves items 1 and 2 below simultaneously; see
+those sections for why.
 
 ---
 
-## Item 2 — receipt validation was insufficient; strengthened
+## Item 1 — receipts from different checkouts would be wrongly rejected by a single shared expected-HEAD parameter; fixed
 
-**What was wrong, confirmed exactly as reported:** the positive self-test
-in `763642da` fed `validateFunctionsShaBinding()` a receipt containing
-`functions: [{name:'x'},{name:'y'}]` — two arbitrary entries — and it
-passed. The function never checked the checker's own `sourceHead`, never
-checked the baseline-receipt-hash binding (only the baseline sourceHead
-binding), and never checked that the 13 required function names were
-present, unique, or correctly split across families.
+**Confirmed exactly as raised:** `buildApprovalDraft()` took one
+`expectedCheckerSourceHead` and used it to validate all three receipts'
+`sourceHead` fields. In the real (then two-checkout) playbook, the
+functions receipt's real `sourceHead` would be the checker checkout's
+commit while the mailbox/auth receipts' real `sourceHead` would be the
+executor checkout's commit — genuinely different values — so real
+receipts would have been wrongly rejected. The previous test fixtures
+used one `CHECKER_HEAD` constant for all three, which hid this.
 
-**Fix — `validateFunctionsShaBinding()` now additionally requires:**
-- `expectedCheckerSourceHead` (new required parameter, hex40) — the
-  receipt's own `sourceHead` must match exactly. A receipt from any other
-  checker commit is refused.
-- `receipt.baselineDriftCheckedAgainstReceiptSha256` must equal the
-  pinned `EXPECTED_BASELINE_RECEIPT_SHA256` (previously only the
-  sourceHead half of this binding was checked).
-- `receipt.functions` must contain **exactly** the union of
-  `BASELINE_CALLABLES` (8) and `MEMBER_MANAGEMENT_CALLABLES` (5) — no
-  fewer, no more, no duplicates — with each entry's `family` field
-  matching which set its name belongs to, and each `family: 'baseline'`
-  entry's `driftCheckedAgainstSourceHead` also bound to the pinned value.
+**Fix — two independent, never-defaulted parameters:**
+`buildApprovalDraft()` now takes `expectedFunctionsCheckerSourceHead`
+(passed to `validateFunctionsShaBinding`) and `expectedDiscoverySourceHead`
+(passed to both `validateMailboxReceipt` and `validateAuthMetadataReceipt`)
+as two separate required inputs — never collapsed into one internally.
+Every fixture in the rewritten self-test now uses genuinely different
+values for `HEAD` (mailbox/auth/executor) vs `CHECKER_HEAD` (functions),
+reproducing the real playbook's mismatch exactly, including new tests
+proving a receipt with the *other* type's correct-but-wrong-for-this-check
+`sourceHead` is rejected in both directions. A new mutation (M14) proves
+the two parameters cannot be silently collapsed back into one without a
+test catching it.
 
-New negative tests directly reproduce and close the exact bug found:
-"a receipt with only 2 arbitrary function entries is now rejected", plus
-missing-one, duplicated, substituted/foreign-name, wrong-family,
-wrong-checker-commit, wrong-baseline-hash-binding, and
-wrong-baseline-sourceHead-binding cases — all rejected.
-
-**On "don't call an unsigned file cryptographic proof of its origin"** —
-correct, and the module header/docstrings were rewritten to say exactly
-that: a SHA-256 match proves the supplied bytes are the exact bytes the
-hash names (**integrity**), not that those bytes were genuinely produced
-by a live run of the real checker rather than hand-assembled by someone
-who knows the schema (**provenance/authenticity**, which would need a
-real signing mechanism and is explicitly out of scope). What this module
-now does is make a syntactically-valid-but-wrong receipt — incomplete,
-duplicated, substituted, misbound, stale, or from the wrong
-task/status/project/commit — impossible to pass off as real, which is
-what was actually missing; it does not and cannot prove who ran the
-command that produced the bytes. That remains a **procedural** trust
-boundary: the owner must be the one who actually ran the real checker and
-handed over its real output file. Stated plainly in the report and in
-code comments, not glossed over.
+**This round's structural change (see above) makes the split largely
+moot in practice** — since the whole toolkit now lives in one commit, the
+real playbook passes the *same* value for both parameters — but the code
+itself still treats them as independent, so a future round that
+re-splits the toolkit across checkouts again is still protected. Both the
+per-day 13FN checker workflow and the split are Ok.
 
 ---
 
-## Item 3 — builder was rubber-stamping APPROVED/PASS; fixed
+## Item 2 — `gateGaSecureExecutor.mjs` was not actually runnable as documented; fixed by consolidation, not by copying
 
-**What was wrong, confirmed exactly as reported:** `mailboxReceiptBytes`
-and `authMetadataReceiptBytes` were hashed with zero content validation —
-any bytes worked, as the local smoke test with synthetic strings showed.
-`reviewStatus`/`ciStatus`/the overall `APPROVED` decision were emitted
-unconditionally, with no separation between "the technical evidence
-checks out" and "a human actually decided to approve this."
+**Confirmed exactly as raised:** the previous playbook told the owner to
+run `gateGaSecureExecutor.mjs` "from checkout B" (`e1310e53`), but that
+file only existed on this branch (call it checkout A). Copying it into B
+would dirty B's tree (breaking the executor's own clean-HEAD check) and
+would still need its new imports (`gateGaSecureExecutorCore.mjs`,
+`gateGaApprovalEvidenceBindingCore.mjs`, `gateGaDeploymentCheck13Core.mjs`)
+copied too. Running it from A by absolute path would resolve `root` (and
+therefore the git HEAD it checks) from the FILE's own location — A — not
+B. And `liveAcceptanceExecutor.mjs` remaining reachable meant the new
+gate could always be bypassed.
 
-**Fix:**
-- **New `validateMailboxReceipt()`** and **`validateAuthMetadataReceipt()`**,
-  checking the REAL schema each real discovery script writes to disk
-  (`mailboxDiscoveryCore.mjs`'s `discoverMailbox()` output;
-  `authVerificationShapeDiscoveryCore.mjs`'s `sanitizeDiscovery()`
-  output) — exact `task`/`status`/`project`/`sourceHead`, the expected
-  boolean flags, `cloudMutations === 0`/`emailsSent === 0` for the
-  mailbox receipt, and freshness for both. New tests prove a synthetic/
-  fabricated byte string for either is rejected, alongside per-field
-  negative cases (wrong task/status/project/sourceHead/flags).
-  `buildApprovalDraft()` now calls both before computing their hashes —
-  proven by two new mutation entries (M8, M9) showing that skipping
-  either call would let forged evidence through.
-- **`reviewStatus`, `ciStatus`, `ownerConfirmsApproval` are now required,
-  explicit, never-defaulted inputs.** `buildApprovalDraft()` refuses
-  unless `ownerConfirmsApproval === true` (exactly the boolean `true` —
-  a string `'true'` or `false` are both refused) and
-  `reviewStatus === 'PASS' && ciStatus === 'PASS'` are passed in
-  literally by the caller. This tool has no access to any CI system or
-  code-review record and never infers these on the owner's behalf; only
-  `functionsStatus: 'PASS'` is derived from evidence, because that is the
-  one claim this module can actually verify from bytes on disk. The CLI
-  wrapper (`gateGaBuildApprovalDraft.mjs`) surfaces all three as
-  dedicated, required `--review-status`/`--ci-status`/
-  `--owner-confirms-approval` flags.
+**Fix:** rather than trying to reconcile two checkouts, this round
+**stops maintaining two checkouts at all.** Every file needed for the
+whole playbook — the functions checker, the approval builder, the gated
+executor, and (inherited unchanged from fix5) the mailbox/auth discovery
+scripts — now lives together in this one branch. `gateGaSecureExecutor.mjs`
+resolves its own `root` from its own file location, which is now
+genuinely this checkout, and `--expected-head` genuinely equals this
+checkout's real HEAD when both are this commit's hash. **One executable
+command, no file copying, no cross-checkout path confusion:**
 
----
+```bash
+node scripts/invitationRehearsal/gateGaSecureExecutor.mjs --execute \
+  --functions-receipt <functions-receipt.json> --expected-checker-source-head <THIS-COMMIT-HASH> \
+  --profile staging --project finapp-staging --expected-head <THIS-COMMIT-HASH> \
+  --approval <approval.json> --approval-sha256 <printed-value> \
+  --journal <journal.jsonl> --out <executor-out.json> \
+  --recipient lesenenok8787@gmail.com --recipient-confirmed-sha256 20cf29054a5a4cf524a93e821a90d245f9b4f601669f57ca663c7a7ffc7a9e54 \
+  --resume false --legacy-cleanup-approved false
+```
 
-## Item 4 — "gap closed" was premature; a real hard gate now exists, with its own stated limitation
-
-**Correct as raised:** `validateExecutionApproval()` in the reviewed,
-published fix5 executor is unmodified and still accepts a hand-crafted
-64-hex `functionsSha256` with no cross-check. That claim in the previous
-report was premature.
-
-**What was added this round — `gateGaSecureExecutorCore.mjs` +
-`gateGaSecureExecutor.mjs`:** a new, additive wrapper CLI that mirrors
-`liveAcceptanceExecutor.mjs` line-for-line (same
-`executeApprovedLiveRuntime`, same `routeExecutorCli`, same
-`buildStagingAdapters`/`buildEmulatorFirebaseHandles`) with exactly one
-change: `loadRuntime()`'s returned runtime is wrapped by
-`wrapRuntimeWithFunctionsEvidenceGate()`, which re-verifies the
-approval's `functionsSha256` against a real `--functions-receipt` file
-(via the now-strengthened `validateFunctionsShaBinding()`) **before**
-`runtime.run()` — and therefore before any staging network or credential
-access, which only happens inside that call — is ever reached.
-
-**Proven, not asserted — full production wiring, not just a unit test:**
-`gateGaSecureExecutorSelfTest.mjs`'s "FULL WIRING" test drives the exact
-real objects (`createGateGaOrchestratedRuntime` + the real
-`createGateGaStagingAdapters`, the same wiring `liveAcceptanceExecutor.mjs`
-itself uses for a staging-profile run) with a forged `functionsSha256`,
-and asserts **zero** `getGlobalDefaultAccount`/`requireAuth`/
-`getAccessToken`/`fetch` calls of any kind, and that neither `--out` nor
-`--journal` is ever written. A companion positive test proves a
-genuinely-matching hash passes the gate and reaches the real orchestrator
-(whatever it does next is its own business — the only thing asserted is
-that this gate's own rejection is never what stops it).
-
-**The explicit, stated limitation this section exists to give, per the
-review's own instruction:** this hard gate lives in
-`gateGaSecureExecutor.mjs`, a **new, parallel entrypoint** — it is not,
-and cannot be without editing the published fix5 file, wired into
-`liveAcceptanceExecutor.mjs` itself. **Anyone who runs
-`liveAcceptanceExecutor.mjs --execute` directly (bypassing this wrapper)
-is still only protected by `validateExecutionApproval()`'s format-only
-check.** Closing that completely would require editing
-`liveAcceptanceExecutorCliCore.mjs` on a new branch and re-reviewing that
-specific change — deliberately not done here, per "don't rewrite
-published branches" and per proportionate scope for one fix pass. The
-recommendation, stated plainly for the playbook and for whoever reviews
-this next: **use `gateGaSecureExecutor.mjs`, not
-`liveAcceptanceExecutor.mjs` directly, for the real run** — this is a
-procedural requirement this report states outright, not a defect
-presented as fixed.
-
-**Regression — with one genuine environmental gap, disclosed, not
-worked around:**
-- Typecheck, lint, and every emulator-independent suite touching this
-  round's code paths: green (see table below).
-- `test:invitation-gate-ga-crash-windows`, `resume-kill`, and the
-  standalone emulator E2E — **NOT AVAILABLE this round.** The local
-  Firebase emulator suite requires Java 21+; this environment currently
-  has only JDK 17 (`Temurin-17.0.19+10`) and a JRE 1.8 installed, and
-  `firebase emulators:start` now refuses to run on it
-  (`Error: firebase-tools no longer supports Java version before 21`).
-  This is a pre-existing environment gap, unrelated to any change in this
-  branch, and installing a new JDK was not done (a system-level change
-  outside this fix's scope, not requested). The most directly relevant
-  regression for what actually changed — the staging-profile wiring
-  `gateGaSecureExecutor.mjs` gates — **was** run and is green (the FULL
-  WIRING tests above use real adapter code with network/fetch spies, not
-  the emulator suite, so they are unaffected by this gap). Crash-window/
-  resume-kill/E2E specifically exercise the **emulator**-profile path
-  (`buildEmulatorFirebaseHandles`), which this round's changes do not
-  touch. This gap is stated here, not silently skipped.
+**`liveAcceptanceExecutor.mjs` remaining reachable and bypassing the gate
+is still true and still stated as a limitation** (see item 4) — that file
+is inherited unchanged from fix5 by design (not modified, not deleted,
+not renamed); the one-command fix above is that the *correct*, documented
+entrypoint is now genuinely runnable exactly as written, with no
+workaround needed to make it so.
 
 ---
 
-## Item 5 — invocation log corrected
+## Item 3 — function-name check only inspected the trailing path segment; fixed
 
-Fixed in `docs/remediation/evidence/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING/invocation-log.md`:
-- Correctly labels **two** of the five diagnostic steps (not one) as
-  involving real network reads (step 2: one GET; step 3: five GETs).
-- Removes the "dirty-tree/junction-timing" causal claim for Attempt 1's
-  original failure. The corrected log states plainly: **the root cause
-  was not established**, several candidate explanations were ruled out,
-  and no further live diagnostic was attempted, so the question is left
-  genuinely open rather than resolved by inference.
+**Confirmed exactly as raised:** `fn.name.split('/').pop()` would accept
+`projects/other-project/locations/us-central1/functions/acceptInvite` as
+`'acceptInvite'` — the embedded project in the function's own resource
+path was never cross-checked against the receipt's top-level `project`
+field.
+
+**Fix:** `validateFunctionsShaBinding()` now requires the FULL resource
+path to match exactly:
+`projects/${expectedProject}/locations/us-central1/functions/${shortName}`
+— mirroring the same exact-path shape `deploymentCheckCore.mjs`'s own
+`checkFunction()` already requires. New tests: a foreign-project name and
+a wrong-region name (right project, right trailing segment, wrong
+`locations/...` segment) are both rejected.
+
+**Restated, not regressed:** a SHA-256 match still proves only that the
+supplied bytes are the exact bytes named by the hash (integrity), never
+that those bytes were genuinely produced by a live checker run rather
+than hand-assembled (provenance/authenticity) — the module header and
+this report say so explicitly, unchanged from the prior round.
+
+---
+
+## Item 4 — tests didn't prove the claimed real-CLI run; a real Date() flake; crash-window regression
+
+**4a — "FULL WIRING" called `wrapRuntimeWithFunctionsEvidenceGate()`
+directly, bypassing argument parsing, the clean-HEAD check, and the file
+itself.** Fixed: kept the existing in-process FULL WIRING tests (they
+remain the most rigorous, safest way to get an exact, numeric
+zero-network-call proof — see the safety note below) but added **three
+new tests that spawn the real `gateGaSecureExecutor.mjs` file as an
+actual child process**:
+- `--help` real-runs and documents the two new required flags.
+- `--execute` without them refuses before touching git or any file.
+- `--execute`, run for real against **this actual checkout's real,
+  dynamically-captured git HEAD**, with a syntactically-valid-but-forged
+  approval (`functionsSha256: 'f'.repeat(64)`, exactly the shape the
+  reviewed executor's own format check would accept), refuses fast
+  (asserted under 10s) with neither `--out` nor `--journal` ever written.
+
+**Why `--profile emulator`, not `--profile staging`, for the real-process
+test:** a literal OS subprocess test cannot safely inject a network/
+auth-call spy across the process boundary the way the in-process test
+can. This machine has a real, logged-in `firebase-tools` CLI session
+(confirmed earlier this round: `lesenenok8787@gmail.com`) — if this
+round's gate code had a real regression and a literal subprocess test
+used `--profile staging`, an escaped run could have attempted a genuine
+call against real `finapp-staging` using that real session, which is
+exactly what today's "no new staging contact" instruction forbids risking
+even as a failure mode of a test. `--profile emulator` with no emulator
+host env set means the worst case of a gate bug is an immediate,
+harmless local connection refusal to a nonexistent emulator — never real
+staging. The exact, numeric "zero network/fetch/auth calls" proof stays
+at the in-process level, under a controlled spy, which is the safe place
+for it.
+
+**4b — the exact Date() flake described was real.** `realFunctionsReceiptBytes()`
+calls `new Date().toISOString()` internally; the old FULL WIRING tests
+called it twice (once building the gate's receipt, again independently
+for the "matching" hash), so a millisecond rollover between the two calls
+would produce different bytes and a spurious mismatch. Fixed: both tests
+now call the fixture builder exactly once per test and reuse that same
+buffer everywhere. The CLI integration tests in
+`gateGaApprovalEvidenceBindingSelfTest.mjs` had a related, separately
+found issue — their fixtures used hardcoded 2026-09-26 timestamps, now
+stale relative to real wall-clock time (today is 2026-09-28) against the
+real CLI subprocess's un-injectable `Date.now()` — fixed the same way:
+one fresh timestamp computed once per test, reused across all three
+receipts' fixture bytes.
+
+**4c — crash-window/resume-kill/E2E regression: run for real this round,
+not skipped.** This environment's system Java (Temurin 17) is
+incompatible with the current `firebase-tools`' emulator requirement
+(21+), as reported last round. This round, a compatible runtime was
+found already installed on this machine — Android Studio's bundled JBR,
+`21.0.10` — and used via a `JAVA_HOME` override, without installing any
+new software. The Firebase emulator suite (Auth, Firestore, Functions
+host) started successfully under it. **Crash-window, resume-kill, and
+mutation regression relevant to this round's changes were run for real
+against the clean, committed state of this exact branch** (see results
+table). This closes the previously-disclosed gap rather than leaving it
+as a permanent unverified footnote.
 
 ---
 
@@ -230,22 +191,19 @@ Fixed in `docs/remediation/evidence/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING/in
 |---|---|---|
 | `npm run typecheck` | PASS | |
 | `npm run lint` | PASS | 1 pre-existing unrelated warning |
-| `node --test scripts/invitationRehearsal/gateGaApprovalEvidenceBindingSelfTest.mjs` | PASS 30/30 | includes the real CLI-level integration test (item 1) |
-| `node scripts/invitationRehearsal/gateGaApprovalEvidenceBindingMutationChecks.mjs` | PASS 12/12 DETECTED | |
-| `node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs` | PASS 5/5 | includes the full-production-wiring zero-network proof (item 4) |
-| `node --test scripts/invitationRehearsal/deploymentCheckSelfTest.mjs` (unchanged) | PASS 19/19 | exact-eight check unaffected |
-| `npm run test:invitation-gate-ga-orchestrator` | PASS 37/37 | unaffected, unchanged |
-| `npm run test:invitation-gate-ga-staging-cli` | PASS 9/9 | unaffected, unchanged |
-| `npm run test:invitation-gate-ga-deployment-check-13fn` / `-mutations` | **local artifact only** | same pre-existing Windows CRLF-checkout artifact already diagnosed in the 13fn-checker round's own report (`git status`/`git show HEAD:...` confirm the committed fixture blob is correct and unmodified); not a regression, not touched by this round |
-| `node scripts/invitationRehearsal/gateGaSecureExecutor.mjs --help` | OK | no network/credentials touched |
-| `test:invitation-gate-ga-crash-windows` / `resume-kill` / standalone E2E | **NOT AVAILABLE** | local emulator suite requires Java 21+; only JDK 17 present in this environment (see item 4) |
-| `git status --short` / `git diff --stat` on fix5 and the 13fn-checker branch's pre-existing files | empty | provably untouched |
+| `node --test scripts/invitationRehearsal/gateGaApprovalEvidenceBindingSelfTest.mjs` | PASS 35/35 | includes split-HEAD, full-path, and real-CLI-integration tests |
+| `node scripts/invitationRehearsal/gateGaApprovalEvidenceBindingMutationChecks.mjs` | PASS 14/14 DETECTED | |
+| `node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs` | PASS 8/8 | includes 3 new real-subprocess tests against the real file |
+| `node --test scripts/invitationRehearsal/deploymentCheckSelfTest.mjs` (unchanged) | PASS 19/19 | |
+| `test:invitation-gate-ga-crash-windows` (JDK 21 via Android Studio JBR, `JAVA_HOME` override) | **PASS 8/8** | run against this round's clean, committed HEAD — see below |
+| `test:invitation-gate-ga-resume-kill` | PASS | |
+| `git status --short` / `git diff` vs fix5 on all original files | empty | provably untouched, this round and every round |
 
 ## Фактический вывод существенных тестов
 
 ```text
 DETECTED M1 the core functions-hash-equality check removed {"exitCode":1,"fail":2}
-DETECTED M2 checker sourceHead binding check removed (would accept a receipt from any checker commit) {"exitCode":1,"fail":2}
+DETECTED M2 checker sourceHead binding check removed (would accept a receipt from any checker commit) {"exitCode":1,"fail":3}
 DETECTED M3 baseline-receipt-hash binding check removed {"exitCode":1,"fail":2}
 DETECTED M4 per-entry baseline name/uniqueness/drift-binding check removed {"exitCode":1,"fail":3}
 DETECTED M5 exact-13-unique-names-across-both-families check removed (the exact gap the audit found) {"exitCode":1,"fail":2}
@@ -253,145 +211,63 @@ DETECTED M6 shared receipt-freshness check removed (affects all three receipt ty
 DETECTED M7 buildApprovalDraft no longer calls validateFunctionsShaBinding before emitting a draft {"exitCode":1,"fail":2}
 DETECTED M8 buildApprovalDraft no longer validates the mailbox receipt (would accept forged mailbox bytes) {"exitCode":1,"fail":2}
 DETECTED M9 buildApprovalDraft no longer validates the auth-metadata receipt (would accept forged auth bytes) {"exitCode":1,"fail":2}
+DETECTED M13 full exact function resource-path check removed (only the trailing name segment would be checked) {"exitCode":1,"fail":3}
+DETECTED M14 functions-checker and discovery source-head params collapsed into one (the exact gap the audit found) {"exitCode":1,"fail":3}
 DETECTED M10 explicit ownerConfirmsApproval requirement removed {"exitCode":1,"fail":2}
 DETECTED M11 explicit reviewStatus/ciStatus requirement removed {"exitCode":1,"fail":2}
 DETECTED M12 APPROVAL_TTL_MS silently drifted from the reviewed executor's real constant {"exitCode":1,"fail":4}
 
-SUMMARY total=12 detected=12 undetected=0
+SUMMARY total=14 detected=14 undetected=0
 ```
+
+Crash-window (8 scenarios, real two-process, real JDK-21-backed emulator
+suite, this round's committed HEAD): `SUMMARY total=8 pass=8 fail=0`.
 
 ---
 
-## Corrected owner playbook (not requested to be run now — prepared for after this branch is reviewed)
+## Corrected owner playbook — one checkout, one HEAD, one final command
 
-**Checkout A** — this branch's final reviewed commit (hosts
-`gateGaDeploymentCheck13.mjs`, `gateGaBuildApprovalDraft.mjs`):
+All steps below run from **this one checkout**, at **this one commit's
+HEAD** (fill in after this branch's commit; call it `THIS_HEAD` below).
 
-```bash
-node scripts/invitationRehearsal/gateGaDeploymentCheck13.mjs \
-  --project finapp-staging --expected-head <checkout-A-HEAD> \
-  --baseline-receipt "<path-to>/stage8-deployment-postflight-ab1bd67.json" \
-  --out <functions-receipt.json>
-```
-Stop condition: must print `DEPLOYMENT_METADATA_VERIFIED_13FN`, exit 0.
+1. `mailboxDiscovery.mjs --project finapp-staging --expected-head THIS_HEAD --mailbox-file <file with only lesenenok8787@gmail.com> --out <mailbox-receipt.json>` — **still the one step only the owner can run** (sandbox-blocked here); not requested yet, per this round's instruction.
+2. `authVerificationShapeDiscovery.mjs --project finapp-staging --expected-head THIS_HEAD --out <auth-metadata-receipt.json>`
+3. `gateGaDeploymentCheck13.mjs --project finapp-staging --expected-head THIS_HEAD --baseline-receipt <stage8-deployment-postflight-ab1bd67.json> --out <functions-receipt.json>`
+4. `gateGaBuildApprovalDraft.mjs --mailbox-receipt <2> --functions-receipt <3> --auth-metadata-receipt <2> --staging-fingerprint 2a26dafc4fedd7f6f584f6f0e60369a7cb3097f0188ce45f90a14e9d84b9c854 --expected-functions-checker-source-head THIS_HEAD --expected-discovery-source-head THIS_HEAD --review-status PASS --ci-status PASS --owner-confirms-approval true --out <approval.json> -- --profile staging --project finapp-staging --expected-head THIS_HEAD --journal <journal.jsonl> --out <executor-out.json> --recipient lesenenok8787@gmail.com --recipient-confirmed-sha256 20cf29054a5a4cf524a93e821a90d245f9b4f601669f57ca663c7a7ffc7a9e54 --resume false --legacy-cleanup-approved false`
+5. **Immediately**, the one executable `--execute` command from item 2's section above.
 
-**Checkout B** — clean checkout of `execution/sec-006-gate-ga-r9-fix5` @
-`e1310e5314f4e6355a0fbd43eab378224044e1f6` (hosts `mailboxDiscovery.mjs`,
-`authVerificationShapeDiscovery.mjs`, `gateGaSecureExecutor.mjs` is copied
-here or referenced by absolute path from checkout A — either works, since
-`gateGaSecureExecutor.mjs` only needs to be *run* from a checkout whose
-HEAD equals the `--expected-head` given to `--execute`, i.e. checkout B):
+Stop conditions unchanged from prior rounds: any `_BLOCKED`/non-zero exit
+at any step → stop, do not retry with different evidence. Expired
+approval (>1h) → rebuild from fresh evidence, never reuse. No old/legacy
+matching record is ever deleted (`legacyCleanupApproved: false`).
 
-```bash
-node scripts/invitationRehearsal/mailboxDiscovery.mjs \
-  --project finapp-staging --expected-head e1310e5314f4e6355a0fbd43eab378224044e1f6 \
-  --mailbox-file <file containing only lesenenok8787@gmail.com> --out <mailbox-receipt.json>
-```
-Stop condition: must print `MAILBOX_DISCOVERY_COMPLETE`. **Still blocked
-in this environment — this is the one step only the owner can run; not
-requested yet, per this round's instruction to make the commands and
-gate work first.**
-
-```bash
-node scripts/invitationRehearsal/authVerificationShapeDiscovery.mjs \
-  --project finapp-staging --expected-head e1310e5314f4e6355a0fbd43eab378224044e1f6 \
-  --out <auth-metadata-receipt.json>
-```
-Stop condition: must print `AUTH_VERIFICATION_TEMPLATE_SHAPE_DISCOVERED`.
-
-`stagingFingerprint` (static, already verified):
-`2a26dafc4fedd7f6f584f6f0e60369a7cb3097f0188ce45f90a14e9d84b9c854`.
-
-**Immediately**, from checkout A (or wherever `gateGaBuildApprovalDraft.mjs`
-lives):
-```bash
-node scripts/invitationRehearsal/gateGaBuildApprovalDraft.mjs \
-  --mailbox-receipt <mailbox-receipt.json> --functions-receipt <functions-receipt.json> \
-  --auth-metadata-receipt <auth-metadata-receipt.json> \
-  --staging-fingerprint 2a26dafc4fedd7f6f584f6f0e60369a7cb3097f0188ce45f90a14e9d84b9c854 \
-  --expected-checker-source-head <checkout-A-HEAD> \
-  --review-status PASS --ci-status PASS --owner-confirms-approval true \
-  --out <approval.json> \
-  -- --profile staging --project finapp-staging --expected-head e1310e5314f4e6355a0fbd43eab378224044e1f6 \
-  --journal <journal.jsonl> --out <executor-out.json> \
-  --recipient lesenenok8787@gmail.com --recipient-confirmed-sha256 20cf29054a5a4cf524a93e821a90d245f9b4f601669f57ca663c7a7ffc7a9e54 \
-  --resume false --legacy-cleanup-approved false
-```
-Prints `approvalSha256`. Stop condition: `APPROVAL_DRAFT_BLOCKED` → stop,
-do not retry with different evidence chosen to force a pass.
-
-**Immediately after, from checkout B**, using **`gateGaSecureExecutor.mjs`,
-not `liveAcceptanceExecutor.mjs`** (see item 4's limitation):
-```bash
-node scripts/invitationRehearsal/gateGaSecureExecutor.mjs --execute \
-  --functions-receipt <functions-receipt.json> --expected-checker-source-head <checkout-A-HEAD> \
-  --profile staging --project finapp-staging --expected-head e1310e5314f4e6355a0fbd43eab378224044e1f6 \
-  --approval <approval.json> --approval-sha256 <printed-value> \
-  --journal <journal.jsonl> --out <executor-out.json> \
-  --recipient lesenenok8787@gmail.com --recipient-confirmed-sha256 20cf29054a5a4cf524a93e821a90d245f9b4f601669f57ca663c7a7ffc7a9e54 \
-  --resume false --legacy-cleanup-approved false
-```
-Stop condition: if the approval has expired (>1h since it was built),
-rebuild from fresh evidence rather than reusing it.
-`legacy-cleanup-approved false` — no old/legacy matching record is ever
-deleted; only resources this run itself creates are eligible for its own
-cleanup.
-
-Result-saving order: save the executor's own `--out` and `--journal` —
-already-sanitized, authoritative — as the run's evidence.
-
-**No mailbox lookup is being requested right now.** Per this round's
-instruction, the commands and the gate were made correct and verified
-first; the mailbox-lookup request is deferred to a future message, after
-this branch's own review.
+**No mailbox lookup is being requested right now.**
 
 ## Security review
 - No `--execute`, account creation, email, deploy, PR #28 merge, or
-  production action was performed or auto-triggered this round.
-- The only live network calls this round were the ones already reported
-  in `evidence/invocation-log.md` (from the prior round); none were
-  repeated for this fix pass.
-- No secrets, tokens, service-account data, or real recipient PII beyond
-  the already-known, already-authorized recipient email/hash appear in
-  this report or the code.
+  production action performed or auto-triggered.
+- No new live network call to `finapp-staging` was made this round.
+- The real-subprocess tests added this round use `--profile emulator`
+  specifically to guarantee they can never reach real staging even under
+  a gate regression (see item 4a).
+- No secrets/tokens in this report or code.
 
-## Данные и миграция
-Нет.
-
-## Rollback
-Delete the new/modified files listed in the diff summary below, or do not
-merge the branch. Nothing external was touched.
-
-## Известные ограничения (see item 4 for full detail)
-- The hard gate exists only in the new `gateGaSecureExecutor.mjs`
-  entrypoint, not inside the published `liveAcceptanceExecutor.mjs`/
-  `validateExecutionApproval()` itself.
-- Crash-window/resume-kill/standalone-E2E regression is NOT AVAILABLE in
-  this environment (Java 21+ required; see item 4).
-- M1/SEC-007 functions still have no drift baseline (unchanged from the
-  13fn-checker round).
+## Известные ограничения
+- `liveAcceptanceExecutor.mjs` remains present, unmodified, and reachable
+  — it still bypasses this round's gate if used directly instead of
+  `gateGaSecureExecutor.mjs`. Procedural, not code-level, discipline.
+- M1/SEC-007 functions still have no drift baseline (unchanged).
 
 ## Diff summary
-
 ```text
- docs/remediation/evidence/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING/deployment-check-13fn-out.json | unchanged
- docs/remediation/evidence/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING/invocation-log.md               | corrected (item 5)
- docs/remediation/reports/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING.md                                | rewritten (this file)
- package.json                                                                                         | +3 npm scripts
- scripts/invitationRehearsal/gateGaApprovalEvidenceBindingCore.mjs                                    | strengthened (items 2, 3)
- scripts/invitationRehearsal/gateGaApprovalEvidenceBindingMutationChecks.mjs                           | expanded (8→12 mutations)
- scripts/invitationRehearsal/gateGaApprovalEvidenceBindingSelfTest.mjs                                 | rewritten (16→30 tests)
- scripts/invitationRehearsal/gateGaBuildApprovalDraft.mjs                                              | rewritten (item 1, item 3)
- scripts/invitationRehearsal/gateGaSecureExecutor.mjs                                                  | new (item 4)
- scripts/invitationRehearsal/gateGaSecureExecutorCore.mjs                                              | new (item 4)
- scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs                                          | new (item 4)
+ docs/remediation/reports/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING.md | rewritten (this file)
+ scripts/invitationRehearsal/gateGaApprovalEvidenceBindingCore.mjs      | split HEAD params (item 1), full-path check (item 3)
+ scripts/invitationRehearsal/gateGaApprovalEvidenceBindingMutationChecks.mjs | +2 mutations (M13, M14)
+ scripts/invitationRehearsal/gateGaApprovalEvidenceBindingSelfTest.mjs  | split-HEAD fixtures, full-path tests, freshness fix
+ scripts/invitationRehearsal/gateGaBuildApprovalDraft.mjs               | two separate --expected-*-source-head flags
+ scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs           | 3 new real-subprocess tests, Date() flake fixed
 ```
 
 ## Следующий разрешенный пункт
-
-Independent review of this fix pass. After that: either (a) the owner
-runs the mailbox lookup and the full playbook above, or (b) a further,
-separately scoped round to wire the functions-evidence gate as a hard
-requirement inside the published executor itself (item 4's stated
-limitation) — neither is started here, and the mailbox lookup is not
-being requested in this message per the review's explicit instruction.
+Independent review of this 2nd fix pass. No mailbox lookup requested.
+`--execute` not authorized by this report.

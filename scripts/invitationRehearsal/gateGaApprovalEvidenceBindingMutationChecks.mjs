@@ -81,23 +81,37 @@ function expectFailure(name, dir) {
 {
   const dir = copyDir('m7-drafts-skip-functions-binding-check')
   mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    "  const functionsSha256 = sha256Bytes(functionsReceiptBytes)\n  validateFunctionsShaBinding({ functionsSha256, receiptBytes: functionsReceiptBytes, expectedProject: parsed['--project'], expectedCheckerSourceHead, now })",
-    '  const functionsSha256 = sha256Bytes(functionsReceiptBytes)')
+    "  validateFunctionsShaBinding({ functionsSha256, receiptBytes: functionsReceiptBytes, expectedProject: parsed['--project'], expectedCheckerSourceHead: expectedFunctionsCheckerSourceHead, now })",
+    '  void functionsSha256')
   expectFailure('M7 buildApprovalDraft no longer calls validateFunctionsShaBinding before emitting a draft', dir)
 }
 {
   const dir = copyDir('m8-drafts-skip-mailbox-validation')
   mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    "  validateMailboxReceipt({ receiptBytes: mailboxReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedCheckerSourceHead, now })\n",
+    "  validateMailboxReceipt({ receiptBytes: mailboxReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedDiscoverySourceHead, now })\n",
     '')
   expectFailure('M8 buildApprovalDraft no longer validates the mailbox receipt (would accept forged mailbox bytes)', dir)
 }
 {
   const dir = copyDir('m9-drafts-skip-auth-metadata-validation')
   mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
-    "  validateAuthMetadataReceipt({ receiptBytes: authMetadataReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedCheckerSourceHead, now })\n",
+    "  validateAuthMetadataReceipt({ receiptBytes: authMetadataReceiptBytes, expectedProject: parsed['--project'], expectedSourceHead: expectedDiscoverySourceHead, now })\n",
     '')
   expectFailure('M9 buildApprovalDraft no longer validates the auth-metadata receipt (would accept forged auth bytes)', dir)
+}
+{
+  const dir = copyDir('m13-no-full-path-check')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    "    if (fn.name !== expectedFullName) blocked()",
+    '    void expectedFullName')
+  expectFailure('M13 full exact function resource-path check removed (only the trailing name segment would be checked)', dir)
+}
+{
+  const dir = copyDir('m14-functions-and-discovery-head-collapsed')
+  mutate(dir, 'gateGaApprovalEvidenceBindingCore.mjs',
+    "expectedCheckerSourceHead: expectedFunctionsCheckerSourceHead, now })",
+    "expectedCheckerSourceHead: expectedDiscoverySourceHead, now })")
+  expectFailure('M14 functions-checker and discovery source-head params collapsed into one (the exact gap the audit found)', dir)
 }
 {
   const dir = copyDir('m10-drafts-skip-owner-confirmation')
