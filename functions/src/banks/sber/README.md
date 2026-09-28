@@ -136,7 +136,10 @@ metadata confirmed for the registered bank service/environment.
 
 There is NO production GOST verifier in this PR. The supplied unavailable
 implementation always denies. Unit tests use real signatures from a synthetic
-RSA key to exercise claim validation; they are NOT proof of Sber GOST support.
+RSA key to exercise claim validation behind an injected synthetic verifier;
+the fixture declares the bank's GOST header but does NOT have a GOST signature.
+The server boundary rejects RS256 even when that test verifier accepts its RSA
+signature. These tests are NOT proof of Sber GOST support.
 Do not wire a verifier that merely decodes JSON, returns true, or skips signature
 validation. Before bank sandbox/pilot, implement and independently review the
 bank-compatible verifier/runtime and validate bank-supplied positive/negative
@@ -155,6 +158,19 @@ test organization, and contains no embedded content. It cannot establish the
 production Sber token signing identity or serve as a positive bank token fixture.
 The SberBusiness ID platform guide also documents the greater-than-two-second
 API interval; this triggered the private rate gate above.
+
+To close the signature gate, obtain through a controlled test channel full
+bank-signed synthetic sandbox ID token and user-info fixtures with claims
+matching the registered client, the signing leaf/chain and documented trust and
+revocation policy. Never paste real customer tokens into chat or commit them.
+Confirm whether the detached CMS content is the literal JWS
+`base64url(header).base64url(payload)` bytes or another canonical representation;
+the public example does not establish this. Verify the same fixtures with the
+chosen GOST/CMS runtime, then exercise corrupted header/payload/signature,
+wrong signer, expired/revoked certificate, missing nonce and cross-client issuer
+and audience. The verifier must use configured trust, not the CMS embedded
+certificate as a trust anchor. Keep the default unavailable verifier until the
+positive and negative bank cases pass and the runtime is independently reviewed.
 
 ## REST and monetary correctness
 

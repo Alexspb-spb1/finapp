@@ -236,3 +236,27 @@ GOST/CMS verifier. Публичный пример содержит сертиф
 
 Итог продолжения: PARTIAL. Следующий разрешённый шаг остаётся BANK-003 —
 GOST/CMS verifier, bank-provided signers/trust и sandbox proof; BANK-004 не начат.
+
+## Продолжение 2026-09-28 — ограничение алгоритма и входные данные для verifier
+
+Baseline: чистый HEAD `1dfb8ad4662697650e304c3c54d4022a041c03ed`;
+Functions unit 546/546 до правки. Убран `RS256` из разрешённых заголовков
+подписанного ответа Сбера. Теперь даже валидная RSA-подпись тестового verifier
+не позволяет принять такой токен. Синтетический RSA verifier в unit-проверках
+оставлен только для claims/replay boundary: его GOST-заголовок **не означает**
+реальную ГОСТ-подпись. Default verifier по-прежнему всегда отказывает.
+
+Официальная OAuth-документация описывает JWS и ссылку на RSA root, но образец
+token schema имеет `gost34.10-2012` и откреплённую CMS-подпись с сертификатом
+тестовой организации и пустым payload `{}`. Поэтому до выбора runtime нужны
+подписанные банком синтетические sandbox ID/user-info fixtures, точная семантика
+подписанного CMS content, согласованный signing leaf/chain, validity/revocation
+policy и issuer для зарегистрированного клиента. Клиентские реальные токены
+нельзя присылать в чат или коммитить. Проверить положительные и отрицательные
+кейсы, затем независимый review; verifier сейчас не монтирован. Это остаётся
+BLOCKED на входных данных/совместимом ГОСТ-CMS runtime, общий BANK-003 PARTIAL.
+
+Узкий unit suite: 41/41 PASS. Functions lint/typecheck/build: PASS;
+полный Functions unit: 546/546 PASS. Dependencies/lockfile и frontend без изменений;
+предыдущие emulator/Rules проверки относятся к прежнему HEAD, не к этому.
+Ни банковских вызовов, ни секретов, ни deployment не было.

@@ -45,7 +45,7 @@ export async function verifiedClaims(raw: string, config: SberConfig, verifier: 
   try {
     if (raw.length > 64000 || raw.split('.').length !== 3) throw new Error()
     const header = JSON.parse(Buffer.from(raw.split('.')[0], 'base64url').toString()) as { alg?: unknown; crit?: unknown }
-    if (!['gost34.10-2012', 'RS256'].includes(String(header.alg)) || header.crit !== undefined || !(await verifier.verify(raw))) throw new Error()
+    if (header.alg !== 'gost34.10-2012' || header.crit !== undefined || !(await verifier.verify(raw))) throw new Error()
     const claims = parseBankData(ClaimsSchema, JSON.parse(Buffer.from(raw.split('.')[1], 'base64url').toString()))
     const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud]
     if (claims.iss !== config.issuer || !audience.includes(config.clientId) || claims.exp * 1000 <= now

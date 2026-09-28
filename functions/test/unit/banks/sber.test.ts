@@ -98,7 +98,9 @@ describe('Sber read-only wire contract', () => {
 })
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
-const makeJwt = (claims: Record<string, unknown>, alg = 'RS256') => {
+// This synthetic verifier checks RSA fixture bytes; it does not implement the
+// GOST/CMS algorithm declared by the Sber header and must never be mounted.
+const makeJwt = (claims: Record<string, unknown>, alg = 'gost34.10-2012') => {
   const unsigned = `${Buffer.from(JSON.stringify({ alg })).toString('base64url')}.${Buffer.from(JSON.stringify(claims)).toString('base64url')}`
   return `${unsigned}.${sign('RSA-SHA256', Buffer.from(unsigned), privateKey).toString('base64url')}`
 }
@@ -108,7 +110,7 @@ const verifier = { async verify(raw: string) {
 const now = Date.parse('2026-09-26T00:00:00Z')
 const claims = { iss: config.issuer, aud: config.clientId, sub: 'synthetic-sub', exp: now / 1000 + 3600, iat: now / 1000, nonce: 'nonce' }
 
-describe('Sber signed identity boundary (synthetic RSA, NOT bank GOST evidence)', () => {
+describe('Sber signed identity boundary (synthetic RSA verifier, NOT bank GOST evidence)', () => {
   it('verifies a signed fixture and denies default/unconfigured verification', async () => {
     expect((await verifiedClaims(makeJwt(claims), config, verifier, now, 'nonce')).sub).toBe('synthetic-sub')
     await expect(verifiedClaims(makeJwt(claims), config, unavailableBankSignatureVerifier, now, 'nonce')).rejects.toThrow()
@@ -119,6 +121,7 @@ describe('Sber signed identity boundary (synthetic RSA, NOT bank GOST evidence)'
   })
   it('rejects unsigned/modified tokens', async () => {
     await expect(verifiedClaims(makeJwt(claims, 'none'), config, verifier, now)).rejects.toThrow()
+    await expect(verifiedClaims(makeJwt(claims, 'RS256'), config, verifier, now)).rejects.toThrow('bank_access_denied')
     const jwt = makeJwt(claims).split('.'); jwt[1] = Buffer.from(JSON.stringify({ ...claims, sub: 'forged' })).toString('base64url')
     await expect(verifiedClaims(jwt.join('.'), config, verifier, now)).rejects.toThrow()
   })
