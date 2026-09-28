@@ -2,10 +2,14 @@
 // requirement 6): process 1 is forcibly killed (SIGKILL) at each of eight
 // precise, reproducible points in the flow; process 2 — the resume — is a
 // genuinely separate `node` invocation of the LITERAL CLI
-// (liveAcceptanceExecutor.mjs --execute --resume true ...), never a direct
-// runOnce() call, so the whole real gate (approval validation, clean-HEAD
-// recheck, package-integrity check, private-path validation) is exercised
-// for real on the resume path too.
+// (gateGaSecureExecutor.mjs --execute --resume true ...; see FINAPP-1.0-
+// SEC-006-GATE-G-A-APPROVAL-EVIDENCE-BINDING for why this is the gated
+// entrypoint, not the historical liveAcceptanceExecutor.mjs, which this
+// suite used before that round — a real functionsSha256, bound to a real
+// functions receipt, is generated below), never a direct runOnce() call,
+// so the whole real gate (approval validation, clean-HEAD recheck,
+// package-integrity check, private-path validation, AND the functions-
+// evidence gate) is exercised for real on the resume path too.
 //
 // R7's four windows — the process dies AFTER the corresponding local
 // durable write, proving the NEXT step resumes cleanly from confirmed state:
@@ -67,10 +71,42 @@ import { fileURLToPath } from 'node:url'
 import { initializeApp, deleteApp } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
 import { getAuth } from 'firebase-admin/auth'
+import { CALLABLES as BASELINE_CALLABLES } from './deploymentCheckCore.mjs'
+import {
+  TASK as DEPLOYMENT_CHECK_13FN_TASK, MEMBER_MANAGEMENT_CALLABLES,
+  EXPECTED_BASELINE_SOURCE_HEAD, EXPECTED_BASELINE_RECEIPT_SHA256,
+} from './gateGaDeploymentCheck13Core.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../..')
 const sha256 = v => createHash('sha256').update(v).digest('hex')
+
+// FINAPP-1.0-SEC-006-GATE-G-A-APPROVAL-EVIDENCE-BINDING, independent-
+// review item 2: the resume step below now drives gateGaSecureExecutor.mjs
+// (the gated entrypoint) instead of the historical liveAcceptanceExecutor.mjs
+// — a real, complete, schema-matching functions receipt is built here
+// (project demo-finapp, matching this suite's --project throughout) and
+// its own SHA-256 is what the generated approval's functionsSha256 binds
+// to, exactly as a real gateGaDeploymentCheck13.mjs run would produce.
+function demoFunctionEntry(name, family) {
+  return {
+    name: `projects/demo-finapp/locations/us-central1/functions/${name}`, state: 'ACTIVE', generation: 2,
+    runtime: 'nodejs22', region: 'us-central1',
+    resources: { memory: '256Mi', cpu: 1, concurrency: 1, minInstances: 0, maxInstances: 1, timeoutSeconds: 60 },
+    revision: `${name.toLowerCase()}-00001-abc`, build: 'projects/12345/locations/us-central1/builds/11111111-2222-3333-4444-555555555555',
+    sourceKind: 'storage', sourceReferenceSha256: sha256(`${name}-source`), sourceProvenanceSha256: sha256(`${name}-provenance`),
+    rollbackArtifactAvailability: 'NOT_VERIFIED', family,
+    ...(family === 'baseline' ? { driftCheckedAgainstSourceHead: EXPECTED_BASELINE_SOURCE_HEAD } : {}),
+  }
+}
+function buildDemoFunctionsReceiptBytes(checkerSourceHead) {
+  return Buffer.from(JSON.stringify({
+    task: DEPLOYMENT_CHECK_13FN_TASK, status: 'DEPLOYMENT_METADATA_VERIFIED_13FN', project: 'demo-finapp', sourceHead: checkerSourceHead,
+    finishedAt: new Date().toISOString(), billingEnabled: true,
+    functions: [...BASELINE_CALLABLES.map(n => demoFunctionEntry(n, 'baseline')), ...MEMBER_MANAGEMENT_CALLABLES.map(n => demoFunctionEntry(n, 'member-management'))],
+    baselineDriftCheckedAgainstSourceHead: EXPECTED_BASELINE_SOURCE_HEAD, baselineDriftCheckedAgainstReceiptSha256: EXPECTED_BASELINE_RECEIPT_SHA256,
+  }))
+}
 
 const CHECKPOINTS = Object.freeze([
   'ADMIN_CREATED', 'RECIPIENT_REGISTERED', 'EMAIL_SENT_PENDING_CHECKPOINT', 'EMAIL_SENT_CHECKPOINTED',
@@ -170,6 +206,19 @@ async function generateApprovalPair({ expectedHead, recipient, privateDir, journ
   const expiresAt = new Date(nowMs + 60 * 60 * 1000).toISOString()
   const baseLimits = { fixtureMutationSlots: 16, totalCallableRequests: 40, verificationEmails: 1, cleanupAuthorized: true, legacyCleanupApproved: false, productionAuthorized: false }
 
+  // Real, complete functions receipt — exactly what
+  // gateGaDeploymentCheck13.mjs would have produced for this checkout's
+  // own HEAD — bound genuinely by hash, not a fabricated fixture string.
+  // Item 2 also required proving the process reaches the functions check
+  // specifically; expectedHead doubles as --expected-checker-source-head
+  // (this consolidated checkout hosts both the checker and the executor
+  // together — see the earlier rounds' report for why that pairing is
+  // itself correct here, not merely convenient).
+  const functionsReceiptBytes = buildDemoFunctionsReceiptBytes(expectedHead)
+  const functionsReceiptPath = path.join(privateDir, 'functions-receipt.json')
+  fs.writeFileSync(functionsReceiptPath, functionsReceiptBytes)
+  const functionsSha256 = sha256(functionsReceiptBytes)
+
   function buildOne({ resume, outPath }) {
     const parsed = {
       mode: 'execute', '--profile': 'emulator', '--project': 'demo-finapp', '--expected-head': expectedHead,
@@ -180,7 +229,7 @@ async function generateApprovalPair({ expectedHead, recipient, privateDir, journ
       version: 1, task: GATE_GA_TASK, status: 'APPROVED', profile: 'emulator', project: 'demo-finapp',
       sourceHead: expectedHead, prHead: expectedHead, reviewStatus: 'PASS', ciStatus: 'PASS', functionsStatus: 'PASS',
       approvedAt, expiresAt, commandSha256,
-      mailboxSha256: sha256(`mailbox-${resume}-${outPath}`), functionsSha256: sha256('functions-fixture-r7'),
+      mailboxSha256: sha256(`mailbox-${resume}-${outPath}`), functionsSha256,
       authMetadataSha256: sha256('auth-metadata-fixture-r7'), stagingFingerprint: sha256('staging-fingerprint-r7'),
       limits: baseLimits,
     }
@@ -193,6 +242,7 @@ async function generateApprovalPair({ expectedHead, recipient, privateDir, journ
   return {
     fresh: buildOne({ resume: false, outPath: path.join(privateDir, 'out-fresh.json') }),
     resume: buildOne({ resume: true, outPath: path.join(privateDir, 'out-resume.json') }),
+    functionsReceiptPath, expectedCheckerSourceHead: expectedHead,
   }
 }
 
@@ -210,7 +260,8 @@ async function runOneScenario(checkpoint) {
   if (gitStatusPre !== '') throw new Error(`[${checkpoint}] repo at ${ROOT} is not clean — the literal CLI resume requires a clean, committed HEAD:\n${gitStatusPre.slice(0, 500)}`)
   // The journal file process-1 durably writes to, and process-2 (the
   // literal CLI, --resume true) continues — must live in claimedDir
-  // (liveAcceptanceExecutor.mjs derives claimedDir from dirname(--journal)).
+  // (the shared orchestrated-runtime code both entrypoints use derives
+  // claimedDir from dirname(--journal)).
   const journalInClaimedDir = path.join(claimedDir, 'crash-window-journal.jsonl')
 
   const child = spawn(process.execPath, [path.join(HERE, 'gateGaCrashWindowsCliTest.mjs'), '--child', checkpoint, claimedDir, recipient, runTag, signalPath, expectedHead, journalInClaimedDir], {
@@ -267,7 +318,8 @@ async function runOneScenario(checkpoint) {
   const recipientConfirmedSha256 = pair.resume.recipientConfirmedSha256
 
   const cliArgs = [
-    path.join(HERE, 'liveAcceptanceExecutor.mjs'), '--execute',
+    path.join(HERE, 'gateGaSecureExecutor.mjs'), '--execute',
+    '--functions-receipt', pair.functionsReceiptPath, '--expected-checker-source-head', pair.expectedCheckerSourceHead,
     '--profile', 'emulator', '--project', 'demo-finapp', '--expected-head', expectedHead,
     '--approval', pair.resume.approvalPath, '--approval-sha256', pair.resume.approvalSha256,
     '--journal', journalInClaimedDir, '--out', pair.resume.outPath,

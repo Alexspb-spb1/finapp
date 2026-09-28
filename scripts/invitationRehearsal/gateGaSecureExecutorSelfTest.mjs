@@ -27,6 +27,8 @@ import { createGateGaOrchestratedRuntime } from './gateGaStagingRuntime.mjs'
 import { createGateGaStagingAdapters } from './gateGaStagingAdapters.mjs'
 import { computeFirebaseConfigFingerprint } from '../lib/firebaseConfigFingerprint.mjs'
 import { wrapRuntimeWithFunctionsEvidenceGate } from './gateGaSecureExecutorCore.mjs'
+import { buildApprovalDraft } from './gateGaApprovalEvidenceBindingCore.mjs'
+import { validateExecutionApproval, parseExecutorCliArgs } from './liveAcceptanceExecutorCliCore.mjs'
 
 const sha256 = v => createHash('sha256').update(v).digest('hex')
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -80,9 +82,9 @@ async function withTempPackage(fn) {
   })
 }
 
-function functionEntry(name, family) {
+function functionEntry(name, family, project = PROJECT) {
   return {
-    name: `projects/${PROJECT}/locations/us-central1/functions/${name}`, state: 'ACTIVE', generation: 2,
+    name: `projects/${project}/locations/us-central1/functions/${name}`, state: 'ACTIVE', generation: 2,
     runtime: 'nodejs22', region: 'us-central1',
     resources: { memory: '256Mi', cpu: 1, concurrency: 1, minInstances: 0, maxInstances: 1, timeoutSeconds: 60 },
     revision: `${name.toLowerCase()}-00001-abc`, build: 'projects/12345/locations/us-central1/builds/11111111-2222-3333-4444-555555555555',
@@ -91,12 +93,27 @@ function functionEntry(name, family) {
     ...(family === 'baseline' ? { driftCheckedAgainstSourceHead: EXPECTED_BASELINE_SOURCE_HEAD } : {}),
   }
 }
-function realFunctionsReceiptBytes() {
+function realFunctionsReceiptBytes({ project = PROJECT, sourceHead = CHECKER_HEAD, finishedAt = new Date().toISOString() } = {}) {
   return Buffer.from(JSON.stringify({
-    task: DEPLOYMENT_CHECK_13FN_TASK, status: 'DEPLOYMENT_METADATA_VERIFIED_13FN', project: PROJECT, sourceHead: CHECKER_HEAD,
-    finishedAt: new Date().toISOString(), billingEnabled: true,
-    functions: [...BASELINE_CALLABLES.map(n => functionEntry(n, 'baseline')), ...MEMBER_MANAGEMENT_CALLABLES.map(n => functionEntry(n, 'member-management'))],
+    task: DEPLOYMENT_CHECK_13FN_TASK, status: 'DEPLOYMENT_METADATA_VERIFIED_13FN', project, sourceHead,
+    finishedAt, billingEnabled: true,
+    functions: [...BASELINE_CALLABLES.map(n => functionEntry(n, 'baseline', project)), ...MEMBER_MANAGEMENT_CALLABLES.map(n => functionEntry(n, 'member-management', project))],
     baselineDriftCheckedAgainstSourceHead: EXPECTED_BASELINE_SOURCE_HEAD, baselineDriftCheckedAgainstReceiptSha256: EXPECTED_BASELINE_RECEIPT_SHA256,
+  }))
+}
+function realMailboxReceiptBytes({ project, sourceHead, capturedAt = new Date().toISOString() }) {
+  return Buffer.from(JSON.stringify({
+    task: 'SEC-006 Stage 8 mailbox discovery', status: 'MAILBOX_DISCOVERY_COMPLETE', project,
+    capturedAt, accountExists: false, account: null,
+    profile: { profileExists: false, profileFieldsSha256: null }, cloudMutations: 0, emailsSent: 0, sourceHead,
+  }))
+}
+function realAuthMetadataReceiptBytes({ project, sourceHead, observedAt = new Date().toISOString() }) {
+  return Buffer.from(JSON.stringify({
+    task: 'SEC-006 Stage 8 Auth verification-template shape discovery',
+    status: 'AUTH_VERIFICATION_TEMPLATE_SHAPE_DISCOVERED', project, sourceHead, observedAt,
+    emailPasswordEnabled: true, userSignupDisabled: false, verificationMethodPresent: true,
+    verificationTemplateMetadataPresent: true, callbackDomainPresent: true, metadataSha256: sha256('metadata'),
   }))
 }
 
@@ -221,41 +238,128 @@ test('REAL FILE: gateGaSecureExecutor.mjs --execute without the two new required
   assert.match(result.stderr, /local_gate/)
 })
 
-test('REAL FILE: gateGaSecureExecutor.mjs --execute, run for real against this actual checkout\'s real HEAD, with a forged functionsSha256, refuses fast with no output files (--profile emulator: even a gate regression could only reach a nonexistent local emulator, never real staging)', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-ga-secure-executor-real-file-'))
+// Builds a FULL, schema-valid approval — one that independently passes
+// the REAL, unmodified validateExecutionApproval() on its own — for a
+// --profile emulator --project demo-finapp run at `realHead`. Returns
+// both the valid draft and a version with ONLY functionsSha256 tampered,
+// so the two tests below differ in exactly one field and nothing else:
+// this is what makes "the forged one refuses, the matching one doesn't"
+// an actual proof about the functions gate specifically, not an artifact
+// of some other, unrelated rejection (e.g. validateExecutionApproval's
+// own shape check, which a bare {functionsSha256: '...'} object would
+// have hit first — the exact flaw the prior round's test had).
+function buildDemoApprovalPair({ realHead, functionsReceiptBytes, journalPath, outPath }) {
+  const recipient = 'owner-confirmed@example.invalid'
+  const recipientConfirmedSha256 = sha256(recipient.trim().toLowerCase())
+  // journalPath/outPath MUST be the exact same paths the real --execute
+  // invocation will use below: approvalCommandSha256 binds their hashes
+  // into commandSha256, so a mismatch here would make
+  // validateExecutionApproval reject the approval on ITS OWN ground,
+  // before the functions gate is ever reached — silently defeating the
+  // very isolation this test exists to prove (the bug the previous round
+  // actually had, just from a different cause).
+  const draftArgs = [
+    '--profile', 'emulator', '--project', 'demo-finapp', '--expected-head', realHead,
+    '--journal', journalPath, '--out', outPath,
+    '--recipient', recipient, '--recipient-confirmed-sha256', recipientConfirmedSha256,
+    '--resume', 'false', '--legacy-cleanup-approved', 'false',
+  ]
+  const mailboxReceiptBytes = realMailboxReceiptBytes({ project: 'demo-finapp', sourceHead: realHead })
+  const authMetadataReceiptBytes = realAuthMetadataReceiptBytes({ project: 'demo-finapp', sourceHead: realHead })
+  const validDraft = buildApprovalDraft({
+    draftArgs, mailboxReceiptBytes, functionsReceiptBytes, authMetadataReceiptBytes,
+    stagingFingerprint: 'c'.repeat(64), expectedFunctionsCheckerSourceHead: CHECKER_HEAD, expectedDiscoverySourceHead: realHead,
+    reviewStatus: 'PASS', ciStatus: 'PASS', ownerConfirmsApproval: true,
+  })
+
+  // Independently self-check: this draft must pass the REAL, unmodified
+  // validateExecutionApproval() on its own, before we ever tamper with
+  // it — proving the "valid" half of the pair is genuinely valid, not
+  // assumed.
+  const validBytes = Buffer.from(JSON.stringify(validDraft))
+  const fullExecuteArgsForValid = [
+    '--execute', '--profile', 'emulator', '--project', 'demo-finapp', '--expected-head', realHead,
+    '--approval', '/abs/approval.json', '--approval-sha256', sha256(validBytes),
+    '--journal', journalPath, '--out', outPath,
+    '--recipient', recipient, '--recipient-confirmed-sha256', recipientConfirmedSha256,
+    '--resume', 'false', '--legacy-cleanup-approved', 'false',
+  ]
+  validateExecutionApproval({
+    parsed: parseExecutorCliArgs(fullExecuteArgsForValid), bytes: validBytes,
+    now: () => Date.parse(validDraft.approvedAt) + 60_000,
+  })
+
+  const forgedDraft = { ...validDraft, functionsSha256: 'f'.repeat(64) }
+  assert.notEqual(forgedDraft.functionsSha256, sha256(functionsReceiptBytes))
+  return { recipient, recipientConfirmedSha256, validBytes, forgedBytes: Buffer.from(JSON.stringify(forgedDraft)) }
+}
+
+function runRealExecute({ dir, realHead, functionsReceiptPath, approvalBytes, recipient, recipientConfirmedSha256, journalPath, outPath }) {
+  const approvalPath = path.join(dir, `approval-${Math.random().toString(36).slice(2, 8)}.json`)
+  fs.writeFileSync(approvalPath, approvalBytes)
+  const started = Date.now()
+  const result = spawnSync(process.execPath, [
+    path.join(HERE, 'gateGaSecureExecutor.mjs'), '--execute',
+    '--functions-receipt', functionsReceiptPath, '--expected-checker-source-head', CHECKER_HEAD,
+    '--profile', 'emulator', '--project', 'demo-finapp', '--expected-head', realHead,
+    '--approval', approvalPath, '--approval-sha256', sha256(approvalBytes),
+    '--journal', journalPath, '--out', outPath,
+    '--recipient', recipient, '--recipient-confirmed-sha256', recipientConfirmedSha256,
+    '--resume', 'false', '--legacy-cleanup-approved', 'false',
+  ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000, env: { ...process.env } })
+  return { result, elapsedMs: Date.now() - started, outPath, journalPath }
+}
+
+test('REAL FILE: gateGaSecureExecutor.mjs --execute, run for real against this actual checkout\'s real HEAD, with a FULL, otherwise-valid approval whose ONLY defect is a tampered functionsSha256, is refused specifically by the functions gate — fast, with no output files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-ga-secure-executor-real-file-neg-'))
   try {
     const realHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim()
     const functionsReceiptPath = path.join(dir, 'functions-receipt.json')
-    fs.writeFileSync(functionsReceiptPath, realFunctionsReceiptBytes())
-    const approvalPath = path.join(dir, 'approval.json')
-    // A syntactically well-formed but forged approval — this is exactly
-    // the shape validateExecutionApproval()'s own format-only check would
-    // accept; only this round's gate is supposed to catch it.
-    fs.writeFileSync(approvalPath, JSON.stringify({ functionsSha256: 'f'.repeat(64) }))
-    const journalPath = path.join(dir, 'journal.jsonl')
-    const outPath = path.join(dir, 'out.json')
-    const recipient = 'owner-confirmed@example.invalid'
+    const functionsReceiptBytes = realFunctionsReceiptBytes({ project: 'demo-finapp', sourceHead: CHECKER_HEAD })
+    fs.writeFileSync(functionsReceiptPath, functionsReceiptBytes)
+    const journalPath = path.join(dir, 'journal.jsonl'), outPath = path.join(dir, 'out.json')
+    const { recipient, recipientConfirmedSha256, forgedBytes } = buildDemoApprovalPair({ realHead, functionsReceiptBytes, journalPath, outPath })
 
-    const started = Date.now()
-    const result = spawnSync(process.execPath, [
-      path.join(HERE, 'gateGaSecureExecutor.mjs'), '--execute',
-      '--functions-receipt', functionsReceiptPath, '--expected-checker-source-head', CHECKER_HEAD,
-      '--profile', 'emulator', '--project', 'demo-finapp', '--expected-head', realHead,
-      '--approval', approvalPath, '--approval-sha256', sha256(fs.readFileSync(approvalPath)),
-      '--journal', journalPath, '--out', outPath,
-      '--recipient', recipient, '--recipient-confirmed-sha256', sha256(recipient.trim().toLowerCase()),
-      '--resume', 'false', '--legacy-cleanup-approved', 'false',
-    ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000, env: { ...process.env } })
-    const elapsedMs = Date.now() - started
+    const { result, elapsedMs } = runRealExecute({
+      dir, realHead, functionsReceiptPath, approvalBytes: forgedBytes, recipient, recipientConfirmedSha256, journalPath, outPath,
+    })
 
     assert.notEqual(result.status, 0)
-    // Whether this checkout happened to be clean or not at test-run time,
-    // the outcome that matters is unconditionally true either way: no
-    // output was ever written, and the process failed fast rather than
-    // hanging on a real network/auth attempt.
+    // Attributable specifically to the functions gate, not to some other
+    // upstream check (approval shape, clean-HEAD, missing adapters) —
+    // this is exactly what the prior round's bare-object approval could
+    // not prove, since it never reached this far.
+    assert.match(result.stderr, /functions_evidence_gate_refused/)
     assert.equal(fs.existsSync(outPath), false)
     assert.equal(fs.existsSync(journalPath), false)
     assert.ok(elapsedMs < 10_000, `expected a fast local refusal, took ${elapsedMs}ms`)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('REAL FILE: gateGaSecureExecutor.mjs --execute, run for real with the SAME setup but a genuinely matching functionsSha256, is NOT refused by the functions gate (whatever it does next — e.g. the expected, unrelated missing-emulator-env error — is not this gate\'s rejection)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-ga-secure-executor-real-file-pos-'))
+  try {
+    const realHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim()
+    const functionsReceiptPath = path.join(dir, 'functions-receipt.json')
+    const functionsReceiptBytes = realFunctionsReceiptBytes({ project: 'demo-finapp', sourceHead: CHECKER_HEAD })
+    fs.writeFileSync(functionsReceiptPath, functionsReceiptBytes)
+    const journalPath = path.join(dir, 'journal.jsonl'), outPath = path.join(dir, 'out.json')
+    const { recipient, recipientConfirmedSha256, validBytes } = buildDemoApprovalPair({ realHead, functionsReceiptBytes, journalPath, outPath })
+
+    const { result } = runRealExecute({
+      dir, realHead, functionsReceiptPath, approvalBytes: validBytes, recipient, recipientConfirmedSha256, journalPath, outPath,
+    })
+
+    assert.doesNotMatch(result.stderr, /functions_evidence_gate_refused/)
+    // No emulator host env was set for this subprocess, so the real
+    // orchestrator's own buildEmulatorFirebaseHandles is expected to
+    // refuse right after — a different, unrelated, already-safe failure
+    // mode, proving the functions gate specifically let this one through.
+    assert.notEqual(result.status, 0)
+    assert.equal(fs.existsSync(outPath), false)
+    assert.equal(fs.existsSync(journalPath), false)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

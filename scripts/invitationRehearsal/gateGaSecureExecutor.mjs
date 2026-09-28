@@ -36,40 +36,56 @@ async function execute(parsed, functionsReceiptPath, expectedCheckerSourceHead) 
   const git = command => execFileSync('git', ['--no-replace-objects', ...command], {
     cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
-  const outcome = await executeApprovedLiveRuntime({
-    parsed, repoRoot: root, io: fs, missingAdapters: LIVE_EXECUTOR_MISSING_ADAPTERS,
-    gitState: async () => ({
-      head: git(['rev-parse', 'HEAD']), status: git(['status', '--porcelain', '--untracked-files=all']),
-    }),
-    loadRuntime: async () => {
-      const { createGateGaOrchestratedRuntime } = await import('./gateGaStagingRuntime.mjs')
-      const realRuntime = createGateGaOrchestratedRuntime({
-        repoRoot: root, packageDir, io: fs,
-        buildStagingAdapters: async ({ runTag }) => {
-          const { createGateGaStagingAdapters } = await import('./gateGaStagingAdapters.mjs')
-          return createGateGaStagingAdapters({ repoRoot: root, io: fs, runTag })
-        },
-        buildEmulatorFirebaseHandles: async ({ runTag }) => {
-          if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) {
-            throw new Error('emulator_profile_requires_emulator_host_env')
-          }
-          const { initializeApp } = await import('firebase-admin/app')
-          const { getFirestore } = await import('firebase-admin/firestore')
-          const { getAuth } = await import('firebase-admin/auth')
-          const app = initializeApp({ projectId: 'demo-finapp' }, `gate-ga-secure-cli-${runTag}`)
-          return { db: getFirestore(app), auth: getAuth(app), runTag }
-        },
-      })
-      // The hard gate itself — see gateGaSecureExecutorCore.mjs. Reading
-      // the receipt file is the only I/O added here; it happens before
-      // realRuntime.run() is ever called, so it can never race with or
-      // follow any network access.
-      const stat = fs.lstatSync(functionsReceiptPath)
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) throw new Error('functions_receipt_invalid')
-      const functionsReceiptBytes = fs.readFileSync(functionsReceiptPath)
-      return wrapRuntimeWithFunctionsEvidenceGate({ runtime: realRuntime, functionsReceiptBytes, expectedCheckerSourceHead })
-    },
-  })
+  let outcome
+  try {
+    outcome = await executeApprovedLiveRuntime({
+      parsed, repoRoot: root, io: fs, missingAdapters: LIVE_EXECUTOR_MISSING_ADAPTERS,
+      gitState: async () => ({
+        head: git(['rev-parse', 'HEAD']), status: git(['status', '--porcelain', '--untracked-files=all']),
+      }),
+      loadRuntime: async () => {
+        const { createGateGaOrchestratedRuntime } = await import('./gateGaStagingRuntime.mjs')
+        const realRuntime = createGateGaOrchestratedRuntime({
+          repoRoot: root, packageDir, io: fs,
+          buildStagingAdapters: async ({ runTag }) => {
+            const { createGateGaStagingAdapters } = await import('./gateGaStagingAdapters.mjs')
+            return createGateGaStagingAdapters({ repoRoot: root, io: fs, runTag })
+          },
+          buildEmulatorFirebaseHandles: async ({ runTag }) => {
+            if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+              throw new Error('emulator_profile_requires_emulator_host_env')
+            }
+            const { initializeApp } = await import('firebase-admin/app')
+            const { getFirestore } = await import('firebase-admin/firestore')
+            const { getAuth } = await import('firebase-admin/auth')
+            const app = initializeApp({ projectId: 'demo-finapp' }, `gate-ga-secure-cli-${runTag}`)
+            return { db: getFirestore(app), auth: getAuth(app), runTag }
+          },
+        })
+        // The hard gate itself — see gateGaSecureExecutorCore.mjs. Reading
+        // the receipt file is the only I/O added here; it happens before
+        // realRuntime.run() is ever called, so it can never race with or
+        // follow any network access.
+        const stat = fs.lstatSync(functionsReceiptPath)
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) throw new Error('functions_receipt_invalid')
+        const functionsReceiptBytes = fs.readFileSync(functionsReceiptPath)
+        return wrapRuntimeWithFunctionsEvidenceGate({ runtime: realRuntime, functionsReceiptBytes, expectedCheckerSourceHead })
+      },
+    })
+  } catch (error) {
+    // Distinguishable, but still non-leaky: names only the CATEGORY of
+    // refusal (this round's functions-evidence gate specifically), never
+    // any internal validation detail. Every other failure mode (approval
+    // shape, clean-HEAD, missing adapters, receipt file problems) still
+    // falls through to the outer, deliberately generic catch below,
+    // unchanged from liveAcceptanceExecutor.mjs's own behavior.
+    if (error && error.message === 'approval_evidence_binding_blocked') {
+      console.error('LIVE_ACCEPTANCE_EXECUTOR_STOPPED reason=functions_evidence_gate_refused; the approval\'s functionsSha256 did not bind to the supplied --functions-receipt; credentials and network were not loaded; journal/output were not created.')
+      process.exitCode = 2
+      return process.exitCode
+    }
+    throw error
+  }
   if (outcome.status === 'ADAPTERS_INCOMPLETE') {
     console.error(`LIVE_ACCEPTANCE_EXECUTOR_STOPPED reason=adapters_incomplete missing=${outcome.missing.join(',')}; credentials and network were not loaded; journal/output were not created.`)
   } else if (outcome.status === 'PASS') {
