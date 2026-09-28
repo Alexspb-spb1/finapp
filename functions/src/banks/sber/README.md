@@ -160,6 +160,15 @@ production Sber token signing identity or serve as a positive bank token fixture
 The SberBusiness ID platform guide also documents the greater-than-two-second
 API interval; this triggered the private rate gate above.
 
+Sber's official Node.js SDK documentation links to a public reference SDK
+(GitHub `GreenBankTeamRu/SDK_Node.js`). Its verifier wrapper invokes a bundled
+Java/Bouncy Castle JAR to verify JWT/CMS, so this is evidence that a plain Node
+RSA JWS verifier is insufficient. The wrapper writes the complete token to a
+predictably named temporary file; it is NOT installed or used by this module.
+The binary verifier and its trust/revocation behavior need separate review,
+and the test service still needs a valid signed fixture. Do not copy the SDK's
+example credentials, debug logging or file handling into this application.
+
 To close the signature gate, obtain through a controlled test channel full
 bank-signed synthetic sandbox ID token and user-info fixtures with claims
 matching the registered client, the signing leaf/chain and documented trust and
@@ -172,6 +181,14 @@ wrong signer, expired/revoked certificate, missing nonce and cross-client issuer
 and audience. The verifier must use configured trust, not the CMS embedded
 certificate as a trust anchor. Keep the default unavailable verifier until the
 positive and negative bank cases pass and the runtime is independently reviewed.
+
+Bank support clarification request for the registered B2BSaaS sandbox: provide
+a synthetic signed ID token and signed user-info fixture with non-customer
+claims; specify the exact detached content bytes for CMS verification, the
+issuer/audience/nonce semantics, the sandbox signing leaf and chain, and the
+certificate validity/revocation requirements. Confirm whether the certificate
+downloaded as `SberCA_Root_Ext.crt` is a trust anchor for these particular
+responses; its RSA public key alone cannot establish that relationship.
 
 ## REST and monetary correctness
 

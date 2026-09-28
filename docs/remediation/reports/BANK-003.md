@@ -295,3 +295,12 @@ Cookie/Set-Cookie, исключить query/секреты из логов и п
 `firebase.json`, GitHub Pages, Functions index, облака и кабинета Сбера нет.
 Это локальный design gate, не доказательство proxy/browser behavior. BANK-003
 остаётся PARTIAL наряду с GOST/CMS и test fixtures.
+
+Из официальной документации Node.js SDK найден публичный reference SDK:
+https://developers.sber.ru/docs/ru/sber-api/sdk/nodejs/overview и
+https://github.com/GreenBankTeamRu/SDK_Node.js . Проверяющий компонент SDK
+вызывает Java/Bouncy Castle JAR; обёртка записывает полный JWT во временный
+файл с предсказуемым именем. SDK и JAR не установлены в Финучёт и не
+исполнялись; их прямое подключение без review, безопасной работы с токенами и
+настоящих bank fixtures недопустимо. В README сформулирован конкретный запрос
+к поддержке банка о CMS content, signing chain и тестовых подписанных ответах.
