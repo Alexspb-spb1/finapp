@@ -1,18 +1,17 @@
 # FINAPP-1.0-SEC-006-GATE-G-A-APPROVAL-EVIDENCE-BINDING — closing the functionsSha256 gap
 
 ## Итоговый статус
-PARTIAL. The secure-executor proof passes, including its real-file
-differential test. The eight crash-window scenarios remain unverified on
-this follow-up's Linux host because the project's private-directory ACL
-check deliberately rejects non-Windows platforms before any checkpoint.
-The earlier claim that a locked dependency change was necessary is
-corrected below. No staging run is suggested while this gate is open.
+READY_FOR_REVIEW for the test and Windows verification follow-up. The
+secure-executor proof and all eight literal-CLI crash windows passed on a
+Windows GitHub Actions runner. The earlier Linux and Windows failures below
+remain recorded as diagnostic history; the current result is in the final
+Windows addendum. No live staging invocation occurred.
 
 ## Branch / commit
-- branch: `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING-node-env` (local follow-up on `cdc00449892bb464d18dd5545b5250070be922b1`)
+- branch: `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING-winverify` (follow-up on `cdc00449892bb464d18dd5545b5250070be922b1`)
 - prior CHANGES_REQUIRED commits: `763642d`, `d1f15bd`, `6194353`, `cbdd7c4`
 - base SHA: `execution/sec-006-gate-ga-r9-fix5` @ `e1310e5314f4e6355a0fbd43eab378224044e1f6` — unchanged this round and every round (`git diff` empty, re-verified below)
-- result SHA: local follow-up commit, recorded in the final handoff
+- verified execution SHA: `d59c9c2de81044115ec871d547827c6a584859d8` (Windows Actions run `36459593483`); this documentation update follows it
 
 This round responds to the audit of `cbdd7c496245750b419df4616442e8aa1ca6a85a`.
 
@@ -252,8 +251,35 @@ invitation is being requested in this message.**
  scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs           | remove inherited emulator hosts in subprocess
 ```
 
-## Следующий разрешенный пункт
-Run the unchanged eight-scenario crash-window suite on Windows with a
-verified Node 22.12+ and Java 21. No mailbox lookup or invitation was
-performed in this follow-up. Do not proceed to staging while this
-regression gate remains unverified.
+## Windows verification addendum — 2026-09-28
+
+The Linux result and the earlier `NOT VERIFIED` entries above describe the
+previous follow-up and are superseded for the eight-scenario crash-window
+suite by [Windows Actions run 36459593483](https://github.com/Alexspb-spb1/finapp/actions/runs/36459593483)
+against `d59c9c2de81044115ec871d547827c6a584859d8`.
+
+The first hosted Windows run could not load `Get-Acl` in its nested Windows
+PowerShell process; the workflow now uses Windows PowerShell and verifies
+that nested ACL call first. The next run reached the literal resume CLI but
+stopped at its local gate. Independent fixture checks proved private paths,
+approval, HEAD and the 13-function receipt valid. A byte-level preflight
+then found **19 SHA mismatches**: Git's Windows checkout had converted the
+reviewed LF source bytes to CRLF. The runtime's package-integrity refusal
+was correct. The workflow now sets `core.autocrlf=false` **before checkout**
+and verifies all manifest entries before starting emulators. No security
+gate, timeout, lockfile or production code was changed to obtain a pass.
+
+On the final execution SHA, the package-byte check, 9/9 secure-executor
+self-tests, Functions build, nested ACL preflight and the emulator suite
+all succeeded. The eight literal secure-CLI resume scenarios reported
+`SUMMARY total=8 pass=8 fail=0` and `GATE_GA_CRASH_WINDOWS PASS`.
+Every scenario reported `cleanupStatus=CLEANUP_COMPLETE_VERIFIED` and
+`remainder=0`; the three email windows counted at most one journaled send.
+
+The additional preflight in `gateGaCrashWindowsCliTest.mjs` now identifies
+fixture errors by gate before the separate CLI process starts, without
+changing that CLI's generic public error. The standalone resume-kill/E2E
+suites were not rerun in this Windows job; they do not enter via the secure
+CLI and were unchanged. The current package needs independent review before
+the existing owner playbook is considered for a real staging run. PR #28
+and `main` were not changed; no staging or production call was made.
