@@ -14,7 +14,7 @@ const body = { companyId: 'company-a', connectionId: 'connection-a' }
 const claims = () => ({ uid: 'verified-admin', sub: 'verified-admin', email_verified: true, auth_time: now / 1000 - 60, exp: now / 1000 + 600 }) as DecodedIdToken
 const auth = { verifyIdToken: vi.fn(), createSessionCookie: vi.fn(), verifySessionCookie: vi.fn() }
 const service = { begin: vi.fn(), callback: vi.fn() }
-const factory = () => createSberHttpHandlers(config, urls, auth, service, () => now)
+const factory = (ingress: 'direct' | 'firebaseHosting' = 'direct') => createSberHttpHandlers(config, urls, auth, service, () => now, ingress)
 function request(method = 'POST', url = '/api/sber/begin', fields: Record<string, string> = {}) {
   const headers = { origin: 'https://app.test', 'content-type': 'application/json', authorization: 'Bearer synthetic.id.signature', ...fields }
   return Object.assign(new EventEmitter(), { method, originalUrl: url, body, rawBody: Buffer.from(JSON.stringify(body)),
@@ -44,6 +44,29 @@ beforeEach(() => {
 })
 
 describe('BANK-003 private HTTP boundary', () => {
+  it('uses the reserved Hosting cookie for a same-origin begin/callback round trip', async () => {
+    const h = factory('firebaseHosting'), started = response()
+    await h.begin(request(), started.res)
+    const setCookie = String(started.result.values['Set-Cookie'])
+    expect(setCookie).toMatch(/^__session=synthetic\.session\.signature~[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=600$/)
+    const returned = response()
+    await h.callback(callback(setCookie.split(';')[0]), returned.res)
+    expect(service.callback).toHaveBeenCalledOnce()
+    expect(returned.result.values.Location).toBe('https://app.test/banks?bankConnection=connected')
+    expect(returned.result.values['Set-Cookie']).toBe('__session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0')
+  })
+  it('rejects missing, alternate and duplicate Hosting cookies', async () => {
+    const h = factory('firebaseHosting')
+    for (const raw of ['', `__Host-finapp-sber=${session}~${'n'.repeat(43)}`,
+      `__session=${session}~${'n'.repeat(43)}; __session=${session}~${'n'.repeat(43)}`]) {
+      const returned = response()
+      await h.callback(callback(raw), returned.res)
+      expect(returned.result.values.Location).toBe('https://app.test/banks?bankConnection=failed')
+      expect(returned.result.values['Set-Cookie']).toContain('__session=;')
+    }
+    expect(auth.verifySessionCookie).not.toHaveBeenCalled()
+    expect(service.callback).not.toHaveBeenCalled()
+  })
   it('verifies bearer/revocation and binds a fresh secure session without trusting client auth', async () => {
     const h = factory(), r = response()
     await h.begin(request(), r.res)

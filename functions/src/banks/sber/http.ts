@@ -8,7 +8,8 @@ import { BankError } from '../errors'
 import { AUTHORIZE, ConfigSchema, type SberConfig } from './protocol'
 import type { SberConnections } from './service'
 
-const COOKIE = '__Host-finapp-sber'
+const DIRECT_COOKIE = '__Host-finapp-sber'
+const HOSTING_COOKIE = '__session'
 const TTL = 600_000
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/
 const BeginSchema = z.object({ companyId: FirestoreDocumentIdSchema, connectionId: FirestoreDocumentIdSchema }).strict()
@@ -18,7 +19,7 @@ type Service = Pick<SberConnections, 'begin' | 'callback'>
 type Handler = (request: Request, response: Response) => Promise<void>
 const deny = (): never => { throw new BankError('bank_access_denied') }
 const binding = (value: string) => createHash('sha256').update(value).digest('base64url')
-const cookie = (value: string, age: number) => `${COOKIE}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${age}`
+const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${age}`
 
 function headers(response: Response) {
   response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache', 'Referrer-Policy': 'no-referrer',
@@ -45,10 +46,14 @@ function callable(rawRequest: Request, token: DecodedIdToken, data: unknown): Ca
 }
 
 /** Private factories, NOT exported Cloud Functions. Mount only after bank/runtime gates.
- * Requires a same-origin HTTPS reverse proxy that preserves this host-only cookie.
+ * The Firebase Hosting mode uses its reserved __session cookie; the Hosting
+ * origin must be dedicated to this app and must not have another __session user.
  */
 export function createSberHttpHandlers(configInput: SberConfig, urls: { beginUrl: string; returnUrl: string },
-  auth: SessionAuth, service: Service, clock: () => number = Date.now): { begin: Handler; callback: Handler } {
+  auth: SessionAuth, service: Service, clock: () => number = Date.now,
+  ingress: 'direct' | 'firebaseHosting' = 'direct'): { begin: Handler; callback: Handler } {
+  if (ingress !== 'direct' && ingress !== 'firebaseHosting') deny()
+  const cookieName = ingress === 'firebaseHosting' ? HOSTING_COOKIE : DIRECT_COOKIE
   const config = ConfigSchema.parse(configInput)
   const callbackUrl = new URL(config.redirectUri)
   const beginUrl = new URL(urls.beginUrl), returnUrl = new URL(urls.returnUrl)
@@ -86,7 +91,7 @@ export function createSberHttpHandlers(configInput: SberConfig, urls: { beginUrl
         if (`${target.origin}${target.pathname}` !== AUTHORIZE || target.username || target.password || target.hash
           || target.searchParams.get('redirect_uri') !== config.redirectUri
           || target.searchParams.get('client_id') !== config.clientId) deny()
-        response.setHeader('Set-Cookie', cookie(value, TTL / 1000))
+        response.setHeader('Set-Cookie', cookie(cookieName, value, TTL / 1000))
         response.status(200).json({ authorizationUrl: result.authorizationUrl })
       } catch {
         // Do not echo SDK/bank errors or overwrite a previous pending cookie.
@@ -112,9 +117,9 @@ export function createSberHttpHandlers(configInput: SberConfig, urls: { beginUrl
         const data = CallbackSchema.parse(Object.fromEntries(params))
         const raw = header(request, 'cookie')
         if (raw.length > 16000) deny()
-        const matches = raw.split(';').map(part => part.trim()).filter(part => part.startsWith(`${COOKIE}=`))
+        const matches = raw.split(';').map(part => part.trim()).filter(part => part.startsWith(`${cookieName}=`))
         if (matches.length !== 1) deny()
-        const value = matches[0].slice(COOKIE.length + 1), parts = value.split('~')
+        const value = matches[0].slice(cookieName.length + 1), parts = value.split('~')
         if (parts.length !== 2 || !JWT.test(parts[0]) || parts[0].length > 3500 || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) deny()
         const token = await auth.verifySessionCookie(parts[0], true)
         verified(token, clock(), false)
@@ -126,7 +131,7 @@ export function createSberHttpHandlers(configInput: SberConfig, urls: { beginUrl
       } finally {
         clearTimeout(timer); request.off('aborted', abort); response.off('close', closed)
       }
-      response.setHeader('Set-Cookie', cookie('', 0))
+      response.setHeader('Set-Cookie', cookie(cookieName, '', 0))
       // No code/state/identity in redirect or response body. UI must re-read status.
       response.status(303).setHeader('Location', destination(success))
       response.end()

@@ -81,8 +81,10 @@ has NOT been changed to provide this routing.
   verified email and sign-in within five minutes. Browser-supplied auth is ignored.
   This implies reauthentication in the future UI for an older login.
 - A ten-minute Firebase session cookie is combined with fresh 256-bit randomness.
-  Only the SHA-256 binding reaches OAuth state storage. Cookie name is
-  `__Host-finapp-sber`, Path=/, Secure, HttpOnly, SameSite=Lax, no Domain.
+  Only the SHA-256 binding reaches OAuth state storage. Direct ingress uses
+  `__Host-finapp-sber`; explicitly selected Firebase Hosting ingress uses its
+  reserved `__session` name. Both set Path=/, Secure, HttpOnly, SameSite=Lax,
+  no Domain. The Hosting origin must be dedicated and have no other `__session`.
   One pending browser flow is supported; a new begin replaces its cookie.
 - Callback: top-level GET; exactly one state and code; reject duplicate/unknown
   query parameters, duplicate security headers/cookies, expired/revoked sessions.
@@ -97,11 +99,11 @@ has NOT been changed to provide this routing.
 
 Hosting/proxy access logs and error middleware are a separate deployment gate:
 they MUST exclude callback query strings, Authorization, Cookie and response
-Set-Cookie. Preserve this host-only cookie; do not assume a Firebase Hosting
-rewrite forwards arbitrary cookie names. Configure/test a compatible same-origin
-reverse proxy before mounting. Do not rename to a broadly shared auth cookie as
-a workaround. Browser navigation, actual Firebase Auth/session issuance and this
-proxy behavior have not been exercised; unit tests substitute Admin SDK.
+Set-Cookie. Firebase Hosting only forwards `__session`; select its mode only
+after reviewing the dedicated origin and confirming end-to-end browser behavior.
+The direct mode requires a same-origin proxy that preserves `__Host-finapp-sber`.
+Browser navigation, actual Firebase Auth/session issuance and either ingress
+behavior have not been exercised; unit tests substitute Admin SDK.
 The Firestore integration test uses real domain transactions but synthetic Auth.
 The proposed routes and browser/proxy acceptance checks are in `ROUTING.md`.
 

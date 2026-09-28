@@ -2,8 +2,8 @@
 
 The Sber browser flow needs one stable HTTPS origin for the FinУчёт page,
 `begin`, the bank callback and the result page. `createSberHttpHandlers` validates
-that the three configured URLs have this same origin. The temporary
-`__Host-finapp-sber` cookie is issued by `begin` and must arrive unchanged at
+that the three configured URLs have this same origin. A temporary cookie is
+issued by `begin` and must arrive unchanged at
 `callback`. The OAuth state is additionally stored as a hash and bound to the
 verified Firebase user, company, nonce and connection generation.
 
@@ -44,15 +44,20 @@ hostname or the current `https://` placeholder in the Sber cabinet.
   Verify request limits and timeout budget against the 30-second callback.
 
 The current frontend deploys to GitHub Pages (`/finapp/`), which is static and
-has no same-origin backend. Firebase Hosting rewrites to Functions/Cloud Run
-strip ordinary incoming cookies and forward only a specially named
-`__session` cookie. Renaming this host-prefixed callback cookie would change
-the security contract. Therefore neither existing GitHub Pages nor a direct
-Firebase Hosting rewrite meets the contract as written. Choose and review a
-cookie-preserving HTTPS ingress that serves the SPA and routes to the private
-backend (for example a dedicated reverse proxy) before configuring the bank.
-Do not deploy a placeholder route or mount BANK-003 before signature/trust,
-secrets, session issuance, logging and sandbox gates are passed.
+has no same-origin backend. The private handler now supports two explicit
+ingress modes. `direct` retains the host-prefixed `__Host-finapp-sber` cookie
+behind a reverse proxy that forwards cookies. `firebaseHosting` uses Firebase
+Hosting's reserved `__session` cookie, with Path=/, Secure, HttpOnly, SameSite=Lax
+and no Domain. Hosting strips other cookies before Functions/Cloud Run, so this
+mode must be selected explicitly when mounting the handler. It requires a
+dedicated Hosting origin without any other use of `__session` and a reviewed
+deployment of the SPA, begin and callback to that same origin. Both modes bind
+the cookie to a one-time, user/company-specific state and reject duplicates.
+The unit tests exercise both modes but cannot prove Hosting forwarding or
+browser behavior. The acceptance checks above remain mandatory. No Hosting
+config, function export, domain, certificate or secret has been deployed.
+Do not mount BANK-003 before signature/trust, secrets, session issuance,
+logging and sandbox gates are passed.
 
 Primary routing references:
 https://firebase.google.com/docs/hosting/manage-cache
