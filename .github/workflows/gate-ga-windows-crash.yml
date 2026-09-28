@@ -34,6 +34,13 @@ jobs:
         working-directory: functions
       - run: npm run build
         working-directory: functions
+      - name: Verify Windows PowerShell ACL module
+        shell: powershell
+        run: |
+          Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+          Get-Acl -Path . | Out-Null
+          powershell.exe -NoProfile -NonInteractive -Command "Get-Acl -Path . | Out-Null"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Eight literal-CLI crash windows
-        shell: pwsh
+        shell: powershell
         run: .\node_modules\.bin\firebase.cmd emulators:exec --project demo-finapp --only auth,firestore,functions "node scripts/invitationRehearsal/gateGaCrashWindowsCliTest.mjs"
