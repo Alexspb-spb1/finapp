@@ -68,6 +68,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { validateExecutionApproval, validatePrivateExecutorPaths, validateCleanExecutorHead, parseExecutorCliArgs } from './liveAcceptanceExecutorCliCore.mjs'
+import { validateFunctionsShaBinding } from './gateGaApprovalEvidenceBindingCore.mjs'
 import { initializeApp, deleteApp } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
 import { getAuth } from 'firebase-admin/auth'
@@ -326,6 +328,25 @@ async function runOneScenario(checkpoint) {
     '--recipient', recipient, '--recipient-confirmed-sha256', recipientConfirmedSha256,
     '--resume', 'true', '--legacy-cleanup-approved', 'false',
   ]
+  // Verify the fixture against the same local gates before spawning the
+  // literal CLI. A failure here names the particular gate, while the CLI's
+  // intentional public error remains generic and non-leaky.
+  const standardArgs = cliArgs.slice(1).filter((_, index, args) => {
+    const previous = args[index - 1]
+    return !['--functions-receipt', '--expected-checker-source-head'].includes(args[index]) &&
+      !['--functions-receipt', '--expected-checker-source-head'].includes(previous)
+  })
+  const parsed = parseExecutorCliArgs(standardArgs)
+  try { validatePrivateExecutorPaths({ parsed, repoRoot: ROOT, io: fs }) }
+  catch { throw new Error(`[${checkpoint}] local preflight: private paths rejected`) }
+  try { validateExecutionApproval({ parsed, bytes: fs.readFileSync(pair.resume.approvalPath) }) }
+  catch { throw new Error(`[${checkpoint}] local preflight: approval rejected`) }
+  try { validateCleanExecutorHead({ parsed, gitState: { head: expectedHead, status: gitStatusPre } }) }
+  catch { throw new Error(`[${checkpoint}] local preflight: reviewed HEAD rejected`) }
+  try {
+    validateFunctionsShaBinding({ functionsSha256: JSON.parse(fs.readFileSync(pair.resume.approvalPath, 'utf8')).functionsSha256,
+      receiptBytes: fs.readFileSync(pair.functionsReceiptPath), expectedProject: 'demo-finapp', expectedCheckerSourceHead: pair.expectedCheckerSourceHead })
+  } catch { throw new Error(`[${checkpoint}] local preflight: functions receipt rejected`) }
   // The literal CLI legitimately exits non-zero for a SAFE_STOP outcome
   // (exitCode: status==='PASS'?0:1) — that is NOT a test failure by itself;
   // --out is still written and is what actually gets verified below.
