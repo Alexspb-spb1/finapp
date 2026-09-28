@@ -1,18 +1,18 @@
 # FINAPP-1.0-SEC-006-GATE-G-A-APPROVAL-EVIDENCE-BINDING — closing the functionsSha256 gap
 
 ## Итоговый статус
-READY_FOR_REVIEW for items 1–2 (code + tests, proven end to end against
-the real file and the real crash-window resume path). Item 3 (isolated
-Node 22 for emulator-dependent regression) is explicitly **NOT VERIFIED**
-— a real, deeper, pre-existing dependency incompatibility was found and
-is documented exactly, not glossed over. No staging run is suggested as
-a result.
+PARTIAL. The secure-executor proof passes, including its real-file
+differential test. The eight crash-window scenarios remain unverified on
+this follow-up's Linux host because the project's private-directory ACL
+check deliberately rejects non-Windows platforms before any checkpoint.
+The earlier claim that a locked dependency change was necessary is
+corrected below. No staging run is suggested while this gate is open.
 
 ## Branch / commit
-- branch: `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING`
+- branch: `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING-node-env` (local follow-up on `cdc00449892bb464d18dd5545b5250070be922b1`)
 - prior CHANGES_REQUIRED commits: `763642d`, `d1f15bd`, `6194353`, `cbdd7c4`
 - base SHA: `execution/sec-006-gate-ga-r9-fix5` @ `e1310e5314f4e6355a0fbd43eab378224044e1f6` — unchanged this round and every round (`git diff` empty, re-verified below)
-- result SHA: this round's commit — see the final report message
+- result SHA: local follow-up commit, recorded in the final handoff
 
 This round responds to the audit of `cbdd7c496245750b419df4616442e8aa1ca6a85a`.
 
@@ -106,59 +106,36 @@ untouched).
 
 ---
 
-## Item 3 — isolated Node 22: attempted for real; a genuine, deeper blocker found; NOT VERIFIED
+## Item 3 — correction of the Node diagnosis and Linux verification limit
 
-**What was prepared, without touching the system Node 24:** the official
-Node.js v22.11.0 Windows binary ZIP was downloaded from `nodejs.org`
-(the standard, official distribution channel — not a staging call) and
-extracted to a local, non-system scratch directory
-(`.runtime/node22-portable/`, outside every checkout, never committed).
-Combined with last round's `JAVA_HOME` override (Android Studio's bundled
-JBR, `21.0.10` — no install), the emulator suite's own log confirmed the
-fix worked exactly as intended: **`functions: Using node@22 from host.`**
-(previously: `Your requested "node" version "22" doesn't match your
-global version "24"`) — the Node-version mismatch reported last round is
-genuinely resolved.
+The previous attempt used Node **22.11.0**. The checked-in
+`functions/package-lock.json` pins `jwks-rsa@4.1.0`, whose own `engines.node`
+is `^20.19.0 || ^22.12.0 || >=23.0.0`; 22.11.0 is outside that range.
+Node 22.12.0 enabled `require(ESM)` by default. Its release note explicitly
+states that this removes `ERR_REQUIRE_ESM` for synchronous ESM imports:
+https://nodejs.org/en/blog/release/v22.12.0 . The previous statement that
+`jwks-rsa`/`jose` necessarily requires a lockfile change, independent of
+Node version, was incorrect. Recheck with Node >=22.12 in the Node 22
+line before proposing a dependency change.
 
-**A third, separate, deeper blocker then surfaced — a real dependency
-incompatibility, not a version-selection problem:**
-```
-Error [ERR_REQUIRE_ESM]: require() of ES Module
-D:\...\functions\node_modules\jose\dist\webapi\index.js from
-D:\...\functions\node_modules\jwks-rsa\src\utils.js not supported.
-Instead change the require of index.js in
-D:\...\functions\node_modules\jwks-rsa\src\utils.js to a dynamic
-import() which is available in all CommonJS modules.
-```
-Diagnosed precisely: `functions/package-lock.json` locks `jwks-rsa@4.1.0`
-(a CommonJS package) against `jose@6.2.8` (ESM-only since jose v4 —
-`jose` dropped CommonJS `require()` support entirely as an upstream
-design choice, independent of which Node major version runs it).
-`jwks-rsa` is not imported anywhere in this project's own
-`functions/src` — it is pulled in transitively (via `firebase-admin` or
-a related dependency) — but because the Functions emulator introspects
-the ENTIRE compiled `functions/lib/index.js` bundle as one unit before
-it will serve any function, this one broken transitive import chain
-blocks the whole bundle from loading, regardless of which specific
-function is actually needed for these tests.
+This Linux follow-up verified official Node 22.12.0 and 22.16.0 archives
+against their published SHA-256 sums, but their binaries segfaulted even
+on a trivial `node -e` here. That is an execution-host limit; it does not
+reproduce the Windows dependency error or prove the package issue is
+fixed. A separately downloaded Temurin Java 21 JRE was SHA-256 verified.
+With that JRE and host Node 24, Firebase emulators started and loaded the
+Functions definitions from this checkout. The eight-scenario test then
+failed at `ensurePrivateDirectoryAcl()` with
+`gate_ga_private_dir_acl_blocked:unsupported_platform` before any
+checkpoint. The Windows ACL safety check was preserved; no timeout or
+lockfile was changed. Full 8/8 verification still requires the original
+Windows environment with Node >=22.12 and Java 21.
 
-**Why this is not fixed here:** the only real fix is a dependency change
-(pin `jwks-rsa` to a version compatible with CJS `jose`, or bump it past
-whatever version resolved this upstream, or override the transitive
-`jose` resolution) — editing `functions/package-lock.json`/`package.json`
-is explicitly out of scope for this task (CLAUDE.md: don't change the
-lockfile without a real need tied to the current item) and is a decision
-for whoever owns the functions dependency tree, not something to patch
-unilaterally mid-review.
-
-**Consequence, stated plainly:** crash-window/resume-kill/E2E regression
-remains **NOT VERIFIED** in this environment. Both blockers this review
-asked to be investigated (Java, then Node) were genuinely resolved
-without any system-level install; a third, different, real blocker
-(a locked dependency incompatibility) was found in their place and is
-correctly left unresolved and disclosed, not worked around. **No staging
-run is suggested as a result of this gap**, per the explicit instruction
-this round if verification turns out impossible.
+The real-file secure-executor test has now been made independent of the
+parent process's `FIRESTORE_EMULATOR_HOST` and
+`FIREBASE_AUTH_EMULATOR_HOST`. It passed 9/9 both normally and with both
+host variables deliberately set to bogus loopback endpoints in the parent.
+Its child process cannot reach the emulator on the positive path.
 
 ---
 
@@ -199,11 +176,13 @@ elsewhere.
 | `npm run lint` | PASS | 1 pre-existing unrelated warning |
 | `node --test scripts/invitationRehearsal/gateGaApprovalEvidenceBindingSelfTest.mjs` | PASS 35/35 | unaffected by this round's changes |
 | `node scripts/invitationRehearsal/gateGaApprovalEvidenceBindingMutationChecks.mjs` | PASS 14/14 DETECTED | |
-| `node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs` | PASS 9/9 | including the new differential (forged vs. matching) real-subprocess pair — verified against the final clean, committed HEAD (see below) |
+| `node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs` | PASS 9/9 twice | on the clean local commit, once with bogus parent emulator hosts |
 | `node --test scripts/invitationRehearsal/deploymentCheckSelfTest.mjs` (unchanged) | PASS 19/19 | |
-| `gateGaCrashWindowsCliTest.mjs` (8 real crash-window scenarios, now via `gateGaSecureExecutor.mjs`) | **NOT AVAILABLE** | blocked by item 3's dependency incompatibility, not by this round's code |
-| `gateGaResumeKillTest.mjs` / standalone E2E | **NOT AVAILABLE**, and **not applicable to this round's change** — neither ever used the CLI/approval path (verified by direct search, zero matches) | |
-| `git status --short` / `git diff` vs fix5 on all original files | empty except the one file item 2 intentionally adapted | |
+| `gateGaCrashWindowsCliTest.mjs` (8 scenarios via secure CLI) | **FAIL 0/8 on Linux** | every scenario stops before its checkpoint on `gate_ga_private_dir_acl_blocked:unsupported_platform`; must run on Windows |
+| `npm run test:unit` / `functions npm run test:unit` | PASS 248/248 / 354/354 | |
+| `npm run test:rules` (Firestore emulator, Java 21) | PASS 126/126 | |
+| root/functions build and typecheck/lint | PASS | one existing root lint warning, one build chunk-size warning |
+| `gateGaResumeKillTest.mjs` / standalone E2E | **NOT VERIFIED here** | neither uses the CLI/approval path; Windows ACL check also applies |
 
 ## Фактический вывод существенных тестов
 
@@ -222,11 +201,18 @@ DETECTED M12 APPROVAL_TTL_MS silently drifted from the reviewed executor's real 
 SUMMARY total=14 detected=14 undetected=0
 ```
 
-Item 3's exact blocking output:
+Previous Windows attempt, now correctly attributed to Node 22.11.0:
 ```text
 functions: Using node@22 from host.
 Error [ERR_REQUIRE_ESM]: require() of ES Module .../functions/node_modules/jose/dist/webapi/index.js
 from .../functions/node_modules/jwks-rsa/src/utils.js not supported.
+```
+
+Linux follow-up's actual crash-window output:
+```text
+functions: Loaded functions definitions from source: authzProbe, createCompany, inviteMember, ...
+Error: gate_ga_private_dir_acl_blocked:unsupported_platform
+SUMMARY total=8 pass=0 fail=8
 ```
 
 ---
@@ -243,30 +229,31 @@ invitation is being requested in this message.**
 - No `--execute` against real `finapp-staging` this round or any round.
 - This round's own real subprocess calls to `--execute --profile emulator`
   are disclosed explicitly (item 4), not conflated with a staging call.
-- No new software was installed system-wide; the portable Node 22 and the
-  JDK 21 override both used already-obtained or already-installed
-  binaries, isolated to this session's PATH only.
+- No software was installed system-wide; portable Node 22 and Java 21
+  archives were downloaded into local scratch and SHA-256 verified.
 - No secrets/tokens in this report or code.
 
 ## Данные и миграция
 Нет.
 
 ## Известные ограничения
-- Item 3: crash-window/resume-kill/E2E regression genuinely blocked by a
-  locked dependency incompatibility (`jwks-rsa`/`jose`) in this
-  environment; not a code defect in this round's changes.
+- Item 3: crash-window/resume-kill/E2E regression remains unverified on
+  the target Windows environment. This Linux runner cannot pass the
+  intentional Windows ACL check. The previous dependency diagnosis was
+  invalid because Node 22.11.0 was below `jwks-rsa`'s minimum engine.
 - `liveAcceptanceExecutor.mjs` remains a usable, ungated bypass of this
   round's functions-evidence gate (item 4) — a stated property of adding
   a new opt-in entrypoint, not a defect to be silently assumed closed.
 
 ## Diff summary
 ```text
- docs/remediation/reports/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING.md | rewritten (this file)
- scripts/invitationRehearsal/gateGaCrashWindowsCliTest.mjs              | adapted to gateGaSecureExecutor.mjs (item 2)
- scripts/invitationRehearsal/gateGaSecureExecutor.mjs                   | distinguishable, non-leaky gate-refusal reason (item 1)
- scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs           | rewritten differential real-file test pair (item 1)
+ Follow-up relative to cdc00449:
+ docs/remediation/reports/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING.md | correct Node diagnosis and verification status
+ scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs           | remove inherited emulator hosts in subprocess
 ```
 
 ## Следующий разрешенный пункт
-Independent review of this fix pass. No mailbox lookup or invitation
-requested. `--execute` against real staging not authorized.
+Run the unchanged eight-scenario crash-window suite on Windows with a
+verified Node 22.12+ and Java 21. No mailbox lookup or invitation was
+performed in this follow-up. Do not proceed to staging while this
+regression gate remains unverified.
