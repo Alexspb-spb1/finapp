@@ -103,6 +103,8 @@ jobs:
 
       - run: npm run build
 
+      - run: npm run build:hosting
+
   functions:
     runs-on: ubuntu-latest
     timeout-minutes: 20

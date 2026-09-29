@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:hosting": "tsc -b && vite build --mode hosting",
     "build:staging": "node scripts/verify-staging-env.mjs && tsc -b && vite build --mode staging",
     "test:staging-preflight": "node scripts/test-staging-preflight.mjs",
     "test:invitation-inventory": "node scripts/invitationRehearsal/inventory.mjs --self-test",
