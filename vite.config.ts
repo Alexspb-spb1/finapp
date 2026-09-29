@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss(), {
     name: 'pages-invite-entry',
     enforce: 'post',
@@ -32,10 +32,11 @@ export default defineConfig({
       this.emitFile({ type: 'asset', fileName: '404.html', source: entry.source })
     },
   }],
-  base: '/finapp/',
+  // Pages remains at /finapp/ while Hosting serves the same app at the domain root.
+  base: mode === 'hosting' ? '/' : '/finapp/',
   build: {
     // Keep the bootstrap entry free of preloaded application dependencies.
     modulePreload: false,
     manifest: true,
   },
-})
+}))
