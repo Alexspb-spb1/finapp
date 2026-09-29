@@ -2,19 +2,28 @@
 
 ## Итоговый статус
 READY_FOR_REVIEW for items 1–2 (code + tests, proven end to end against
-the real file and the real crash-window resume path). Item 3 (isolated
-Node 22 for emulator-dependent regression) is explicitly **NOT VERIFIED**
-— a real, deeper, pre-existing dependency incompatibility was found and
-is documented exactly, not glossed over. No staging run is suggested as
-a result.
+the real file). Item 3's Node-version/require(esm) blocker is now
+genuinely **RESOLVED** (see Item 5) — but resolving it exposed a
+**separate, real, pre-existing, out-of-scope defect** in the already-
+reviewed `gateGaStagingRuntime.mjs` (inherited unchanged from
+`execution/sec-006-gate-ga-r9-fix5`, confirmed byte-identical): its
+package-integrity check compares LF-pinned expected hashes
+(`CODE-SHA256SUMS.txt`) against CRLF on-disk file bytes on this Windows
+checkout (`core.autocrlf=true`), so it fails for every listed file,
+unconditionally, on the first real `run()` this checkout has ever
+executed. This blocks the crash-window regression (and, by the same
+mechanism, would block ANY real `--execute` on this machine — fresh or
+resume) and is explicitly **not fixed in this branch**: the affected file
+is outside this task's scope and the fix requires an owner decision (see
+Item 5). No staging run is suggested as a result.
 
 ## Branch / commit
 - branch: `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING`
-- prior CHANGES_REQUIRED commits: `763642d`, `d1f15bd`, `6194353`, `cbdd7c4`
+- prior CHANGES_REQUIRED commits: `763642d`, `d1f15bd`, `6194353`, `cbdd7c4`, `cdc0044`
 - base SHA: `execution/sec-006-gate-ga-r9-fix5` @ `e1310e5314f4e6355a0fbd43eab378224044e1f6` — unchanged this round and every round (`git diff` empty, re-verified below)
-- result SHA: this round's commit — see the final report message
+- result SHA: `d24d05c528ba0f3879011f8ac62c7ab555beb1b2`
 
-This round responds to the audit of `cbdd7c496245750b419df4616442e8aa1ca6a85a`.
+This round responds to the audit of `cbdd7c496245750b419df4616442e8aa1ca6a85a` (items 1–4, closed in `cdc0044`) and a follow-up instruction to obtain an isolated Node ≥22.12.0, strip emulator-host env vars from the positive subprocess test, and run the secure-CLI tests plus all 8 crash-window scenarios on the clean final commit (see Item 5).
 
 ---
 
@@ -191,6 +200,123 @@ elsewhere.
 
 ---
 
+## Item 5 — this round: isolated Node 22.23.3, env-stripping fix, and a newly-diagnosed (but out-of-scope) package-integrity/CRLF blocker
+
+**Instruction this round:** obtain an isolated Node ≥22.12.0 (22.x
+branch), explicitly strip `FIRESTORE_EMULATOR_HOST`/
+`FIREBASE_AUTH_EMULATOR_HOST` from the positive subprocess test's own
+environment instead of inheriting the ambient shell, then on the clean
+final commit run the secure-CLI self-tests and all 8 crash-window
+scenarios with unchanged timeouts; if a new failure appears, diagnose it
+with its exact output rather than re-reporting NOT VERIFIED blind.
+
+**1. Isolated Node upgraded to v22.23.3 (well above the 22.12.0 floor).**
+Downloaded the official `nodejs.org` Windows ZIP to
+`.runtime/node22-portable/` (outside every checkout, never committed, no
+system-wide change). Confirmed via the emulator's own log:
+`functions: Using node@22 from host.`
+
+**2. `require(esm)` genuinely fixes the previously-reported jose/jwks-rsa
+blocker.** Under the prior Node 22.11.0, loading the compiled functions
+bundle threw a synchronous `ERR_REQUIRE_ESM`. Under 22.23.3, a direct,
+isolated load of the exact same bundle —
+```
+node.exe -e "require('./functions/lib/index.js'); console.log('LOADED_OK')"
+```
+— completed instantly with `LOADED_OK`, and a direct run of the real
+HTTP-discovery entrypoint (`firebase-functions/lib/bin/firebase-functions.js`,
+bypassing firebase-tools' wrapper) produced the full, correct 9-function
+manifest in under a second. This is now genuinely resolved, not
+worked around.
+
+**3. One transient, non-reproducing failure during diagnosis.** The
+first live emulator start after the Node upgrade hit
+`Cannot determine backend specification. Timeout after 10000` — a
+different, generic symptom from the old ESM error. Per this round's
+explicit instruction, this was investigated rather than re-reported
+blind: a direct synchronous `require()` of the bundle succeeded
+instantly (above), ruling out a load-time throw; a second, otherwise
+identical emulator start (`--debug`) succeeded in under 1 second
+(`Got response from /__/functions.yaml`, all 9 functions loaded). This
+was a one-time cold-start delay on the freshly-extracted portable
+binary, not a reproducible defect — it did not recur on retry and is not
+the same failure as item 3's original ESM error.
+
+**4. Secure-CLI self-tests: PASS 9/9 on the final clean, committed HEAD
+(`d24d05c528ba0f3879011f8ac62c7ab555beb1b2`), with a live emulator
+(`firebase emulators:exec --only auth,firestore,functions,extensions
+"node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs"`).**
+Includes the env-stripping fix itself: `runRealExecute()` in
+`gateGaSecureExecutorSelfTest.mjs` now explicitly `delete`s
+`FIRESTORE_EMULATOR_HOST`/`FIREBASE_AUTH_EMULATOR_HOST` from the
+subprocess environment rather than inheriting whatever the ambient shell
+happens to have set, so the "gate passes, then fails on missing
+emulator-host env" assertion holds deterministically.
+
+**5. All 8 crash-window scenarios: FAIL 0/8 — a real, new, precisely
+diagnosed, but out-of-scope defect, not a code regression in this
+branch.** Run via `firebase emulators:exec --only
+auth,firestore,functions,extensions "node
+scripts/invitationRehearsal/gateGaCrashWindowsCliTest.mjs"` against the
+same clean HEAD. Every scenario's literal-CLI resume step failed at the
+generic `reason=local_gate` catch. Diagnosis (a temporary, local-only
+debug commit printing `error.stack` was used to see the real cause, then
+discarded via `git reset --hard` back to `d24d05c...` — confirmed clean,
+never pushed):
+```
+Error: gate_ga_staging_runtime_blocked:package_integrity:
+[{"file":"liveAcceptanceExecutorCore.mjs","reason":"HASH_MISMATCH",
+  "expectedHash":"6f2a7f63...","actual":"d1ab4246..."}, ... all 19 listed files]
+```
+Root cause, confirmed exactly:
+```
+$ git config --get core.autocrlf
+true
+$ git show d24d05c...:scripts/invitationRehearsal/liveAcceptanceExecutorCore.mjs | sha256sum
+6f2a7f63...   (matches "expectedHash")
+$ sha256sum scripts/invitationRehearsal/liveAcceptanceExecutorCore.mjs
+d1ab4246...   (matches "actual")
+```
+`verifyPackageIntegrity()` in `gateGaStagingRuntime.mjs` compares each
+file's on-disk hash against a **pinned, checked-in**
+`CODE-SHA256SUMS.txt` ("never fetched, never regenerated at run time").
+That file's hashes are LF-based (computed elsewhere, e.g. Linux/macOS/CI
+or a non-autocrlf checkout). This Windows checkout has
+`core.autocrlf=true`, so every tracked `.mjs` file is materialized with
+CRLF line endings on disk — hence **every one of the 19 listed files**
+mismatches uniformly, exactly matching what was observed.
+
+Both `gateGaStagingRuntime.mjs` and `CODE-SHA256SUMS.txt` are confirmed
+**byte-identical to the `execution/sec-006-gate-ga-r9-fix5` base**
+(`git diff e1310e53...d24d05c... -- scripts/invitationRehearsal/CODE-SHA256SUMS.txt scripts/invitationRehearsal/gateGaStagingRuntime.mjs` is empty) —
+this is inherited from the already-reviewed base package, not introduced
+by any of this branch's four review-cycle fixes. `verifyPackageIntegrity()`
+runs unconditionally at the top of `run()`, for both fresh and resume
+invocations alike, so this would block the **first real `--execute` of
+any kind** on this specific Windows checkout, not only the resume path —
+it is simply that the crash-window suite is the first test in this whole
+engagement to drive a real literal-CLI `run()` far enough (past the
+emulator-host-env check) to reach it.
+
+**Why this is not fixed here:** `gateGaStagingRuntime.mjs` and
+`CODE-SHA256SUMS.txt` are outside this task's declared scope (this
+branch's mandate has been, across all four review cycles, to add the
+functions-evidence gate alongside the reviewed executor files without
+modifying them). The correct fix — regenerating
+`CODE-SHA256SUMS.txt` against this checkout's actual bytes, normalizing
+line endings before hashing, or setting `core.autocrlf=false`/pinning
+`.gitattributes` for this directory — changes the integrity-verification
+contract of the already-reviewed base package and is an owner decision,
+not something to patch unilaterally mid-review on a narrowly-scoped
+evidence-binding branch.
+
+**Consequence, stated plainly:** the crash-window/resume regression
+remains unverified in this environment — now for a different, precisely
+identified reason than item 3's original blocker (which is itself
+resolved). No staging run is suggested as a result.
+
+---
+
 ## Проверки
 
 | Команда | Результат | Примечание |
@@ -199,11 +325,11 @@ elsewhere.
 | `npm run lint` | PASS | 1 pre-existing unrelated warning |
 | `node --test scripts/invitationRehearsal/gateGaApprovalEvidenceBindingSelfTest.mjs` | PASS 35/35 | unaffected by this round's changes |
 | `node scripts/invitationRehearsal/gateGaApprovalEvidenceBindingMutationChecks.mjs` | PASS 14/14 DETECTED | |
-| `node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs` | PASS 9/9 | including the new differential (forged vs. matching) real-subprocess pair — verified against the final clean, committed HEAD (see below) |
+| `node --test scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs` | PASS 9/9 | run this round against isolated Node 22.23.3 + a live `firebase emulators:exec`, on the final clean, committed HEAD `d24d05c...` |
 | `node --test scripts/invitationRehearsal/deploymentCheckSelfTest.mjs` (unchanged) | PASS 19/19 | |
-| `gateGaCrashWindowsCliTest.mjs` (8 real crash-window scenarios, now via `gateGaSecureExecutor.mjs`) | **NOT AVAILABLE** | blocked by item 3's dependency incompatibility, not by this round's code |
+| `gateGaCrashWindowsCliTest.mjs` (8 real crash-window scenarios, via `gateGaSecureExecutor.mjs`) | **FAIL 0/8** | genuinely run this round (item 3's Node blocker resolved); fails on a real, precisely-diagnosed, out-of-scope `package_integrity`/CRLF defect inherited from fix5 — see Item 5 |
 | `gateGaResumeKillTest.mjs` / standalone E2E | **NOT AVAILABLE**, and **not applicable to this round's change** — neither ever used the CLI/approval path (verified by direct search, zero matches) | |
-| `git status --short` / `git diff` vs fix5 on all original files | empty except the one file item 2 intentionally adapted | |
+| `git status --short` / `git diff` vs fix5 on all original files | empty except the files item 1/2 intentionally adapted; `CODE-SHA256SUMS.txt`/`gateGaStagingRuntime.mjs` confirmed byte-identical to fix5 | |
 
 ## Фактический вывод существенных тестов
 
@@ -222,11 +348,27 @@ DETECTED M12 APPROVAL_TTL_MS silently drifted from the reviewed executor's real 
 SUMMARY total=14 detected=14 undetected=0
 ```
 
-Item 3's exact blocking output:
+Item 3's original blocking output (this round: resolved, see Item 5):
 ```text
 functions: Using node@22 from host.
 Error [ERR_REQUIRE_ESM]: require() of ES Module .../functions/node_modules/jose/dist/webapi/index.js
 from .../functions/node_modules/jwks-rsa/src/utils.js not supported.
+```
+
+Item 5's new blocking output (crash-window, all 8/8, unresolved — out of scope):
+```text
+LIVE_ACCEPTANCE_EXECUTOR_STOPPED reason=local_gate; expected exact --execute arguments,
+clean reviewed HEAD, unexpired exact-hash private approval, a real bound --functions-receipt,
+and new private journal/output paths. Credentials and network were not loaded; no mutation,
+email, browser action or cleanup was attempted.
+
+(real cause, captured via a temporary local-only debug commit, discarded afterward:)
+Error: gate_ga_staging_runtime_blocked:package_integrity:
+[{"file":"liveAcceptanceExecutorCore.mjs","reason":"HASH_MISMATCH",
+  "expectedHash":"6f2a7f63da27af567ad936690749d504955a522d8d734e0845231f8e428c5685",
+  "actual":"d1ab424694bde37ca52479a48dbdeee1a16b42ff8d5e3e877b902553966fc6c5"}, ...]
+
+SUMMARY total=8 pass=0 fail=8
 ```
 
 ---
@@ -252,9 +394,18 @@ invitation is being requested in this message.**
 Нет.
 
 ## Известные ограничения
-- Item 3: crash-window/resume-kill/E2E regression genuinely blocked by a
-  locked dependency incompatibility (`jwks-rsa`/`jose`) in this
-  environment; not a code defect in this round's changes.
+- Item 3's original Node-version/`jose`/`jwks-rsa` blocker is resolved
+  this round (isolated Node 22.23.3) — no longer a limitation.
+- Item 5 (new this round): crash-window/resume regression is blocked by
+  a real, precisely-diagnosed `package_integrity`/CRLF defect in the
+  already-reviewed, unmodified `gateGaStagingRuntime.mjs` +
+  `CODE-SHA256SUMS.txt` (inherited unchanged from fix5) — this Windows
+  checkout's `core.autocrlf=true` makes every on-disk `.mjs` file's hash
+  differ from the LF-pinned expected sums. This would block the first
+  real `--execute` of any kind (fresh or resume) on this machine, not
+  only crash-window resume. Out of scope to fix on this branch; requires
+  an owner decision on how `CODE-SHA256SUMS.txt`/line-ending handling
+  should work across checkouts.
 - `liveAcceptanceExecutor.mjs` remains a usable, ungated bypass of this
   round's functions-evidence gate (item 4) — a stated property of adding
   a new opt-in entrypoint, not a defect to be silently assumed closed.
@@ -264,8 +415,12 @@ invitation is being requested in this message.**
  docs/remediation/reports/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING.md | rewritten (this file)
  scripts/invitationRehearsal/gateGaCrashWindowsCliTest.mjs              | adapted to gateGaSecureExecutor.mjs (item 2)
  scripts/invitationRehearsal/gateGaSecureExecutor.mjs                   | distinguishable, non-leaky gate-refusal reason (item 1)
- scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs           | rewritten differential real-file test pair (item 1)
+ scripts/invitationRehearsal/gateGaSecureExecutorSelfTest.mjs           | rewritten differential real-file test pair (item 1);
+                                                                          this round: explicit emulator-host env stripping in
+                                                                          the positive real-file test (item 5)
 ```
+No other tracked file changed this round; `gateGaStagingRuntime.mjs` and
+`CODE-SHA256SUMS.txt` confirmed byte-identical to fix5 (Item 5).
 
 ## Следующий разрешенный пункт
 Independent review of this fix pass. No mailbox lookup or invitation
