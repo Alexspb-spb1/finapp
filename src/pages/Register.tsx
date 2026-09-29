@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { TrendingUp, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { authStore, subscribeAuth } from '../store/authStore'
+import BrandMark from '../components/brand/BrandMark'
 import { resolveRegistrationRecovery } from './registrationRecovery'
 
 type Step = 'account' | 'company' | 'setup_incomplete'
@@ -153,10 +154,8 @@ export default function Register() {
       <div className="w-full max-w-md relative">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-indigo-600 shadow-lg shadow-indigo-500/30 mb-4">
-            <TrendingUp size={28} className="text-white" />
-          </div>
-          <h1 className="text-2xl font-bold text-white">ФинУчёт</h1>
+          <BrandMark className="w-14 h-14 shadow-lg shadow-indigo-500/30 mb-4 mx-auto" />
+          <h1 className="text-2xl font-bold text-white">АктивМетр</h1>
           <p className="text-slate-400 text-sm mt-1">Управленческий учёт для бизнеса</p>
         </div>
 

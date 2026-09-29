@@ -38,7 +38,7 @@ export default function Layout() {
   }
 
   const isProjectDetail = /^\/projects\/.+/.test(pathname)
-  const title = isProjectDetail ? 'Проект' : (titles[pathname] ?? 'ФинУчёт')
+  const title = isProjectDetail ? 'Проект' : (titles[pathname] ?? 'АктивМетр')
 
   useEffect(() => {
     if (company?.id) { companyStore.init(company.id) }

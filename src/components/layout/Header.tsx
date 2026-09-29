@@ -1,5 +1,6 @@
-import { Bell, Plus, Search, Menu, Wallet, TrendingUp } from 'lucide-react'
+import { Bell, Plus, Search, Menu, Wallet } from 'lucide-react'
 import { useState } from 'react'
+import BrandMark from '../brand/BrandMark'
 import TransactionModal from '../transactions/TransactionModal'
 import { useStore } from '../../store/useStore'
 import { sumAccountsBase } from '../../utils/currency'
@@ -35,10 +36,8 @@ export default function Header({ title, onMenuClick }: Props) {
 
         {/* Brand logo */}
         <div className="flex items-center gap-2.5 shrink-0">
-          <div className="w-8 h-8 bg-indigo-600 flex items-center justify-center shrink-0">
-            <TrendingUp size={16} className="text-white" />
-          </div>
-          <span className="font-bold text-slate-800 text-lg tracking-tight hidden sm:inline">ФинУчёт</span>
+          <BrandMark className="w-8 h-8 shrink-0" />
+          <span className="font-bold text-slate-800 text-lg tracking-tight hidden sm:inline">АктивМетр</span>
         </div>
 
         {/* Page title */}
