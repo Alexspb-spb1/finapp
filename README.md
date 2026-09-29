@@ -1,73 +1,13 @@
-# React + TypeScript + Vite
+# Активметр
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Активметр — приложение для управленческого учёта и контроля финансов бизнеса.
 
-Currently, two official plugins are available:
+## Разработка
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Требуются Node.js 24 и npm 11. Установите зависимости через `npm ci`, затем запустите `npm run dev`. Проверки: `npm run build`, `npm run lint`, `npm run test:unit`.
 
-## React Compiler
+## Домен и совместимость
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Публичное название — «Активметр», планируемый домен — `aktivmetr.ru`. Домен подключается к хостингу отдельным шагом. Текущий путь GitHub Pages `/finapp/`, идентификаторы Firebase, ключи браузерного хранилища и существующие ссылки приглашения сохраняются для совместимости. Перед переводом трафика на домен нужно настроить хостинг, Firebase Authentication authorized domains, ссылки приглашения и адреса возврата банковских подключений, а затем проверить вход и синхронизацию на новом адресе.
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Логотип: [`public/aktivmetr-mark.svg`](public/aktivmetr-mark.svg); знак вкладки: [`public/favicon.svg`](public/favicon.svg).

@@ -170,7 +170,7 @@ export default function AcceptInvite({ inviteId, onAccepted }: Props) {
   return (
     <main className="w-full min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 px-4 py-10 text-slate-200 flex items-center justify-center">
       <section className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-6 sm:p-8 shadow-2xl">
-        <p className="mb-2 text-sm font-medium text-indigo-300">ФинУчёт</p>
+        <p className="mb-2 text-sm font-medium text-indigo-300">Активметр</p>
         <h1 className="text-2xl font-bold text-white">Приглашение в компанию</h1>
         {accepted ? <p role="status" className="mt-5">Приглашение принято. Доступ подтверждён.</p> : !available ? (
           <div className="mt-5 space-y-4">

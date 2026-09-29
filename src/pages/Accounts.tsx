@@ -624,7 +624,7 @@ export default function Accounts() {
             </div>
             <div className="px-6 py-5 space-y-4">
               <p className="text-sm text-slate-500">
-                Выберите новую выписку. Перед импортом ФинУчёт покажет операции и автоматически исключит уже загруженные дубли.
+                Выберите новую выписку. Перед импортом Активметр покажет операции и автоматически исключит уже загруженные дубли.
               </p>
               <StatementFilePicker
                 file={statementFile}
