@@ -298,6 +298,15 @@ function runRealExecute({ dir, realHead, functionsReceiptPath, approvalBytes, re
   const approvalPath = path.join(dir, `approval-${Math.random().toString(36).slice(2, 8)}.json`)
   fs.writeFileSync(approvalPath, approvalBytes)
   const started = Date.now()
+  // Explicitly strip both emulator-host variables rather than inheriting
+  // whatever this shell happens to have set — the "matching hash, gate
+  // passes, then fails on missing emulator host env" assertion below must
+  // hold deterministically regardless of ambient environment state, not
+  // by accident of what was exported in the terminal this test happened
+  // to run from.
+  const env = { ...process.env }
+  delete env.FIRESTORE_EMULATOR_HOST
+  delete env.FIREBASE_AUTH_EMULATOR_HOST
   const result = spawnSync(process.execPath, [
     path.join(HERE, 'gateGaSecureExecutor.mjs'), '--execute',
     '--functions-receipt', functionsReceiptPath, '--expected-checker-source-head', CHECKER_HEAD,
@@ -306,7 +315,7 @@ function runRealExecute({ dir, realHead, functionsReceiptPath, approvalBytes, re
     '--journal', journalPath, '--out', outPath,
     '--recipient', recipient, '--recipient-confirmed-sha256', recipientConfirmedSha256,
     '--resume', 'false', '--legacy-cleanup-approved', 'false',
-  ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000, env: { ...process.env } })
+  ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000, env })
   return { result, elapsedMs: Date.now() - started, outPath, journalPath }
 }
 
@@ -353,10 +362,14 @@ test('REAL FILE: gateGaSecureExecutor.mjs --execute, run for real with the SAME 
     })
 
     assert.doesNotMatch(result.stderr, /functions_evidence_gate_refused/)
-    // No emulator host env was set for this subprocess, so the real
-    // orchestrator's own buildEmulatorFirebaseHandles is expected to
+    // FIRESTORE_EMULATOR_HOST/FIREBASE_AUTH_EMULATOR_HOST are explicitly
+    // stripped for this subprocess by runRealExecute (never just
+    // inherited from this shell's own state), so the real orchestrator's
+    // own buildEmulatorFirebaseHandles is deterministically expected to
     // refuse right after — a different, unrelated, already-safe failure
-    // mode, proving the functions gate specifically let this one through.
+    // mode, proving the functions gate specifically let this one through
+    // rather than the outcome depending on what happened to be exported
+    // in whichever terminal ran this test.
     assert.notEqual(result.status, 0)
     assert.equal(fs.existsSync(outPath), false)
     assert.equal(fs.existsSync(journalPath), false)
