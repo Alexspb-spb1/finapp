@@ -37,7 +37,7 @@ export default function Header({ title, onMenuClick }: Props) {
         {/* Brand logo */}
         <div className="flex items-center gap-2.5 shrink-0">
           <BrandMark className="w-8 h-8 shrink-0" />
-          <span className="font-bold text-slate-800 text-lg tracking-tight hidden sm:inline">Активметр</span>
+          <span className="font-bold text-slate-800 text-lg tracking-tight hidden sm:inline">АктивМетр</span>
         </div>
 
         {/* Page title */}

@@ -197,7 +197,7 @@ export default function Reconciliation() {
           Сверка остатков
         </h1>
         <p className="text-sm text-slate-400 mt-1">
-          Сравнение операций Активметра с банковской выпиской
+          Сравнение операций АктивМетра с банковской выпиской
         </p>
       </div>
 
@@ -389,7 +389,7 @@ export default function Reconciliation() {
                     <div className="px-4 py-3 space-y-1.5">
                       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Начальный остаток</p>
                       <div className="flex justify-between items-center">
-                        <span className="text-xs text-slate-400">Активметр</span>
+                        <span className="text-xs text-slate-400">АктивМетр</span>
                         <span className="font-bold text-slate-700">
                           {appOpeningBal !== undefined ? formatCurrency(appOpeningBal) : '—'}
                         </span>
@@ -415,12 +415,12 @@ export default function Reconciliation() {
                     <div className="px-4 py-3 space-y-1.5">
                       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Конечный остаток</p>
                       <div className="flex justify-between items-center">
-                        <span className="text-xs text-slate-400">Активметр</span>
+                        <span className="text-xs text-slate-400">АктивМетр</span>
                         <span className="font-bold text-slate-700">
                           {appOpeningBal !== undefined ? formatCurrency(appOpeningBal + appInc - appExp) : '—'}
                         </span>
                       </div>
-                      {/* Конечный по выписке считается из транзакций (согласованно с Активметром) */}
+                      {/* Конечный по выписке считается из транзакций (согласованно с АктивМетром) */}
                       <div className="flex justify-between items-center">
                         <span className="text-xs text-slate-400">Выписка (расчёт)</span>
                         <span className="font-bold text-slate-700">
@@ -477,7 +477,7 @@ export default function Reconciliation() {
                     <div key={label} className="px-4 py-3 space-y-1.5">
                       <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">{label}</p>
                       <div className="flex justify-between">
-                        <span className="text-slate-400 text-xs">Активметр</span>
+                        <span className="text-slate-400 text-xs">АктивМетр</span>
                         <span className="font-semibold text-slate-700">{formatCurrency(app)}</span>
                       </div>
                       <div className="flex justify-between">

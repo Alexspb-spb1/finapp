@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Активметр">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="АктивМетр">
   <rect width="64" height="64" rx="14" fill="#4f46e5"/>
   <path d="M13 47 28.3 16.5a4.1 4.1 0 0 1 7.4 0L51 47" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
   <path d="M20 42h12l12-11h5" fill="none" stroke="#5eead4" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>

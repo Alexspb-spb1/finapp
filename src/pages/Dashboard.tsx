@@ -238,7 +238,7 @@ export default function Dashboard() {
     return (
       <div className="flex flex-col items-center justify-center h-full min-h-96 text-center">
         <div className="text-6xl mb-5">📊</div>
-        <h2 className="text-xl font-bold text-slate-700 mb-2">Добро пожаловать в Активметр!</h2>
+        <h2 className="text-xl font-bold text-slate-700 mb-2">Добро пожаловать в АктивМетр!</h2>
         <p className="text-slate-400 max-w-sm mb-8">Начните с добавления счёта — банковского, кассы или карты.</p>
         <Link to="/accounts"
           className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-6 py-3 rounded-xl transition-colors">

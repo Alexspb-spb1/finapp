@@ -59,7 +59,7 @@ export default function Login() {
         {/* Logo */}
         <div className="text-center mb-8">
           <BrandMark className="w-14 h-14 shadow-lg shadow-indigo-500/30 mb-4 mx-auto" />
-          <h1 className="text-2xl font-bold text-white">Активметр</h1>
+          <h1 className="text-2xl font-bold text-white">АктивМетр</h1>
           <p className="text-slate-400 text-sm mt-1">Управленческий учёт для бизнеса</p>
         </div>
 
@@ -216,7 +216,7 @@ export default function Login() {
         </div>
 
         <p className="text-center text-xs text-slate-600 mt-6">
-          © 2026 Активметр · Управленческий учёт
+          © 2026 АктивМетр · Управленческий учёт
         </p>
       </div>
     </div>
