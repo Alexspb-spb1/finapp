@@ -216,10 +216,15 @@ function Invoke-Checked([string]$Exe, [string[]]$ArgList, [string]$Cwd) {
 # characters from a string passed this way (confirmed by direct
 # reproduction - a script containing require("fs") arrives at node as
 # require(fs), a SyntaxError). Every inline script below is instead
-# written to a real temp .js file and run as `node <file> [args...]`,
-# which sidesteps that quoting problem entirely.
+# written to a real temp file and run as `node <file> [args...]`, which
+# sidesteps that quoting problem entirely. The extension is .cjs, never
+# .js: a plain .js file is classified by the NEAREST package.json found
+# walking up from its directory, so a stray package.json with
+# "type":"module" anywhere above the work directory (e.g. one sitting in
+# %TEMP%) would silently turn every helper into an ES module and break
+# require() (confirmed by a real failed run). .cjs is always CommonJS.
 function Invoke-NodeScript([string]$Script, [string[]]$ScriptArgs, [string]$Cwd, [string]$HelperDir) {
-  $tempFile = Join-Path $HelperDir "helper-$([guid]::NewGuid().ToString('N')).js"
+  $tempFile = Join-Path $HelperDir "helper-$([guid]::NewGuid().ToString('N')).cjs"
   Set-Content -LiteralPath $tempFile -Value $Script -Encoding ASCII -NoNewline
   try {
     return Invoke-Checked 'node' (@($tempFile) + $ScriptArgs) $Cwd
@@ -395,6 +400,34 @@ if ($SelfTest) {
   }
   finally {
     Remove-Item -LiteralPath $corruptOutPath -Force -ErrorAction SilentlyContinue
+  }
+
+  # Regression: a package.json with "type":"module" in an ANCESTOR of the
+  # helper directory must not turn Invoke-NodeScript's helpers into ES
+  # modules. Uses the real Invoke-NodeScript with a CommonJS require().
+  Write-Host '-- Invoke-NodeScript vs. an ancestor package.json with type=module --'
+  $esmRoot = Join-Path $env:TEMP "gate-ga-selftest-esm-$([guid]::NewGuid().ToString('N'))"
+  $esmHelperDir = Join-Path $esmRoot 'node-helpers'
+  try {
+    New-Item -ItemType Directory -Force -Path $esmHelperDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $esmRoot 'package.json') -Value '{"type":"module"}' -NoNewline -Encoding ASCII
+
+    # Control: the same kind of helper saved as .js under this package.json
+    # really IS treated as ESM and fails, proving the environment above
+    # would break a .js helper (so the passing case below is meaningful).
+    $controlFile = Join-Path $esmHelperDir 'control.js'
+    Set-Content -LiteralPath $controlFile -Value 'const os=require("os");console.log("CONTROL_LOADED")' -NoNewline -Encoding ASCII
+    Write-Host '  (control: a plain .js helper is expected to fail below with "require is not defined" - that error text is intentional)'
+    $control = Invoke-Checked 'node' @($controlFile) $esmRoot
+    Assert-Equal 'control: .js helper under type=module ancestor fails (exit nonzero)' $true ($control.ExitCode -ne 0)
+
+    $cjsScript = 'const os=require("os");console.log("CJS_HELPER_OK:"+typeof os.EOL)'
+    $cjsResult = Invoke-NodeScript $cjsScript @() $esmRoot $esmHelperDir
+    Assert-Equal 'Invoke-NodeScript helper under type=module ancestor -> exit 0' 0 $cjsResult.ExitCode
+    Assert-Equal 'Invoke-NodeScript helper under type=module ancestor -> expected stdout' 'CJS_HELPER_OK:string' $cjsResult.StdOut.Trim()
+  }
+  finally {
+    Remove-Item -LiteralPath $esmRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 
   if ($failures -eq 0) { Write-Host "`nSELF-TEST: all checks passed" -ForegroundColor Green; exit 0 }
