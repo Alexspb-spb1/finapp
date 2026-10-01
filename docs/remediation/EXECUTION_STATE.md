@@ -523,3 +523,38 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   therefore still needs a separate owner go-ahead as an external action; it must
   also be performed only while the PR head equals the reviewed local HEAD with
   its own exact-head `ci`/`functions` SUCCESS.
+
+## 2026-10-01 SEC-006 Gate G-A real staging invitation rehearsal
+
+- Task `SEC-006-GATE-GA-STAGING-INVITE-REHEARSAL`, owner-approved for
+  `finapp-staging` only. Result: **real staging E2E: PASS**, run id
+  `gate-a212822d406b113090884056e38fbb`. Wrapper exit 0, executor exit 0,
+  `status` and `flowOutcome.status` both `PASS`, `emailsSent` 1,
+  `cleanup.status` `CLEANUP_COMPLETE_VERIFIED`, `legacyCleanup.status`
+  `NOT_APPLICABLE`.
+- Executor checkout `fdf8cab0ca114ba28994bf8f0da1e5bc8a8c2a6e` (branch
+  `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING-winverify`), launched
+  by wrapper commit `e24c34c0b27b6e2e9e8e3f5217843950937860fb`
+  (`review/SEC-006-GATE-GA-STAGING-REHEARSAL-WRAPPER`, wrapper SHA-256
+  `15d14b429be658fde749e0e2de6a5a44797a84015a10b22b126eb9af356a133b`).
+- Exactly one verification email in the PASS run; the owner confirmed the
+  link; the invitation was accepted and a replay was proven idempotent;
+  current-run cleanup was verified. No pre-existing account, company or
+  invitation was changed (no existing recipient account was found, cleanup
+  was limited to this run's ledger, legacy cleanup was not approved).
+- This PASS was the second execution that reached staging. The first
+  (2026-09-30) ended `SAFE_STOP` `verification_not_completed:TIMEOUT` with one
+  email and verified cleanup; before it, a local wrapper failure occurred
+  with no staging contact. After the PASS no further staging run,
+  `--execute`, `--resume`, email or deploy was performed.
+- Production, `main` and PR 28 were not touched.
+- Raw evidence is private (outside every checkout, not committed) because it
+  contains the recipient address, local paths and one-time credentials of
+  deleted run objects. Hashes and the safe summary are in
+  `docs/remediation/reports/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING.md`
+  (section "Real staging E2E rehearsal addendum - 2026-10-01").
+- Relation to the 2026-09-11 follow-up gate: this run supplies live
+  invitation-callable acceptance and one real verification email for the
+  backend path. It is evidence awaiting independent review, not a closure:
+  no browser/UI acceptance lifecycle was exercised, and `REMEDIATION_PLAN.md`
+  is unchanged. Do not start a new stage from this entry.

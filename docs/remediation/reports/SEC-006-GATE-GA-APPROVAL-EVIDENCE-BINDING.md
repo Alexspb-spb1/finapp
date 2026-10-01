@@ -5,7 +5,10 @@ READY_FOR_REVIEW for the test and Windows verification follow-up. The
 secure-executor proof and all eight literal-CLI crash windows passed on a
 Windows GitHub Actions runner. The earlier Linux and Windows failures below
 remain recorded as diagnostic history; the current result is in the final
-Windows addendum. No live staging invocation occurred.
+Windows addendum. No live staging invocation occurred in the work described
+up to the Windows addendum; the later, separately authorized real staging
+rehearsal (real staging E2E: PASS) is recorded in the last addendum of this
+file, "Real staging E2E rehearsal addendum - 2026-10-01".
 
 ## Branch / commit
 - branch: `remediation/SEC-006-GATE-GA-APPROVAL-EVIDENCE-BINDING-winverify` (follow-up on `cdc00449892bb464d18dd5545b5250070be922b1`)
@@ -225,7 +228,9 @@ end by item 1's real differential test. **No mailbox lookup or
 invitation is being requested in this message.**
 
 ## Security review
-- No `--execute` against real `finapp-staging` this round or any round.
+- No `--execute` against real `finapp-staging` this round or any prior
+  round (as of the Windows addendum; superseded by the separately
+  authorized staging rehearsal recorded in the last addendum).
 - This round's own real subprocess calls to `--execute --profile emulator`
   are disclosed explicitly (item 4), not conflated with a staging call.
 - No software was installed system-wide; portable Node 22 and Java 21
@@ -283,3 +288,112 @@ suites were not rerun in this Windows job; they do not enter via the secure
 CLI and were unchanged. The current package needs independent review before
 the existing owner playbook is considered for a real staging run. PR #28
 and `main` were not changed; no staging or production call was made.
+
+## Real staging E2E rehearsal addendum - 2026-10-01
+
+Task `SEC-006-GATE-GA-STAGING-INVITE-REHEARSAL`, owner-approved in chat
+(staging only, project `finapp-staging`, at most one email per run to the
+approved recipient mailbox, `legacyCleanupApproved=false`, existing data not
+to be deleted or changed). This addendum records the outcome. It does not
+replace the independent review that the package still needs.
+
+**Result: real staging E2E: PASS.**
+
+| Field | Value |
+|---|---|
+| runId | `gate-a212822d406b113090884056e38fbb` |
+| wrapper exit / executor exit | 0 / 0 |
+| `status` / `flowOutcome.status` | `PASS` / `PASS` (recipient role `accountant`) |
+| `emailsSent` | 1 (numeric) |
+| `cleanup.status` | `CLEANUP_COMPLETE_VERIFIED` |
+| `legacyCleanup.status` | `NOT_APPLICABLE` |
+| executor checkout (`--expected-head`, clean, 19/19 package hashes) | `fdf8cab0ca114ba28994bf8f0da1e5bc8a8c2a6e` |
+| wrapper commit that launched it | `e24c34c0b27b6e2e9e8e3f5217843950937860fb` |
+| wrapper SHA-256 | `15d14b429be658fde749e0e2de6a5a44797a84015a10b22b126eb9af356a133b` |
+
+The wrapper (`scripts/invitationRehearsal/Run-GateGaStagingInviteRehearsal.ps1`,
+branch `review/SEC-006-GATE-GA-STAGING-REHEARSAL-WRAPPER`) clones the
+reviewed executor commit `fdf8cab0` with `core.autocrlf=false`, runs the
+read-only evidence steps, and then runs `gateGaSecureExecutor.mjs --execute
+--profile staging` exactly once. `e24c34c0` is therefore the wrapper commit;
+the executor code that ran is `fdf8cab0`.
+
+Verified by the run, as recorded in its journal and `--out`:
+
+- **One email.** The journal has a single `EMAIL_SENT`; `emailsSent = 1`.
+- **Link confirmation done.** `VERIFICATION_POLL_FINISHED`
+  `{verified: true, attempts: 99}`, then `VERIFICATION_COMPLETE`. The owner
+  opened the real email and confirmed the link within the 10-minute window.
+- **Invitation accepted, replay idempotent.** `ACCEPTED` (role
+  `accountant`), then `REPLAY_IDEMPOTENT_CONFIRMED` with audit count 3 after
+  accept and 3 after replay.
+- **Cleanup confirmed.** `VERIFY_CLEAN`, `CLEANUP_COMPLETE_VERIFIED`: 2 Auth
+  users and 11 Firestore documents, all taken from this run's own ledger,
+  were deleted and re-verified absent.
+- **Old data not changed.** Before any mutation, mailbox discovery returned
+  `accountExists === false` for the recipient (strictly checked), so there
+  was no exact old match. Cleanup is restricted to this run's ledger.
+  `legacyResidual` was `eligible: false`
+  (`COMPANY_COUNT_NOT_EXACTLY_ONE`) and legacy cleanup was skipped
+  (`LEGACY_CLEANUP_SKIPPED`; `legacyCleanupApproved=false`). This is the
+  run's own recorded outcome; no separate staging re-read was made while
+  writing this addendum.
+- **Production, `main` and PR #28 not touched.** The run only targets
+  `finapp-staging`. At the time of writing `main` is `6d713fe7...` and
+  PR #28 is OPEN, both unchanged.
+- **No staging re-run after the PASS.** After this run no further staging
+  run, `--execute`, `--resume`, email or deploy was performed.
+
+Earlier attempts, recorded for completeness (this PASS was the second
+execution that reached staging, not the first attempt):
+
+1. 2026-09-30, local failure before any staging contact. The wrapper's temp
+   helper `.js` files were treated as ES modules because a stray
+   `package.json` with `"type":"module"` sits in `%TEMP%`; the
+   package-integrity step failed. No email, no staging call. Fixed in
+   wrapper commit `e24c34c0` (helpers are now `.cjs`, with a `-SelfTest`
+   regression).
+2. 2026-09-30, staging run `gate-ea124a55d5ccf553bd7f5a931b1ae5`:
+   `SAFE_STOP`, `verification_not_completed:TIMEOUT` (the link was not
+   confirmed within 10 minutes), 1 email sent, `CLEANUP_COMPLETE_VERIFIED`,
+   no data left behind.
+
+Across runs 2 and 3, one real email was therefore sent per run (two in total
+to the recipient mailbox), each within the approved per-run limit.
+
+**Evidence handling.** Raw evidence is kept only in a private folder outside
+every repository checkout and is NOT committed:
+`D:/projects/finapp/.runtime/staging-evidence/SEC-006-GATE-GA-STAGING-INVITE-REHEARSAL/gate-a212822d406b113090884056e38fbb/`.
+A pattern scan of all 49 files found no URLs, verification links, `oobCode`,
+JWTs, API keys, bearer/authorization strings or private keys. It did find
+(a) the recipient's email address and local Windows user paths in
+`stdout.log`, and (b) one-time credentials of objects this run created and
+then deleted: a generated recipient password in `email-checkpoint-*.json`
+and the raw invitation token in `run-manifest.json`. The journal and
+`--out` files contain none of these. Because of (a) and (b) the raw files
+are not published; only hashes and the safe summary above are. Treat the
+private folder as sensitive.
+
+| Evidence file (private) | SHA-256 |
+|---|---|
+| `private/run-journal.jsonl` (64-byte durable header) | `4a72e1687a74f064ffb78c022f2603a7b9d6027519b7d9602491e56368c1a9d1` |
+| `private/run-journal.jsonl.events.d/` (38 event files; SHA-256 of the name-sorted `sha256sum` listing) | `18ae0f85b69c5a9d93a8b15b7a6f6ee960dccfcdd87bdc3ffb8fd3cb4c42c184` |
+| `private/run-out.json` | `400ec144319b5a98193123d26f4bf973946733b1deb2436d6524dea19fabaec5` |
+| `stdout.log` | `e83afabde1578fe9b188865a27d99a1a1ef4f31374d58753fd34ecac0d24ecbb` |
+| `MANIFEST.sha256` (49 entries: every private file plus `stdout.log`) | `b692c2b500e02fe7ffca7c71d99092357546448fcac7472f2d73a9bd7f2a038e` |
+
+The 38 journal events match the 38-entry journal embedded in `run-out.json`.
+The approval used was built immediately before execution (SHA-256
+`1b6af29d6810b133962455181818f27bf42c690fb3d5dbdb917aa9cdeeaffa15`, one-hour
+TTL) and bound to a fresh 13-function staging receipt, mailbox receipt and
+auth-template receipt.
+
+**Remaining limits (not closed by this run).**
+
+- Independent review of this evidence and of the wrapper is still pending.
+- Backend and email path only: no browser or UI acceptance lifecycle was
+  exercised.
+- `mailboxSha256`, `authMetadataSha256` and `stagingFingerprint` remain
+  format-bound approval fields (see the existing known limitations); only
+  `functionsSha256` is evidence-bound.
+- `liveAcceptanceExecutor.mjs` remains an ungated entrypoint.
