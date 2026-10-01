@@ -728,7 +728,7 @@ src/pages/Users.tsx
 
 ---
 
-## [x] SEC-007 — Перенести смену роли, отключение и удаление участника на сервер
+## [ ] SEC-007 — Перенести смену роли, отключение и удаление участника на сервер
 
 **Ветка:** `remediation/SEC-007-member-management-functions`
 
@@ -871,7 +871,7 @@ src/components/layout/Layout.tsx
 
 ---
 
-## [x] SEC-010 — Ввести единую capability-модель в UI
+## [ ] SEC-010 — Ввести единую capability-модель в UI
 
 **Ветка:** `remediation/SEC-010-ui-capabilities`
 
@@ -917,7 +917,7 @@ period.close
 
 ---
 
-## [x] SEC-011 — Добавить deny-by-default Firestore Rules для текущей схемы
+## [ ] SEC-011 — Добавить deny-by-default Firestore Rules для текущей схемы
 
 **Ветка:** `remediation/SEC-011-firestore-rules`
 
