@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from 'vitest'
 import type { User } from 'firebase/auth'
+import { Timestamp } from 'firebase/firestore'
 const m = vi.hoisted(() => ({
   auth: { currentUser: null as User | null }, read: vi.fn(), legacyRead: vi.fn(), write: vi.fn(),
   access: vi.fn(), listener: null as ((user: User | null) => Promise<void>) | null,
@@ -17,6 +18,7 @@ vi.mock('firebase/auth', () => ({
 vi.mock('firebase/firestore', async importOriginal => ({
   ...await importOriginal<typeof import('firebase/firestore')>(),
   doc: (_db: unknown, ...segments: string[]) => segments.join('/'),
+  collection: (_db: unknown, ...segments: string[]) => segments.join('/'),
   getDocFromServer: m.read, getDoc: m.legacyRead, getDocs: m.legacyRead,
   setDoc: m.write, updateDoc: m.write, deleteDoc: m.write,
 }))
@@ -24,11 +26,25 @@ const profile = { id: 'user', email: 'user@example.test', name: 'User', role: 'a
   companies: [{ companyId: 'invited', role: 'viewer' }], createdAt: '2026-09-06T00:00:00.000Z' }
 const company = { id: 'invited', name: 'Invited', legalType: 'ooo', currency: 'RUB', ownerId: 'owner', createdAt: profile.createdAt }
 const snap = (data: unknown) => ({ exists: () => data !== undefined, data: () => data })
+// SEC-011: the canonical membership document is what grants the role now.
+const membershipDoc = {
+  uid: 'user', role: 'viewer', status: 'active',
+  createdAt: Timestamp.fromDate(new Date(profile.createdAt)),
+  updatedAt: Timestamp.fromDate(new Date(profile.createdAt)),
+}
+/** getDoc and getDocs share one mock, so dispatch on the path shape:
+ * `.../members/{uid}` is a document read, `.../members` is the roster query. */
+const canonicalRead = async (path: string) => {
+  if (path === 'companies/invited/members/user') return snap(membershipDoc)
+  if (path === 'companies/invited/members') return { docs: [{ id: 'user', data: () => membershipDoc }] }
+  return snap(undefined)
+}
 beforeEach(() => {
   vi.resetModules(); vi.clearAllMocks(); localStorage.clear()
   m.auth.currentUser = { uid: 'user', emailVerified: true } as User
   m.access.mockResolvedValue({ companyId: 'invited', uid: 'user', role: 'viewer' })
   m.read.mockImplementation(async (path: string) => snap(path === 'users/user' ? profile : company))
+  m.legacyRead.mockImplementation(canonicalRead)
 })
 it('invitation Auth events do no legacy reads or recovery writes', async () => {
   const { authStore } = await import('./authStore')

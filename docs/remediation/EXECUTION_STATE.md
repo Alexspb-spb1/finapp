@@ -523,3 +523,32 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   therefore still needs a separate owner go-ahead as an external action; it must
   also be performed only while the PR head equals the reviewed local HEAD with
   its own exact-head `ci`/`functions` SUCCESS.
+
+## 2026-10-01 PR #28 (SEC-007/SEC-010/SEC-011): CHANGES_REQUIRED, round 3
+
+- Независимый аудит HEAD `8526a791ce3f62dee5a64aa239b795c609a39226` вернул
+  **CHANGES_REQUIRED** с тремя findings. PASS раунда 2 (`8f7d495`) на этот код
+  больше не распространяется, поэтому отметки `[x]` у SEC-007, SEC-010 и
+  SEC-011 в `REMEDIATION_PLAN.md` сняты до повторного независимого PASS.
+- Finding 1 (`firestore.rules`): профили `users/{uid}` читались активными
+  участниками по `resource.data.companyId` без проверки membership цели
+  (`list`) либо с проверкой лишь существования документа (`get`). Теперь
+  `users` — только свой профиль (`get`), `list` закрыт. Канонический состав
+  участников — серверный `listCompanyMembers`; браузерного users-запроса нет.
+- Finding 2 (`firestore.rules`): `companies get` больше не разрешает чтение
+  по `ownerId`; единственный источник права — активный canonical membership.
+- Finding 3 (`authStore`): список компаний, активная компания и роль
+  определяются чтением собственного membership каждой компании-кандидата
+  (legacy-поля — лишь подсказка, где искать). Потеря одной компании больше не
+  ломает вход; пользователь без активных memberships получает новое состояние
+  `no_access` (отдельный экран), а не `data_error`. Поздние ответы
+  отбрасываются по поколению загрузки и объекту Auth-сессии.
+- Деплой-ограничение, которого раньше не было: новые Rules закрывают
+  users-запрос, поэтому прежний фронтенд под ними войти не может, а новый
+  фронтенд под старыми Rules получает отказ на `members`. Rules и Pages должны
+  выкатываться в одном окне обслуживания, а откат — вместе. Подробно — в
+  отчёте `docs/remediation/reports/FINAPP-1.0-M1.md`.
+- Результаты проверок, сопоставление finding → код → тест и ограничения —
+  там же (раздел «Round 3»). Merge, deploy, staging/production и новые письма
+  в этом раунде не выполнялись. Next: один независимый повторный аудит
+  итогового HEAD; следующий этап (SEC-008/SEC-009) не начинать.

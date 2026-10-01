@@ -1,6 +1,7 @@
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 import { resolveProtectedRouteRedirect } from './resolveProtectedRouteRedirect'
+import NoCompanyAccess from './NoCompanyAccess'
 
 export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading, status } = useAuth()
@@ -18,5 +19,8 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
 
   const redirectTo = resolveProtectedRouteRedirect({ isAuthenticated, status })
   if (redirectTo) return <Navigate to={redirectTo} replace />
+  // SEC-011 R3: signed in, but no company grants access any more. The app
+  // shell is never rendered in this state — there is no company or role.
+  if (status === 'no_access') return <NoCompanyAccess />
   return <>{children}</>
 }

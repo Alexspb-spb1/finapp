@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { auth } from '../lib/firebase'
 import { canOpenInvitationManagement } from '../lib/invitationAccess'
 import { UserPlus, Trash2, X, AlertCircle, KeyRound, User as UserIcon, Plus, Pencil, Tag, Folder, FolderOpen, ChevronRight, ChevronDown, Lock } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { authStore } from '../store/authStore'
+import { memberErrorMessage } from '../lib/memberApi'
+import { RequireCapability } from '../components/auth/RequireCapability'
 import { useStore } from '../store/useStore'
 import CategoryIcon from '../utils/categoryIcons'
 import type { User } from '../types/auth'
@@ -35,8 +37,34 @@ const roleColor: Record<User['role'], string> = {
 }
 
 export default function Settings() {
-  const { user, company, readOnly, isAdmin, activeCompanyId, status } = useAuth()
+  const { user, company, readOnly, isAdmin, activeCompanyId, status, role } = useAuth()
   const store = useStore()
+
+  const [memberError, setMemberError] = useState('')
+
+  // SEC-007 R1: the member list is the canonical roster from the server, not
+  // a legacy "users where companyId" query. That query both hid members of a
+  // secondary company and kept listing people whose access had been revoked.
+  const [, forceRender] = useState(0)
+  useEffect(() => {
+    if (activeCompanyId) {
+      void authStore.loadCompanyRoster(activeCompanyId).then(() => forceRender(n => n + 1))
+    }
+  }, [activeCompanyId])
+  const roster = authStore.getCompanyRoster()
+  const rosterError = authStore.getCompanyRosterError()
+
+  async function handleRemoveMember(subjectUid: string) {
+    if (!activeCompanyId) return
+    setMemberError('')
+    try {
+      // The store reloads the roster as part of the mutation; only re-render.
+      await authStore.removeMember(activeCompanyId, subjectUid)
+      forceRender(n => n + 1)
+    } catch (error) {
+      setMemberError(memberErrorMessage(error))
+    }
+  }
 
   const [companyName, setCompanyName] = useState(company?.name ?? '')
   const [legalType, setLegalType] = useState<'ooo' | 'ip'>(company?.legalType ?? 'ooo')
@@ -70,7 +98,6 @@ export default function Settings() {
   const [closingDateInput, setClosingDateInput] = useState(store.closingDate)
   const [closingSaved,     setClosingSaved]     = useState(false)
 
-  const users = company ? authStore.getCompanyUsers(company.id) : []
 
   // Категории по текущей вкладке
   const visibleCats = store.categories.filter(c => c.type === catTab)
@@ -297,9 +324,9 @@ export default function Settings() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-sm font-semibold text-slate-700">Пользователи</h3>
-            <p className="text-xs text-slate-400 mt-0.5">{users.length} в вашей компании</p>
+            <p className="text-xs text-slate-400 mt-0.5">{roster.length} в вашей компании</p>
           </div>
-          {canOpenInvitationManagement(user, company?.id ?? null, activeCompanyId, status, auth.currentUser?.uid ?? null) && (
+          {canOpenInvitationManagement(user, company?.id ?? null, activeCompanyId, status, auth.currentUser?.uid ?? null, role) && (
             <Link
               to="/users"
               className="flex items-center gap-2 text-sm font-medium text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-lg transition-colors"
@@ -310,31 +337,46 @@ export default function Settings() {
           )}
         </div>
 
+        {memberError && (
+          <p className="text-sm text-red-600 mb-3" role="alert">{memberError}</p>
+        )}
+        {rosterError && (
+          <p className="text-sm text-red-600 mb-3" role="alert">{rosterError}</p>
+        )}
         <ul className="space-y-2">
-          {users.map(u => (
-            <li key={u.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
+          {roster.map(u => (
+            <li key={u.uid} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
               <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold shrink-0">
-                {u.name.slice(0, 2).toUpperCase()}
+                {(u.name ?? u.uid).slice(0, 2).toUpperCase()}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className="text-sm font-medium text-slate-700">{u.name}</p>
-                  {u.id === user?.id && (
+                  <p className="text-sm font-medium text-slate-700">{u.name ?? 'Без имени'}</p>
+                  {u.uid === user?.id && (
                     <span className="text-xs bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">вы</span>
                   )}
+                  {u.status === 'disabled' && (
+                    <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">отключён</span>
+                  )}
                 </div>
-                <p className="text-xs text-slate-400 truncate">{u.email}</p>
+                <p className="text-xs text-slate-400 truncate">{u.email ?? u.uid}</p>
               </div>
               <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${roleColor[u.role]}`}>
                 {roleLabel[u.role]}
               </span>
-              {user?.role === 'admin' && u.id !== user?.id && (
-                <button
-                  onClick={() => authStore.removeUser(u.id)}
-                  className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                >
-                  <Trash2 size={14} />
-                </button>
+              {/* SEC-007/SEC-010: gated by the capability of the ACTIVE
+                  company, not by the legacy user.role field, and performed by
+                  the server callable rather than a direct profile delete. */}
+              {u.uid !== user?.id && (
+                <RequireCapability capability="member.manage">
+                  <button
+                    onClick={() => void handleRemoveMember(u.uid)}
+                    className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                    title="Убрать из компании"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </RequireCapability>
               )}
             </li>
           ))}

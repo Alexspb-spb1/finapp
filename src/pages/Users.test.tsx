@@ -13,13 +13,20 @@ const mocks = vi.hoisted(() => ({
     status: 'ready',
     // The global legacy role must not authorize an unrelated company.
     isAdmin: true,
-    role: 'admin',
+    role: 'admin' as 'viewer' | 'accountant' | 'admin' | null,
   },
   auth: { currentUser: null as { uid: string } | null },
   getCompanyUsers: vi.fn(),
   updateUser: vi.fn(),
-  removeUser: vi.fn(),
   resetPassword: vi.fn(),
+  getCompanyRoster: vi.fn<() => Array<{ uid: string; role: 'viewer' | 'accountant' | 'admin'; status: 'active' | 'disabled' | 'invited'; name: string | null; email: string | null }>>(() => []),
+  getCompanyRosterError: vi.fn<() => string | null>(() => null),
+  loadCompanyRoster: vi.fn(async () => {}),
+  reloadCompanyRoster: vi.fn(async () => {}),
+  removeMember: vi.fn(),
+  changeMemberRole: vi.fn(),
+  disableMember: vi.fn(),
+  restoreMember: vi.fn(),
 }))
 
 vi.mock('../hooks/useAuth', () => ({ useAuth: () => mocks.context }))
@@ -27,8 +34,17 @@ vi.mock('../lib/firebase', () => ({ auth: mocks.auth }))
 vi.mock('../store/authStore', () => ({ authStore: {
   getCompanyUsers: mocks.getCompanyUsers,
   updateUser: mocks.updateUser,
-  removeUser: mocks.removeUser,
   resetPassword: mocks.resetPassword,
+  // SEC-007/SEC-011: member management is server-side and the roster is
+  // canonical. `removeUser` no longer exists on the store.
+  getCompanyRoster: mocks.getCompanyRoster,
+  getCompanyRosterError: mocks.getCompanyRosterError,
+  loadCompanyRoster: mocks.loadCompanyRoster,
+  reloadCompanyRoster: mocks.reloadCompanyRoster,
+  removeMember: mocks.removeMember,
+  changeMemberRole: mocks.changeMemberRole,
+  disableMember: mocks.disableMember,
+  restoreMember: mocks.restoreMember,
 } }))
 // Exercise the parent scope boundary without re-testing callable behavior.
 // A child-owned transient value exposes whether React preserves an old scope.
@@ -60,7 +76,9 @@ beforeEach(() => {
     user: user(), company: { id: 'co_home' }, activeCompanyId: 'co_home', status: 'ready',
   })
   mocks.auth.currentUser = { uid: 'uid_admin' }
-  mocks.getCompanyUsers.mockReturnValue([user(), user('uid_colleague')])
+  mocks.context.role = 'admin'; mocks.context.isAdmin = true
+  mocks.getCompanyRoster.mockReturnValue([roster('uid_admin','admin'), roster('uid_colleague','viewer')])
+  mocks.getCompanyRosterError.mockReturnValue(null)
   mocks.updateUser.mockResolvedValue({ ok: true })
   container = document.createElement('div')
   document.body.append(container)
@@ -79,48 +97,62 @@ function click(element: Element | null) {
 }
 function openTransientUi() {
   click(container.querySelector('[data-testid="invitations"] button'))
-  click(container.querySelector('button[title="Редактировать"]'))
+  click(container.querySelector('button[title="Изменить роль"]'))
   expect(container.textContent).toContain('Previous scope invitation link')
   expect(container.querySelector('form')).not.toBeNull()
 }
+
+const roster = (uid: string, role: 'viewer' | 'accountant' | 'admin', status: 'active' | 'disabled' | 'invited' = 'active') =>
+  ({ uid, role, status, name: uid, email: `${uid}@example.test` })
 
 describe('Users invitation management scope', () => {
   it('opens invitation management with the confirmed active company and session', () => {
     mocks.context.company = { id: 'co_other' }
     mocks.context.activeCompanyId = 'co_other'
+    // Legacy profile role is deliberately viewer: it must not matter.
     mocks.context.user = { ...user(), role: 'viewer' }
     render()
     expect(container.querySelector('[data-testid="invitations"]')?.getAttribute('data-company')).toBe('co_other')
     expect(container.querySelector('[data-testid="invitations"]')?.getAttribute('data-session')).toBe('uid_admin')
-    expect(mocks.getCompanyUsers).toHaveBeenCalledWith('co_other')
+    expect(mocks.loadCompanyRoster).toHaveBeenCalledWith('co_other')
   })
 
   it.each(['loading', 'signed_out', 'data_error'])('hides all privileged UI while status is %s', status => {
     mocks.context.status = status
     render()
     expect(container.querySelector('[data-testid="invitations"]')).toBeNull()
-    expect(mocks.getCompanyUsers).not.toHaveBeenCalled()
+    expect(mocks.loadCompanyRoster).not.toHaveBeenCalled()
   })
 
   it.each([null, { uid: 'uid_other_session' }])('hides stale profile data when the Firebase session is %j', currentUser => {
     mocks.auth.currentUser = currentUser
     render()
     expect(container.querySelector('[data-testid="invitations"]')).toBeNull()
-    expect(mocks.getCompanyUsers).not.toHaveBeenCalled()
+    expect(mocks.loadCompanyRoster).not.toHaveBeenCalled()
   })
 
-  it.each([
-    { companies: [] },
-    { companies: [{ companyId: 'co_other', role: 'viewer' as const }] },
-    { companies: [{ companyId: 'co_other', role: 'accountant' as const }] },
-    { companies: [{ companyId: 'co_other', role: 'admin' as const }, { companyId: 'co_other', role: 'admin' as const }] },
-  ])('does not fall back to home admin for missing, limited or ambiguous active membership: %j', ({ companies }) => {
-    mocks.context.user = { ...user(), companies }
+  // SEC-007 R1: the gate is the CANONICAL role of the active company. The
+  // legacy profile below claims admin of co_home and admin of co_other; none
+  // of it may open the screen.
+  it.each(['viewer', 'accountant', null] as const)('stays closed for canonical role %s', role => {
+    mocks.context.role = role
+    mocks.context.isAdmin = false
     mocks.context.company = { id: 'co_other' }
     mocks.context.activeCompanyId = 'co_other'
     render()
     expect(container.querySelector('[data-testid="invitations"]')).toBeNull()
-    expect(mocks.getCompanyUsers).not.toHaveBeenCalled()
+    expect(mocks.loadCompanyRoster).not.toHaveBeenCalled()
+  })
+
+  it('opens for a canonical admin of a SECONDARY company', () => {
+    // The legacy profile names co_home as the primary company; the canonical
+    // role for the active co_other is what decides.
+    mocks.context.user = { ...user(), companies: [] }
+    mocks.context.company = { id: 'co_other' }
+    mocks.context.activeCompanyId = 'co_other'
+    mocks.context.role = 'admin'
+    render()
+    expect(container.querySelector('[data-testid="invitations"]')).not.toBeNull()
   })
 
   it('immediately removes transient UI when a switch starts and metadata still belongs to the old company', () => {
@@ -155,14 +187,13 @@ describe('Users invitation management scope', () => {
     expect(container.querySelector('form')).toBeNull()
   })
 
-  it('preserves editing existing users without an add-user or administrator-set colleague password form', () => {
+  it('edits an existing member without an add-user or administrator-set password form', () => {
     render()
     expect(container.textContent).not.toContain('Добавить пользователя')
     expect(container.querySelector('input[type="password"]')).toBeNull()
     const colleague = Array.from(container.querySelectorAll('li')).find(row => row.textContent?.includes('uid_colleague'))!
-    click(colleague.querySelector('button[title="Редактировать"]'))
+    click(colleague.querySelector('button[title="Изменить роль"]'))
     expect(container.querySelector('form')).not.toBeNull()
-    expect(container.textContent).toContain('Редактировать пользователя')
     expect(container.querySelector('input[type="password"]')).toBeNull()
     expect(container.textContent).toContain('Отправить письмо для сброса пароля')
   })

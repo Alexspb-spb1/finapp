@@ -41,78 +41,37 @@ service cloud.firestore {
       return request.auth.uid;
     }
 
-    function callerHasProfile() {
-      return isSignedIn() &&
-        exists(/databases/$(database)/documents/users/$(callerUid()));
+    // ── Канонический источник доступа ─────────────────────────────────────
+    // SEC-011: единственный источник полномочий — документ
+    // companies/{companyId}/members/{uid} (ADR-001). Legacy-поля профиля
+    // users.role / users.companyId / users.companies[] БОЛЬШЕ НЕ УЧАСТВУЮТ
+    // ни в одном решении allow/deny: их невозможно ни прочитать, ни
+    // подделать так, чтобы это дало доступ. Membership-документы пишет
+    // только сервер (Admin SDK через Cloud Functions) — см. правило
+    // members ниже и SEC-007.
+    //
+    // Firestore засчитывает повторные exists()/get() по ОДНОМУ и тому же
+    // пути как один доступ к документу, поэтому обращения к
+    // membershipData() внутри одной проверки не умножают стоимость.
+    function membershipPath(companyId) {
+      return /databases/$(database)/documents/companies/$(companyId)/members/$(callerUid());
     }
 
-    // Профиль вызывающего пользователя. Вызывать ТОЛЬКО после
-    // callerHasProfile() — иначе get() на несуществующий документ приводит
-    // к отказу вычисления (fail-closed), что и является желаемым поведением
-    // при отсутствии users/{uid} (CLAUDE.md §6.2).
-    function callerProfile() {
-      return get(/databases/$(database)/documents/users/$(callerUid())).data;
+    function membershipData(companyId) {
+      return get(membershipPath(companyId)).data;
     }
 
-    function isKnownRole(role) {
-      return role in ['viewer', 'accountant', 'admin'];
-    }
-
-    // companies[] хранит точные объекты {companyId, role}. Сравнение
-    // полного объекта не обращается к потенциально отсутствующим полям,
-    // поэтому null, неполные/расширенные maps и неизвестные роли безопасно
-    // игнорируются. Лимит в 10 memberships сохраняет emergency-модель
-    // предсказуемой; больший список обрабатывается fail-closed.
-    function exactMembership(companyId, role) {
-      return {'companyId': companyId, 'role': role};
-    }
-
-    // Эта функция вызывается только после callerHasProfile(). Все проверки
-    // трёх известных ролей выполняются за один get профиля и без индексного
-    // перебора, чтобы не превышать лимит Rules в 1000 выражений даже при
-    // десяти memberships.
-    function existingProfileRoleIn(companyId, roles) {
-      let profile = callerProfile();
-      let memberships = profile.get('companies', []);
-      let hasViewer = memberships is list &&
-        exactMembership(companyId, 'viewer') in memberships;
-      let hasAccountant = memberships is list &&
-        exactMembership(companyId, 'accountant') in memberships;
-      let hasAdmin = memberships is list &&
-        exactMembership(companyId, 'admin') in memberships;
-      let additionalRoleIsUnambiguous =
-        (hasViewer && !hasAccountant && !hasAdmin) ||
-        (!hasViewer && hasAccountant && !hasAdmin) ||
-        (!hasViewer && !hasAccountant && hasAdmin);
-      let primaryRoleHasNoConflict =
-        (!hasViewer || profile.role == 'viewer') &&
-        (!hasAccountant || profile.role == 'accountant') &&
-        (!hasAdmin || profile.role == 'admin');
-      return
-        (!(memberships is list) || memberships.size() <= 10) &&
-        (
-          (
-            profile.companyId == companyId &&
-            isKnownRole(profile.role) &&
-            profile.role in roles &&
-            primaryRoleHasNoConflict
-          ) ||
-          (
-            profile.companyId != companyId &&
-            additionalRoleIsUnambiguous &&
-            (
-              (hasViewer && 'viewer' in roles) ||
-              (hasAccountant && 'accountant' in roles) ||
-              (hasAdmin && 'admin' in roles)
-            )
-          )
-        );
-    }
-
-    // Роль вычисляется отдельно для КАЖДОЙ компании. Роль основной компании
-    // никогда не переносится на дополнительную membership.
+    // Fail-closed по каждому признаку: документ должен существовать, его
+    // поле uid обязано совпадать с идентификатором документа (то же
+    // требование, что и у серверного requireActiveMember), статус —
+    // строго 'active', роль — из явного списка. Отсутствующее поле или
+    // повреждённый документ приводят к ошибке вычисления, то есть к отказу.
     function roleForCompanyIn(companyId, roles) {
-      return callerHasProfile() && existingProfileRoleIn(companyId, roles);
+      return isSignedIn() &&
+        exists(membershipPath(companyId)) &&
+        membershipData(companyId).uid == callerUid() &&
+        membershipData(companyId).status == 'active' &&
+        membershipData(companyId).role in roles;
     }
 
     function isMemberOf(companyId) {
@@ -175,31 +134,34 @@ service cloud.firestore {
                 'owner', 'isOwner', 'admin', 'isAdmin', 'createdAt'];
       }
 
-      // Разрешено читать: свой профиль, либо профиль коллеги той же
-      // компании (нужно для списка пользователей на странице «Пользователи»).
-      // resource.data.companyId — это УЖЕ СУЩЕСТВУЮЩЕЕ поле целевого
-      // документа (не то, что пишет вызывающий), и оно, в свою очередь,
-      // тоже защищено этими же Rules от постороннего изменения — поэтому
-      // сравнение с callerProfile().companyId доверенное.
-      allow get: if isSignedIn() && callerUid() == userId ||
-        (callerHasProfile() && resource.data.companyId == callerProfile().companyId);
-
-      // Firestore Rules не фильтруют результаты запроса — правило
-      // вычисляется отдельно для КАЖДОГО потенциального документа результата
-      // через resource.data, поэтому неограниченный или межкорпоративный
-      // query по-прежнему целиком отклоняется, как только встречается ЛЮБОЙ
-      // документ компании, участником которой вызывающий не является.
+      // Читать профиль может ТОЛЬКО его владелец.
       //
-      // BASE-004A-FIX-02: раньше здесь сравнивалось только с ОСНОВНОЙ
-      // (`callerProfile().companyId`) компанией — из-за этого запрос
-      // сотрудников ДОПОЛНИТЕЛЬНОЙ компании (через companies[], реальный
-      // flow входа с ранее выбранной компанией / switchCompany()) получал
-      // permission-denied. Используем ту же роль-функцию isMemberOf, что и
-      // для companies/company_data — она уже проверяет и основную, и
-      // дополнительные компании через ОДНУ и ту же fail-closed логику
-      // (bounded ≤10 memberships, точное совпадение {companyId, role},
-      // без переноса роли основной компании на дополнительную).
-      allow list: if isMemberOf(resource.data.companyId);
+      // SEC-011 R3 (аудит PR #28, finding 1). Раньше активный участник
+      // компании мог читать профили «коллег»: get сверял только
+      // resource.data.companyId и наличие у цели ЛЮБОГО membership-документа
+      // (без проверки status/uid/валидности), а list вообще не смотрел на
+      // цель — он проверял лишь, что вызывающий сам участник компании,
+      // названной в профиле. В итоге читались профили без membership (просто
+      // с чужим companyId) и профили disabled/invited/повреждённых
+      // участников, то есть людей, которых из компании уже убрали.
+      //
+      // Чужие профили браузеру не нужны вообще. Канонический реестр
+      // участников (uid, роль, статус, имя, email) строит серверный callable
+      // listCompanyMembers: он читает companies/{id}/members и соединяет
+      // display-поля через Admin SDK, а клиент получает готовый список.
+      // Единственный клиентский потребитель users/{uid} — собственный
+      // документ вызывающего, поэтому единственный безопасный путь —
+      // `callerUid() == userId`. Любой межпользовательский get/list закрыт:
+      // нет «необходимого» пути, который можно было бы оставить с
+      // дополнительными проверками, а значит нечего и доказывать.
+      //
+      // Чтение несуществующего СВОЕГО документа разрешено намеренно:
+      // authStore по нему определяет setup_incomplete.
+      allow get: if isSignedIn() && callerUid() == userId;
+
+      // Никаких query по users: ни по companyId, ни без фильтра. Список
+      // участников — только серверный roster (см. выше).
+      allow list: if false;
 
       // Создание СВОЕГО профиля разрешено, но БЕЗ единого поля, влияющего
       // на авторизацию — role/companyId/companies должны отсутствовать в
@@ -239,19 +201,39 @@ service cloud.firestore {
         return ['name', 'legalType', 'inn', 'currency'];
       }
 
-      allow get: if isMemberOf(companyId) ||
-        (isSignedIn() && resource.data.ownerId == callerUid());
+      // SEC-011 R3 (аудит PR #28, finding 2): читать метаданные компании
+      // может только её АКТИВНЫЙ участник по каноническому membership.
+      // Прежняя ветка `resource.data.ownerId == callerUid()` давала право
+      // чтения по справочному полю: бывший владелец, у которого membership
+      // уже удалён или отключён, продолжал читать компанию. ownerId — ссылка
+      // на создателя (ADR-001; серверный authz.ts тоже не использует его для
+      // решений), а не сигнал авторизации. Создатель компании получает
+      // доступ тем же путём, что и все: серверный createCompany пишет
+      // компанию и его admin-membership в одной транзакции.
+      allow get: if isMemberOf(companyId);
 
       // Приложение загружает известные компании адресными get. Collection
       // query нельзя безопасно доказать через legacy companies[] — запрещён.
       allow list: if false;
 
-      // Создание новой компании разрешено любому авторизованному
-      // пользователю — не расширяет доступ к ЧУЖИМ данным (новая компания
-      // изначально ничья, кроме создателя). Владелец фиксируется как сам
-      // вызывающий и далее НЕ может быть переопределён (см. update ниже).
+      // SEC-007 R2: создание компании клиентом разрешено ТОЛЬКО тому, у кого
+      // уже есть канонический active-admin membership в этой же компании.
+      //
+      // Раньше правило допускало любого авторизованного пользователя. После
+      // перехода на канонические memberships это давало orphan company:
+      // документ компании создавался, но membership — нет (клиент его писать
+      // не может вообще), поэтому созданную компанию не мог открыть даже её
+      // собственный создатель, а место в базе занималось. Единственный
+      // законный клиентский сценарий — восстановление ИСЧЕЗНУВШЕГО документа
+      // компании, у которой membership сохранился; он этим правилом
+      // сохраняется, а создание «с нуля» становится невозможным.
+      //
+      // Нормальное создание компании идёт серверным callable createCompany
+      // через Admin SDK, на который Rules не распространяются, поэтому
+      // ужесточение его не затрагивает. Полное удаление recovery-пути —
+      // SEC-008.
       // SEC-005: заблокировано во время maintenance mode (production preflight).
-      allow create: if isSignedIn() &&
+      allow create: if isAdminOf(companyId) &&
         request.resource.data.id == companyId &&
         request.resource.data.ownerId == callerUid() &&
         !isMaintenanceModeActive();
@@ -267,6 +249,25 @@ service cloud.firestore {
         !isMaintenanceModeActive();
 
       allow delete: if false;
+
+      // ── companies/{companyId}/members/{memberUid} ──────────────────────
+      // Канонический источник полномочий (ADR-001). Читать роестр может
+      // любой АКТИВНЫЙ участник этой же компании — это нужно интерфейсу,
+      // чтобы показать список участников и собственную роль, и сам по себе
+      // документ не содержит секретов (uid, role, status, отметки времени).
+      //
+      // Писать клиент не может НИКОГДА, ни своё, ни чужое членство: любое
+      // изменение роли/статуса и удаление доступа проходит только через
+      // серверные callable (SEC-007 changeMemberRole/disableMember/
+      // restoreMember/removeMember), где действуют транзакционная проверка
+      // прав, защита последнего администратора и audit log. Это правило
+      // делает невозможным самоповышение даже при полном контроле над
+      // клиентом.
+      match /members/{memberUid} {
+        allow get: if isMemberOf(companyId);
+        allow list: if isMemberOf(companyId);
+        allow create, update, delete: if false;
+      }
     }
 
     // ── company_data/{companyId} ─────────────────────────────────────────

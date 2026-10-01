@@ -37,7 +37,8 @@ export function resolveRegistrationRecovery(params: {
     return params.hasResumablePending ? { type: 'show_retry' } : { type: 'show_re_entry' }
   }
   if (params.status === 'loading') return { type: 'wait' }
-  // 'signed_out' and 'data_error' — never a false navigate to home, and
-  // never silently reinterpreted as a resumable setup screen either.
+  // 'signed_out', 'data_error' and 'no_access' (SEC-011 R3: signed in but no
+  // active membership anywhere) — never a false navigate to home, and never
+  // silently reinterpreted as a resumable setup screen either.
   return { type: 'none' }
 }
