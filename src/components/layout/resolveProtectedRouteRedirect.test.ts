@@ -25,4 +25,11 @@ describe('resolveProtectedRouteRedirect', () => {
   it('redirects an unauthenticated loading-leftover state to /login', () => {
     expect(resolveProtectedRouteRedirect({ isAuthenticated: false, status: 'loading' })).toBe('/login')
   })
+
+  // SEC-011 R3: a signed-in user with no active membership is still
+  // authenticated — they are NOT bounced to /login (that would loop through the
+  // same Auth session); ProtectedRoute shows the dedicated no-access screen.
+  it('does not redirect an authenticated user in the no_access state', () => {
+    expect(resolveProtectedRouteRedirect({ isAuthenticated: true, status: 'no_access' })).toBeNull()
+  })
 })

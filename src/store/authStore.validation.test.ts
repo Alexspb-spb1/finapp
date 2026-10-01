@@ -40,11 +40,11 @@ vi.mock('firebase/auth', () => ({
 }))
 
 // Firestore doc/collection/query/where are pure "path descriptor" builders in
-// this mock — getDoc/getDocs below read from `firestoreDocs`/`firestoreQueryResults`
-// keyed by the same descriptor, so each test controls exactly what a given
-// path resolves to without touching a real Firestore/emulator instance.
+// this mock — getDoc below reads from `firestoreDocs` keyed by the same
+// descriptor, so each test controls exactly what a given path resolves to
+// without touching a real Firestore/emulator instance. There is no users
+// query any more (SEC-011 R3): getDocs fails the test if anything calls it.
 const firestoreDocs = new Map<string, unknown>()
-const firestoreQueryResults = new Map<string, { id: string; data: unknown }[]>()
 
 vi.mock('firebase/firestore', () => ({
   Timestamp: FakeTimestamp,
@@ -61,11 +61,7 @@ vi.mock('firebase/firestore', () => ({
     const id = ref.path.split('/').pop()!
     return { id, exists: () => data !== undefined, data: () => data }
   }),
-  getDocs: vi.fn(async (q: { path: string; clauses: { field: string; value: unknown }[] }) => {
-    const companyId = q.clauses[0]?.value as string
-    const docs = firestoreQueryResults.get(`${q.path}?companyId=${companyId}`) ?? []
-    return { docs: docs.map(d => ({ id: d.id, data: () => d.data })) }
-  }),
+  getDocs: vi.fn(async () => { throw new Error('the browser users query no longer exists') }),
   setDoc: vi.fn(async () => undefined),
   updateDoc: vi.fn(async () => undefined),
   deleteDoc: vi.fn(async () => undefined),
@@ -83,8 +79,13 @@ function setUserDoc(uid: string, data: unknown) {
 function setCompanyDoc(companyId: string, data: unknown) {
   firestoreDocs.set(`companies/${companyId}`, data)
 }
-function setCompanyUsersQuery(companyId: string, docs: { id: string; data: unknown }[]) {
-  firestoreQueryResults.set(`users?companyId=${companyId}`, docs)
+// SEC-011 R3: a company is usable only through the user's own ACTIVE canonical
+// membership, so every fixture that expects a working company seeds one.
+function setMembership(companyId: string, uid: string, status: 'active' | 'disabled' = 'active') {
+  firestoreDocs.set(`companies/${companyId}/members/${uid}`, {
+    uid, role: 'admin', status,
+    createdAt: new FakeTimestamp(1, 0), updatedAt: new FakeTimestamp(1, 0),
+  })
 }
 
 async function triggerSignIn(uid: string) {
@@ -107,17 +108,17 @@ beforeEach(() => {
   vi.resetModules()
   localStorage.clear()
   firestoreDocs.clear()
-  firestoreQueryResults.clear()
   authStateCallback = null
 })
 
 describe('authStore — data_error on corrupted documents', () => {
   it('notifies only company-selection subscribers at switch start, deferring general auth notification until metadata is loaded', async () => {
     const { authStore, subscribeAuth, subscribeCompanySelection } = await import('./authStore')
-    setUserDoc('uid_1', validUser('uid_1', 'co_a'))
+    setUserDoc('uid_1', { ...validUser('uid_1', 'co_a'), companies: [{ companyId: 'co_b', role: 'admin' }] })
     setCompanyDoc('co_a', validCompany('co_a'))
     setCompanyDoc('co_b', validCompany('co_b'))
-    setCompanyUsersQuery('co_a', [{ id: 'uid_1', data: validUser('uid_1', 'co_a') }])
+    setMembership('co_a', 'uid_1')
+    setMembership('co_b', 'uid_1')
     await triggerSignIn('uid_1')
 
     const snapshots: { activeCompanyId: string | null; companyId: string | undefined }[] = []
@@ -152,17 +153,19 @@ describe('authStore — data_error on corrupted documents', () => {
     expect(authStore).not.toHaveProperty('inviteUser')
   })
 
-  it('valid profile + company + users list resolves to ready', async () => {
+  it('valid profile + company + active membership resolves to ready', async () => {
     const { authStore } = await import('./authStore')
     setUserDoc('uid_1', validUser('uid_1', 'co_a'))
     setCompanyDoc('co_a', validCompany('co_a'))
-    setCompanyUsersQuery('co_a', [{ id: 'uid_1', data: validUser('uid_1', 'co_a') }])
+    setMembership('co_a', 'uid_1')
 
     await triggerSignIn('uid_1')
 
     expect(authStore.getAuthDataStatus()).toBe('ready')
     expect(authStore.getDataError()).toBeNull()
     expect(authStore.getCurrentUser()?.id).toBe('uid_1')
+    // Only the signed-in user's own profile is held; colleagues come from the
+    // canonical roster, never from a browser users query.
     expect(authStore.getCompanyUsers('co_a')).toHaveLength(1)
   })
 
@@ -189,20 +192,20 @@ describe('authStore — data_error on corrupted documents', () => {
     expect(authStore.getCurrentUser()).toBeNull()
   })
 
-  it('a list of company users with ONE corrupted record fails atomically — no partial list', async () => {
+  it('ONE corrupted company among several fails the load atomically — no partially-trusted company list', async () => {
     const { authStore } = await import('./authStore')
-    setUserDoc('uid_1', validUser('uid_1', 'co_a'))
+    setUserDoc('uid_1', { ...validUser('uid_1', 'co_a'), companies: [{ companyId: 'co_b', role: 'admin' }] })
     setCompanyDoc('co_a', validCompany('co_a'))
-    setCompanyUsersQuery('co_a', [
-      { id: 'uid_1', data: validUser('uid_1', 'co_a') },
-      { id: 'uid_2', data: { id: 'uid_2', name: 'Broken' } }, // missing required fields
-    ])
+    setCompanyDoc('co_b', { id: 'co_b', name: 'Broken' }) // missing required fields
+    setMembership('co_a', 'uid_1')
+    setMembership('co_b', 'uid_1')
 
     await triggerSignIn('uid_1')
 
     expect(authStore.getAuthDataStatus()).toBe('data_error')
     // Not a partially-trusted list: the whole result is empty/cleared, not
-    // "the one valid entry, minus the broken one".
+    // "the one valid company, minus the broken one".
+    expect(authStore.getAllCompanies()).toEqual([])
     expect(authStore.getCompanyUsers('co_a')).toEqual([])
     expect(authStore.getCurrentUser()).toBeNull()
   })
@@ -211,7 +214,7 @@ describe('authStore — data_error on corrupted documents', () => {
     const { authStore } = await import('./authStore')
     setUserDoc('uid_1', validUser('uid_1', 'co_a'))
     setCompanyDoc('co_a', { id: 'co_a', name: 'Test Co' }) // missing legalType/currency/createdAt/ownerId
-    setCompanyUsersQuery('co_a', [{ id: 'uid_1', data: validUser('uid_1', 'co_a') }])
+    setMembership('co_a', 'uid_1')
 
     await triggerSignIn('uid_1')
 
@@ -249,7 +252,7 @@ describe('authStore — data_error on corrupted documents', () => {
     const { authStore } = await import('./authStore')
     setUserDoc('uid_1', validUser('uid_1', 'co_a'))
     setCompanyDoc('co_a', validCompany('co_a'))
-    setCompanyUsersQuery('co_a', [{ id: 'uid_1', data: validUser('uid_1', 'co_a') }])
+    setMembership('co_a', 'uid_1')
     await triggerSignIn('uid_1')
     expect(authStore.getAuthDataStatus()).toBe('ready')
 
@@ -276,7 +279,8 @@ describe('authStore — data_error on corrupted documents', () => {
     })
     setCompanyDoc('co_a', validCompany('co_a'))
     setCompanyDoc('co_b', validCompany('co_b'))
-    setCompanyUsersQuery('co_a', [{ id: 'uid_1', data: validUser('uid_1', 'co_a') }])
+    setMembership('co_a', 'uid_1')
+    setMembership('co_b', 'uid_1')
 
     await triggerSignIn('uid_1')
 

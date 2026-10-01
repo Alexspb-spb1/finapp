@@ -72,17 +72,40 @@ const sessionB = { uid: 'user_b', emailVerified: true } as FirebaseUser
 
 let authStore: typeof import('./authStore').authStore
 
+// SEC-011 R3: a company can only become active through a real sign-in that
+// finds the user's canonical membership there, so the fixtures below describe a
+// user who belongs to BOTH co_a (admin) and co_b (viewer). The two roles
+// differ on purpose: it lets a test tell which company a late answer is about.
+const doc = (data: unknown) => ({ exists: () => data !== undefined, data: () => data })
+const seededDocument = (path: string) => {
+  if (path === 'users/user_a') {
+    return doc({
+      id: 'user_a', name: 'User A', email: 'user_a@example.test', role: 'admin', companyId: 'co_a',
+      companies: [{ companyId: 'co_b', role: 'admin' }], createdAt: '2026-01-01T00:00:00.000Z',
+    })
+  }
+  if (path === 'companies/co_a' || path === 'companies/co_b') {
+    return doc({
+      id: path.split('/')[1], name: path, legalType: 'ooo', currency: 'RUB',
+      createdAt: '2026-01-01T00:00:00.000Z', ownerId: 'someone_else',
+    })
+  }
+  if (path === 'companies/co_a/members/user_a') return membershipDoc('user_a', 'admin')
+  if (path === 'companies/co_b/members/user_a') return membershipDoc('user_a', 'viewer')
+  return doc(undefined)
+}
+
 beforeEach(async () => {
   vi.resetModules()
   vi.clearAllMocks()
   localStorage.clear()
   m.auth.currentUser = sessionA
-  m.getDoc.mockResolvedValue({ exists: () => false })
+  m.getDoc.mockImplementation(async (path: string) => seededDocument(path))
   m.listMembers.mockResolvedValue([])
   authStore = (await import('./authStore')).authStore
   // The app always has an active company before any roster load; without it
   // effectiveActiveCompanyId() is null and every request is correctly stale.
-  await authStore.switchCompany('co_a')
+  await m.listener!(sessionA)
   m.listMembers.mockClear()
   m.getDoc.mockClear()
 })
@@ -186,12 +209,14 @@ describe('membership/role: late responses cannot grant a stale role', () => {
     // Start a membership read for company A, then switch away.
     const loadA = authStore.reloadCanonicalMembership('co_a')
     await authStore.switchCompany('co_b')
+    // B is a viewer. Anything admin appearing from here on can only be A's.
+    expect(authStore.getEffectiveRole()).toBe('viewer')
 
     a.resolve(membershipDoc('user_a', 'admin'))
     await loadA
 
-    expect(authStore.getActiveMembership()).toBeNull()
-    expect(authStore.getEffectiveRole()).toBeNull()
+    expect(authStore.getActiveMembership()?.role).toBe('viewer')
+    expect(authStore.getEffectiveRole()).toBe('viewer')
     expect(authStore.isAdmin()).toBe(false)
   })
 
@@ -215,8 +240,8 @@ describe('membership/role: late responses cannot grant a stale role', () => {
     m.getDoc.mockReturnValueOnce(stale.promise)
 
     const staleLoad = authStore.reloadCanonicalMembership('co_a')
-    // switchCompany reads the company document itself, so the membership
-    // answer for B is queued only after that read has been consumed.
+    // switchCompany resolves access to B itself (B's membership is a viewer);
+    // the explicit reload below then answers B with an admin membership.
     await authStore.switchCompany('co_b')
     m.getDoc.mockResolvedValueOnce(membershipDoc('user_a', 'admin'))
     await authStore.reloadCanonicalMembership('co_b')

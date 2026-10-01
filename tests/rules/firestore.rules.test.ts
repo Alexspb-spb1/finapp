@@ -352,14 +352,15 @@ describe('16. cross-company list/query denied', () => {
     await assertFails(getDocs(collection(db, 'users')))
   })
 
-  it('admin A can query only users constrained to company A', async () => {
+  // SEC-011 R3: there is no browser users query at all. The roster is built
+  // by the listCompanyMembers callable from the canonical memberships, so even
+  // a fully active admin of the queried company gets no list path to profiles.
+  it('even an active admin of company A cannot query users where companyId == A', async () => {
     const db = testEnv.authenticatedContext(ADMIN_A).firestore()
-    const snap = await assertSucceeds(getDocs(query(
+    await assertFails(getDocs(query(
       collection(db, 'users'),
       where('companyId', '==', COMPANY_A),
     )))
-    expect(snap.docs.length).toBe(3)
-    expect(snap.docs.every(item => item.data().companyId === COMPANY_A)).toBe(true)
   })
 
   it('collection queries cannot enumerate companies', async () => {
@@ -440,13 +441,14 @@ describe('21. BASE-004 CRITICAL escalation chain is fully blocked', () => {
 
 // ── Позитивные сценарии приложения (не должно превратиться в deny-all) ──────
 describe('positive application flows still work for legitimate same-company use', () => {
-  it('admin reads the list of own-company colleagues (Users page)', async () => {
+  // The Users page lists colleagues from the server roster (callable), never
+  // from a browser users query — see 'users profiles are self-only' below.
+  it('admin reads their OWN profile and the canonical roster, not a users query', async () => {
     const db = testEnv.authenticatedContext(ADMIN_A).firestore()
-    const snap = await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_A),
-    )))
-    expect(snap.docs.length).toBe(3)
+    await assertSucceeds(getDoc(doc(db, 'users', ADMIN_A)))
+    const roster = await assertSucceeds(getDocs(collection(db, 'companies', COMPANY_A, 'members')))
+    expect(roster.docs.length).toBe(3)
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
   })
   it('accountant can add a transaction (setDoc overwrite of company_data)', async () => {
     const db = testEnv.authenticatedContext(ACCOUNTANT_A).firestore()
@@ -736,66 +738,215 @@ describe('members subcollection is read-only for members and never client-writab
   })
 })
 
-// ── SEC-011: запросы сотрудников компании (bывший BASE-004A-FIX-02) ───────
-// Интент сохранён: участник дополнительной компании должен уметь получить
-// список её сотрудников. Механизм теперь канонический.
-describe('scoped member queries follow canonical membership', () => {
-  it('primary-company member query still works', async () => {
-    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
-    const snap = await assertSucceeds(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_A),
-    )))
-    expect(snap.docs.length).toBe(3)
-  })
+// ── SEC-011 R3: профили users/{uid} читает только их владелец ─────────────
+//
+// PR #28 audit, finding 1. Прежние правила разрешали активному участнику
+// читать (get) и перечислять (list) профили «коллег», сверяясь лишь с
+// resource.data.companyId и с тем, что у цели ВООБЩЕ есть документ
+// membership. Из-за этого читались (а) профили без membership, у которых
+// просто стоит чужой companyId, и (б) профили участников с disabled/invited/
+// повреждённым membership.
+//
+// Канонический реестр участников строит серверный callable
+// listCompanyMembers (display-поля соединяются через Admin SDK), а браузеру
+// чужие профили не нужны вообще: единственный потребитель — собственный
+// документ вызывающего. Поэтому единственный безопасный клиентский путь —
+// свой профиль; get/list чужого профиля закрыты для всех, включая активного
+// админа той же компании и участников с идеальным membership.
+describe('SEC-011 R3: users profiles are self-only', () => {
+  const TARGET_UID = 'uid_target_member'
 
-  it.each(['admin', 'accountant', 'viewer'] as const)(
-    'a %s member of an additional company can query that company employees',
-    async role => {
-      await seedUser(MULTI_COMPANY_UID, { role: 'viewer', companyId: COMPANY_A })
-      await seedMembership(COMPANY_B, MULTI_COMPANY_UID, role)
-      const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-      await assertSucceeds(getDocs(query(
-        collection(db, 'users'),
-        where('companyId', '==', COMPANY_B),
-      )))
-    },
-  )
+  async function seedTarget(profileCompanyId: string = COMPANY_A) {
+    await seedUser(TARGET_UID, { role: 'viewer', companyId: profileCompanyId })
+  }
 
-  it('querying a company the caller has no membership in is denied', async () => {
-    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
-    await assertFails(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
-
-  it('an unfiltered users query is denied', async () => {
-    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
-    await assertFails(getDocs(collection(db, 'users')))
-  })
-
-  it('a disabled member cannot query employees', async () => {
-    await seedMembership(COMPANY_B, MULTI_COMPANY_UID, 'admin', 'disabled')
-    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
-    await assertFails(getDocs(query(
-      collection(db, 'users'),
-      where('companyId', '==', COMPANY_B),
-    )))
-  })
-
-  it('reading a colleague profile requires canonical membership on both sides', async () => {
+  it('a user reads and edits their own profile', async () => {
     const db = testEnv.authenticatedContext(VIEWER_A).firestore()
-    // Colleague with a real membership in the same company: allowed.
-    await assertSucceeds(getDoc(doc(db, 'users', ADMIN_A)))
-    // Foreign profile: denied.
+    await assertSucceeds(getDoc(doc(db, 'users', VIEWER_A)))
+    await assertSucceeds(updateDoc(doc(db, 'users', VIEWER_A), { name: 'Renamed Self' }))
+  })
+
+  it('reading an own profile that does not exist yet is allowed (setup_incomplete detection)', async () => {
+    const db = testEnv.authenticatedContext(NO_PROFILE_UID).firestore()
+    await assertSucceeds(getDoc(doc(db, 'users', NO_PROFILE_UID)))
+  })
+
+  it('removed target: a profile naming company A with NO membership is neither readable nor in a query', async () => {
+    await seedTarget()
+    // Active caller of company A, target membership does not exist (removed).
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(getDoc(doc(db, 'users', TARGET_UID)))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
+  })
+
+  it('a member removed AFTER having a membership stops being readable at once', async () => {
+    await seedTarget()
+    await seedMembership(COMPANY_A, TARGET_UID, 'viewer')
+    await removeMembership(COMPANY_A, TARGET_UID)
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(getDoc(doc(db, 'users', TARGET_UID)))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
+  })
+
+  it('disabled target: denied (get and query)', async () => {
+    await seedTarget()
+    await seedMembership(COMPANY_A, TARGET_UID, 'viewer', 'disabled')
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(getDoc(doc(db, 'users', TARGET_UID)))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
+  })
+
+  it('invited target: denied (get and query)', async () => {
+    await seedTarget()
+    await seedMembership(COMPANY_A, TARGET_UID, 'viewer', 'invited')
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(getDoc(doc(db, 'users', TARGET_UID)))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
+  })
+
+  it('corrupted target membership (uid mismatch): denied', async () => {
+    await seedTarget()
+    await seedMembership(COMPANY_A, TARGET_UID, 'viewer', 'active', { uid: 'uid_someone_else' })
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(getDoc(doc(db, 'users', TARGET_UID)))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
+  })
+
+  it('corrupted target membership (unknown role / missing status): denied', async () => {
+    await seedTarget()
+    await testEnv.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'companies', COMPANY_A, 'members', TARGET_UID), {
+        uid: TARGET_UID, role: 'superuser', status: 'active', createdAt: new Date(), updatedAt: new Date(),
+      })
+    })
+    const db = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(getDoc(doc(db, 'users', TARGET_UID)))
+    await testEnv.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'companies', COMPANY_A, 'members', TARGET_UID), {
+        uid: TARGET_UID, createdAt: new Date(),
+      })
+    })
+    await assertFails(getDoc(doc(db, 'users', TARGET_UID)))
+  })
+
+  it('active caller + active target of the same company: still no client path (the roster is server-built)', async () => {
+    await seedTarget()
+    await seedMembership(COMPANY_A, TARGET_UID, 'viewer')
+    for (const caller of [ADMIN_A, ACCOUNTANT_A, VIEWER_A]) {
+      const db = testEnv.authenticatedContext(caller).firestore()
+      await assertFails(getDoc(doc(db, 'users', TARGET_UID)))
+      await assertFails(getDoc(doc(db, 'users', ADMIN_A === caller ? ACCOUNTANT_A : ADMIN_A)))
+      await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
+    }
+    // The canonical roster, by contrast, stays readable to active members.
+    const roster = await assertSucceeds(getDocs(collection(
+      testEnv.authenticatedContext(VIEWER_A).firestore(), 'companies', COMPANY_A, 'members',
+    )))
+    expect(roster.docs.length).toBe(4)
+  })
+
+  it('cross-company: a member of B cannot read a profile of company A, nor query it', async () => {
+    const db = testEnv.authenticatedContext(ADMIN_B).firestore()
+    await assertFails(getDoc(doc(db, 'users', ADMIN_A)))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_A))))
+  })
+
+  it('multi-company: membership in an additional company grants no profile read there either', async () => {
+    await seedUser(MULTI_COMPANY_UID, { role: 'viewer', companyId: COMPANY_A })
+    await seedMembership(COMPANY_B, MULTI_COMPANY_UID, 'admin')
+    const db = testEnv.authenticatedContext(MULTI_COMPANY_UID).firestore()
     await assertFails(getDoc(doc(db, 'users', ADMIN_B)))
+    await assertFails(getDocs(query(collection(db, 'users'), where('companyId', '==', COMPANY_B))))
+  })
+
+  it('unfiltered, unscoped and unauthenticated users queries are denied', async () => {
+    const member = testEnv.authenticatedContext(ADMIN_A).firestore()
+    await assertFails(getDocs(collection(member, 'users')))
+    await assertFails(getDocs(query(collection(member, 'users'), limit(5))))
+    const anonymous = testEnv.unauthenticatedContext().firestore()
+    await assertFails(getDocs(query(collection(anonymous, 'users'), where('companyId', '==', COMPANY_A))))
   })
 
   it('a profile claiming our companyId without a membership is not readable', async () => {
     await seedUser(ATTACKER_UID, { role: 'admin', companyId: COMPANY_A })
     const db = testEnv.authenticatedContext(VIEWER_A).firestore()
     await assertFails(getDoc(doc(db, 'users', ATTACKER_UID)))
+  })
+})
+
+// ── SEC-011 R3: ownerId — не источник права чтения компании ───────────────
+//
+// PR #28 audit, finding 2. `companies get` ещё разрешал
+// `resource.data.ownerId == callerUid()`, и бывший владелец, у которого
+// membership уже удалён, продолжал читать метаданные компании. ownerId —
+// справочная ссылка (ADR-001, authz.ts), а не сигнал авторизации: канонический
+// active membership — единственный источник права.
+describe('SEC-011 R3: ownerId grants no company read', () => {
+  const OWNER_UID = 'uid_company_owner'
+  const OWNED_CO = 'companyOwned_synthetic'
+
+  async function seedOwnedCompany() {
+    await seedUser(OWNER_UID, {
+      role: 'admin', companyId: OWNED_CO, companies: [{ companyId: OWNED_CO, role: 'admin' }],
+    })
+    await testEnv.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'companies', OWNED_CO), {
+        id: OWNED_CO, name: 'Owned Co', legalType: 'ooo',
+        currency: 'RUB', createdAt: '2026-01-01T00:00:00.000Z', ownerId: OWNER_UID,
+      })
+    })
+  }
+
+  it('ownerId without any membership: company get denied', async () => {
+    await seedOwnedCompany()
+    const db = testEnv.authenticatedContext(OWNER_UID).firestore()
+    await assertFails(getDoc(doc(db, 'companies', OWNED_CO)))
+  })
+
+  it('removed owner: readable while active, denied the moment the membership is removed', async () => {
+    await seedOwnedCompany()
+    await seedMembership(OWNED_CO, OWNER_UID, 'admin')
+    const db = testEnv.authenticatedContext(OWNER_UID).firestore()
+    await assertSucceeds(getDoc(doc(db, 'companies', OWNED_CO)))
+
+    await removeMembership(OWNED_CO, OWNER_UID)
+    await assertFails(getDoc(doc(db, 'companies', OWNED_CO)))
+    await assertFails(getDoc(doc(db, 'company_data', OWNED_CO)))
+  })
+
+  it.each(['disabled', 'invited'] as const)('%s owner: company get denied', async status => {
+    await seedOwnedCompany()
+    await seedMembership(OWNED_CO, OWNER_UID, 'admin', status)
+    const db = testEnv.authenticatedContext(OWNER_UID).firestore()
+    await assertFails(getDoc(doc(db, 'companies', OWNED_CO)))
+  })
+
+  it('owner with a corrupted membership (uid mismatch): denied', async () => {
+    await seedOwnedCompany()
+    await seedMembership(OWNED_CO, OWNER_UID, 'admin', 'active', { uid: 'uid_someone_else' })
+    const db = testEnv.authenticatedContext(OWNER_UID).firestore()
+    await assertFails(getDoc(doc(db, 'companies', OWNED_CO)))
+  })
+
+  it('an active canonical member (not the owner) reads the company', async () => {
+    await seedOwnedCompany()
+    await seedMembership(OWNED_CO, VIEWER_A, 'viewer')
+    const db = testEnv.authenticatedContext(VIEWER_A).firestore()
+    await assertSucceeds(getDoc(doc(db, 'companies', OWNED_CO)))
+  })
+
+  it('legacy role/companyId/companies[] AND ownerId together grant nothing without a membership', async () => {
+    await seedOwnedCompany()
+    const db = testEnv.authenticatedContext(OWNER_UID).firestore()
+    await assertFails(getDoc(doc(db, 'companies', OWNED_CO)))
+    await assertFails(getDoc(doc(db, 'company_data', OWNED_CO)))
+    await assertFails(getDoc(doc(db, 'companies', OWNED_CO, 'members', OWNER_UID)))
+    await assertFails(updateDoc(doc(db, 'companies', OWNED_CO), { name: 'Owner Rename' }))
+  })
+
+  it('a non-member reading a company that does not exist is denied too (no existence oracle)', async () => {
+    const db = testEnv.authenticatedContext(ATTACKER_UID).firestore()
+    await assertFails(getDoc(doc(db, 'companies', 'does_not_exist_synthetic')))
   })
 })
 

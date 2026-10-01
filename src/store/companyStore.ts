@@ -124,11 +124,16 @@ const companyStoreImpl = {
   // ── Init: load data + subscribe to real-time changes ──────────────────────
   async init(companyId: string) {
     const invitationUser = auth.currentUser
-    const invitationContextValid = () => !isInvitationEntry || (
+    // `currentCompanyId === companyId` guards EVERY entry mode (SEC-011 R3): a
+    // load that is still in flight when the active company changes or access is
+    // lost (see the no_access reset below) must not publish its late answer or
+    // install its listener — otherwise a company the user was just removed from
+    // could reappear in state.
+    const invitationContextValid = () => currentCompanyId === companyId && (!isInvitationEntry || (
       !!invitationUser && auth.currentUser === invitationUser &&
       authStore.getAuthDataStatus() === 'ready' &&
       authStore.getCurrentUser()?.id === invitationUser.uid &&
-      authStore.getActiveCompanyId() === companyId && currentCompanyId === companyId)
+      authStore.getActiveCompanyId() === companyId))
     if (isInvitationEntry && (!invitationUser || authStore.getAuthDataStatus() !== 'ready' ||
         authStore.getCurrentUser()?.id !== invitationUser.uid || authStore.getActiveCompanyId() !== companyId)) return
     if (currentCompanyId === companyId && unsubSnapshot !== null) return
@@ -686,6 +691,17 @@ export const companyStore: typeof companyStoreImpl = new Proxy(companyStoreImpl,
 subscribeAuth(() => {
   if (isInvitationEntry && (!auth.currentUser || authStore.getAuthDataStatus() !== 'ready' ||
       authStore.getCurrentUser()?.id !== auth.currentUser.uid)) {
+    if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null }
+    currentCompanyId = null
+    state = { ...EMPTY }
+    notify()
+    return
+  }
+  // SEC-011 R3: signed in but with no active membership anywhere. There is no
+  // company to open — and the fallback below would otherwise try the user's own
+  // uid as a company id — so drop the listener and any data of the company the
+  // user was just removed from, instead of leaving it on screen.
+  if (authStore.getAuthDataStatus() === 'no_access') {
     if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null }
     currentCompanyId = null
     state = { ...EMPTY }

@@ -8,8 +8,7 @@ import {
   type User as FirebaseUser,
 } from 'firebase/auth'
 import {
-  doc, getDoc, getDocFromServer, getDocs, setDoc, updateDoc,
-  collection, query, where,
+  doc, getDoc, getDocFromServer, setDoc, updateDoc, type DocumentSnapshot,
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import { callCreateCompany } from '../lib/companyApi'
@@ -24,6 +23,9 @@ import { confirmCompanyAccess } from '../lib/inviteAcceptanceApi'
 // ── In-memory state ──────────────────────────────────────────────────────────
 let currentUser:    User    | null = null
 let currentCompany: Company | null = null
+// SEC-011 R3: only the signed-in user's OWN profile. Colleagues' profiles are
+// not readable from the browser at all (Rules: users/{uid} is self-only), and
+// the company's people come from the canonical roster below.
 let companyUsers:   User[]         = []
 let allUserCompanies: Company[]    = []
 
@@ -74,6 +76,12 @@ interface CanonicalRequestToken {
 }
 
 let canonicalGeneration = 0
+// SEC-011 R3: the same idea for the COMPANY-ACCESS load (bootstrap, switch,
+// refresh). Each such load takes a number; any clear/sign-out/newer load makes
+// that number stale, and a stale load drops its answer without touching state
+// or notifying — so a slow response for a company the user has since lost
+// (or for a previous session) can never put it back.
+let accessGeneration = 0
 
 function beginCanonicalRequest(companyId: string): CanonicalRequestToken {
   return { generation: canonicalGeneration, companyId, user: auth.currentUser }
@@ -86,21 +94,37 @@ function isStaleCanonicalRequest(token: CanonicalRequestToken): boolean {
     || token.user !== auth.currentUser
 }
 
-/** The company the app is actually showing right now. */
+/** The company the app is actually showing right now. SEC-011 R3: only ever a
+ * company whose canonical membership was verified — never the legacy
+ * `users.companyId`, which says where a user used to belong, not where they
+ * may go now. */
 function effectiveActiveCompanyId(): string | null {
-  return activeCompanyId ?? currentUser?.companyId ?? null
+  return activeCompanyId
 }
 
 function clearCanonicalMembership() {
   // Bumping the generation is what cancels in-flight work; without it a
   // response that started before the clear would repopulate the state we just
-  // emptied.
+  // emptied. `accessGeneration` is bumped too: a company-access load that
+  // started before this clear (sign-out, data error, switch) must not apply
+  // its answer afterwards.
   canonicalGeneration += 1
+  accessGeneration += 1
   activeMembership = null
   activeMembershipCompanyId = null
   companyRoster = []
   companyRosterCompanyId = null
   companyRosterError = null
+}
+
+/** When the member just removed/disabled is the SIGNED-IN user, their own
+ * company list is out of date: the company they were just removed from must
+ * leave the switcher and, if it was active, another accessible company (or the
+ * no-access state) must take over. Managing someone else changes nothing
+ * about the caller's own access, so nothing is re-resolved then. */
+async function reconcileOwnAccess(subjectUid: string): Promise<void> {
+  if (!currentUser || auth.currentUser?.uid !== subjectUid) return
+  await reloadCompanyAccess(currentUser, activeCompanyId)
 }
 
 /** Re-reads the caller's own membership AND the roster after a server-side
@@ -168,7 +192,15 @@ async function loadCanonicalMembership(companyId: string, uid: string): Promise<
 // server-side `createCompany` setup has not (yet) succeeded. Distinct from
 // `data_error` (a corrupted/invalid EXISTING document) — this is an
 // incomplete-but-recoverable state with a safe retry (authStore.completeCompanySetup()).
-export type AuthDataStatus = 'loading' | 'ready' | 'signed_out' | 'data_error' | 'setup_incomplete'
+//
+// `no_access` — SEC-011 R3: the user is signed in and the profile is fine, but
+// no company has an ACTIVE canonical membership for them (removed, disabled,
+// still invited, or never granted). Distinct from `data_error` (a corrupted or
+// unreadable document) and from `setup_incomplete` (no company setup yet): it is
+// a normal, expected outcome of being removed, shown as a dedicated screen with
+// a way to sign out — never as stale company data and never as a generic error.
+export type AuthDataStatus =
+  'loading' | 'ready' | 'signed_out' | 'data_error' | 'setup_incomplete' | 'no_access'
 let authDataStatus: AuthDataStatus = 'loading'
 let lastDataError: DataError | null = null
 
@@ -193,41 +225,235 @@ function setDataErrorState(error: DataError) {
   notify()
 }
 
-/** Parses a list of users/{uid} documents. Fails the WHOLE list on the first
- * invalid entry — a corrupted record is never silently dropped while the
- * rest of the list is kept ("partially trusted list"). */
-function parseLegacyUsersList(
-  docs: { id: string; data: () => unknown }[],
-): { ok: true; data: User[] } | { ok: false; error: DataError } {
-  const users: User[] = []
-  for (const d of docs) {
-    const parsed = parseLegacyUserDocument(d.id, d.data())
-    if (!parsed.ok) return parsed
-    users.push(parsed.data)
-  }
-  return { ok: true, data: users }
-}
-
-/** Same all-or-nothing contract as parseLegacyUsersList, for companies/{id}
- * documents. Non-existent snapshots are skipped (that is normal — a
- * membership entry pointing at a company that hasn't loaded yet — not
- * corruption); an EXISTING document that fails validation fails the list. */
-function parseCompanyDocsList(
-  snaps: { id: string; exists: () => boolean; data: () => unknown }[],
-): { ok: true; data: Company[] } | { ok: false; error: DataError } {
-  const companies: Company[] = []
-  for (const s of snaps) {
-    if (!s.exists()) continue
-    const parsed = parseCompanyDocument(s.id, s.data())
-    if (!parsed.ok) return parsed
-    companies.push(parsed.data)
-  }
-  return { ok: true, data: companies }
-}
-
-// Active company may differ from user.companyId when user switches company
+// Active company may differ from user.companyId when user switches company.
+// SEC-011 R3: this is only a PREFERENCE until a canonical membership confirms
+// it — see resolveCompanyAccess().
 const LS_ACTIVE_COMPANY = 'finapp_active_company'
 let activeCompanyId: string | null = localStorage.getItem(LS_ACTIVE_COMPANY)
+
+// ── SEC-011 R3: which companies does this user really have? ──────────────────
+//
+// PR #28 audit, finding 3. The company list used to be built from the legacy
+// profile (`users.companyId` / `users.companies[]`) and every company document
+// was then read inside one Promise.all. removeMember/disableMember only change
+// the canonical membership, so the legacy entry stayed, the Rules refused the
+// read of that company, the Promise.all rejected and the WHOLE app fell into
+// data_error — even though the user still belonged to other companies.
+//
+// Now the legacy fields are only a HINT of where to look: a list of candidate
+// company ids. Whether the user may use a candidate is decided exclusively by
+// reading their OWN canonical membership there (companies/{id}/members/{uid},
+// readable only by an active member) and requiring it to be a valid, uid-
+// matching, `active` document. Each candidate is judged independently, so a
+// lost company drops out of the list instead of failing the others.
+
+type OwnMembershipRead =
+  | { kind: 'active'; membership: Membership }
+  /** Definitively no access: no document, refused by Rules, corrupted, wrong
+   * uid, or not `active` (disabled / invited). */
+  | { kind: 'denied' }
+  /** Could not find out (network, quota, ...). Treated as no access for this
+   * load, but NOT as proof of removal: the user's stored preference survives. */
+  | { kind: 'unavailable' }
+
+function isDefiniteDenial(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  return code === 'permission-denied' || code === 'not-found'
+}
+
+async function readOwnMembership(companyId: string, uid: string): Promise<OwnMembershipRead> {
+  try {
+    const snap = await getDoc(doc(db, 'companies', companyId, 'members', uid))
+    if (!snap.exists()) return { kind: 'denied' }
+    const parsed = parseMembershipDocument(companyId, uid, snap.data())
+    if (!parsed.ok || parsed.data.status !== 'active') return { kind: 'denied' }
+    return { kind: 'active', membership: parsed.data }
+  } catch (error) {
+    return isDefiniteDenial(error) ? { kind: 'denied' } : { kind: 'unavailable' }
+  }
+}
+
+type AccessResolution =
+  | {
+      kind: 'ready'
+      activeId: string
+      activeCompany: Company
+      /** Other accessible companies whose metadata loaded, for the switcher. */
+      otherCompanies: Company[]
+      membership: Membership
+      /** The requested/stored preference was definitively refused. */
+      preferenceDenied: boolean
+    }
+  | { kind: 'no_access' }
+  | { kind: 'data_error'; error: DataError }
+  | { kind: 'superseded' }
+
+/** Default categories etc. for a company document that vanished although the
+ * user still holds an active membership. Same recovery the bootstrap always
+ * had (Rules let only an active admin write it). */
+async function recoverMissingCompany(companyId: string, ownerId: string): Promise<Company> {
+  const now = new Date().toISOString()
+  const recovered: Company = {
+    id: companyId, name: 'Моя компания', legalType: 'ip', currency: 'RUB', createdAt: now, ownerId,
+  }
+  try {
+    await Promise.all([
+      setDoc(doc(db, 'companies', companyId), recovered),
+      setDoc(doc(db, 'company_data', companyId), {
+        accounts: [], categories: DEFAULT_CATEGORIES_AUTH, counterparties: [],
+        transactions: [], projects: [], rules: [],
+      }),
+    ])
+    console.log('[authStore] Auto-recovered missing company doc:', companyId)
+  } catch (recoveryErr) {
+    console.warn('[authStore] Company recovery write failed (will use localStorage fallback):', recoveryErr)
+  }
+  return recovered
+}
+
+/**
+ * Resolves which companies the user may use and which one is active.
+ *
+ * `isSuperseded` is checked after every await: when it turns true the whole
+ * answer is discarded (`superseded`) without any state change.
+ *
+ * Throws only when NOTHING could be determined for a transient reason (every
+ * candidate unavailable, or every accessible company document unreadable) —
+ * that is an error, not "no access".
+ */
+async function resolveCompanyAccess(
+  user: User,
+  preferredId: string | null,
+  isSuperseded: () => boolean,
+): Promise<AccessResolution> {
+  // Legacy fields: candidates only. Home company first, then the rest.
+  const candidateIds = [...new Set([user.companyId, ...(user.companies ?? []).map(entry => entry.companyId)])]
+
+  const reads = await Promise.all(candidateIds.map(id => readOwnMembership(id, user.id)))
+  if (isSuperseded()) return { kind: 'superseded' }
+
+  const membershipById = new Map<string, Membership>()
+  candidateIds.forEach((id, index) => {
+    const read = reads[index]
+    if (read.kind === 'active') membershipById.set(id, read.membership)
+  })
+  const preferenceRead = preferredId !== null ? reads[candidateIds.indexOf(preferredId)] : undefined
+  const preferenceDenied = preferenceRead?.kind === 'denied'
+
+  if (membershipById.size === 0) {
+    if (reads.some(read => read.kind === 'unavailable')) throw new Error('company_access_unavailable')
+    return { kind: 'no_access' }
+  }
+
+  // Metadata for every accessible company, each read failing independently.
+  const accessible = candidateIds.filter(id => membershipById.has(id))
+  const outcomes = new Map<string, { snap: DocumentSnapshot } | { unreadable: true; refused: boolean }>()
+  await Promise.all(accessible.map(async id => {
+    try { outcomes.set(id, { snap: await getDoc(doc(db, 'companies', id)) }) }
+    catch (error) { outcomes.set(id, { unreadable: true, refused: isDefiniteDenial(error) }) }
+  }))
+  if (isSuperseded()) return { kind: 'superseded' }
+
+  // Active = the preferred company if usable, else the home company, else the
+  // first accessible one. A company whose document cannot be read is skipped.
+  const usable = accessible.filter(id => 'snap' in outcomes.get(id)!)
+  const activeId = usable.find(id => id === preferredId)
+    ?? usable.find(id => id === user.companyId)
+    ?? usable[0]
+  if (activeId === undefined) {
+    // Every membership just read as active, yet every company document is now
+    // refused: access vanished between the two reads. That is "no access", not
+    // a failure. Anything else unreadable (network, ...) is a real error.
+    const everyRefused = accessible.every(id => {
+      const outcome = outcomes.get(id)
+      return outcome !== undefined && 'refused' in outcome && outcome.refused
+    })
+    if (everyRefused) return { kind: 'no_access' }
+    throw new Error('company_access_unavailable')
+  }
+
+  const activeOutcome = outcomes.get(activeId) as { snap: DocumentSnapshot }
+  let activeCompanyDoc: Company
+  if (!activeOutcome.snap.exists()) {
+    activeCompanyDoc = await recoverMissingCompany(activeId, user.id)
+    if (isSuperseded()) return { kind: 'superseded' }
+  } else {
+    const parsed = parseCompanyDocument(activeId, activeOutcome.snap.data())
+    if (!parsed.ok) return { kind: 'data_error', error: parsed.error }
+    activeCompanyDoc = parsed.data
+  }
+
+  const otherCompanies: Company[] = []
+  for (const id of usable) {
+    if (id === activeId) continue
+    const outcome = outcomes.get(id) as { snap: DocumentSnapshot }
+    if (!outcome.snap.exists()) continue
+    const parsed = parseCompanyDocument(id, outcome.snap.data())
+    if (!parsed.ok) return { kind: 'data_error', error: parsed.error }
+    otherCompanies.push(parsed.data)
+  }
+
+  return {
+    kind: 'ready', activeId, activeCompany: activeCompanyDoc, otherCompanies,
+    membership: membershipById.get(activeId)!, preferenceDenied,
+  }
+}
+
+/** Publishes a `ready` resolution as one atomic state change. */
+function commitResolvedAccess(
+  user: User, resolution: Extract<AccessResolution, { kind: 'ready' }>,
+) {
+  currentUser = user
+  currentCompany = resolution.activeCompany
+  companyUsers = [user]
+  allUserCompanies = [resolution.activeCompany, ...resolution.otherCompanies]
+  activeCompanyId = resolution.activeId
+  activeMembership = resolution.membership
+  activeMembershipCompanyId = resolution.activeId
+  // A preference that Rules definitively refused is forgotten for good; one
+  // that merely could not be checked is kept for the next attempt.
+  if (resolution.preferenceDenied) localStorage.removeItem(LS_ACTIVE_COMPANY)
+  authDataStatus = 'ready'
+  lastDataError = null
+}
+
+/** The user is signed in but has no active membership anywhere. Everything
+ * company-scoped is cleared, including what a previous state held. */
+function commitNoAccess(user: User) {
+  clearCanonicalMembership()
+  currentUser = user
+  currentCompany = null
+  companyUsers = []
+  allUserCompanies = []
+  activeCompanyId = null
+  localStorage.removeItem(LS_ACTIVE_COMPANY)
+  authDataStatus = 'no_access'
+  lastDataError = null
+}
+
+/** Re-resolves company access for an already signed-in user and publishes the
+ * result. Used by company switching and after the caller's own membership
+ * changes; never used by sign-in (see onAuthStateChanged). */
+async function reloadCompanyAccess(user: User, preferredId: string | null): Promise<void> {
+  const generation = ++accessGeneration
+  const session = auth.currentUser
+  const isSuperseded = () => generation !== accessGeneration || auth.currentUser !== session
+  try {
+    const resolution = await resolveCompanyAccess(user, preferredId, isSuperseded)
+    if (resolution.kind === 'superseded' || isSuperseded()) return
+    if (resolution.kind === 'data_error') { setDataErrorState(resolution.error); return }
+    if (resolution.kind === 'no_access') commitNoAccess(user)
+    else commitResolvedAccess(user, resolution)
+  } catch (err) {
+    if (isSuperseded()) return
+    console.error('[authStore] company access reload error:', err)
+    currentUser = null; currentCompany = null; companyUsers = []; clearCanonicalMembership()
+    allUserCompanies = []
+    authDataStatus = 'data_error'
+    lastDataError = { code: 'data_error', source: 'reloadCompanyAccess', issues: ['unexpected_error'] }
+  }
+  notify()
+}
 
 // Prevents recovery code from firing while register() is still writing Firestore docs
 let _registrationInProgress = false
@@ -387,8 +613,10 @@ onAuthStateChanged(auth, async firebaseUser => {
       _firstNullConsumed = true
       return
     }
-    // Real logout (user explicitly signed out, or token expired)
+    // Real logout (user explicitly signed out, or token expired). The company
+    // list goes too: nothing a previous user could see may linger.
     currentUser = null; currentCompany = null; companyUsers = []; clearCanonicalMembership()
+    allUserCompanies = []
     authDataStatus = 'signed_out'
     lastDataError = null
     notify()
@@ -398,8 +626,18 @@ onAuthStateChanged(auth, async firebaseUser => {
   // User is authenticated — mark first-null as consumed
   _firstNullConsumed = true
 
+  // SEC-011 R3: this load owns `generation`. Sign-out, a data error, a switch
+  // or a newer load make it stale, and a stale load never writes or notifies —
+  // so a slow answer cannot bring back a company the user has since lost, nor
+  // sign a logged-out session back in. `session` pins the Auth user OBJECT: the
+  // same uid signing in again is a different session.
+  const generation = ++accessGeneration
+  const session = auth.currentUser
+  const isSuperseded = () => generation !== accessGeneration || auth.currentUser !== session
+
   try {
     const userSnap = await getDoc(doc(db, 'users', firebaseUser.uid))
+    if (isSuperseded()) return
 
     if (!userSnap.exists()) {
       if (_registrationInProgress) {
@@ -427,82 +665,30 @@ onAuthStateChanged(auth, async firebaseUser => {
 
     const parsedProfile = parseLegacyUserDocument(firebaseUser.uid, userSnap.data())
     if (!parsedProfile.ok) { setDataErrorState(parsedProfile.error); return }
-    currentUser = parsedProfile.data
+    const user = parsedProfile.data
 
-    // Validate activeCompanyId belongs to this user — clear it if it's from a different account
-    const validCompanyIds = [
-      currentUser.companyId,
-      ...(currentUser.companies ?? []).map(m => m.companyId),
-    ]
-    if (activeCompanyId && !validCompanyIds.includes(activeCompanyId)) {
+    // The stored active company is only a preference, and only if it is one
+    // of THIS user's candidate companies — otherwise it is left over from a
+    // different account on the same browser.
+    const candidateIds = [user.companyId, ...(user.companies ?? []).map(entry => entry.companyId)]
+    if (activeCompanyId && !candidateIds.includes(activeCompanyId)) {
       activeCompanyId = null
       localStorage.removeItem(LS_ACTIVE_COMPANY)
     }
 
-    // Resolve active company: last switched, else home
-    const resolvedActiveId = activeCompanyId ?? currentUser.companyId
-    if (!activeCompanyId) activeCompanyId = currentUser.companyId
-
-    // Collect all company IDs this user belongs to
-    const memberIds = [
-      currentUser.companyId,
-      ...( (currentUser.companies ?? []).map(m => m.companyId).filter(id => id !== currentUser!.companyId) ),
-    ]
-
-    const [companySnap, usersSnap, ...extraSnaps] = await Promise.all([
-      getDoc(doc(db, 'companies', resolvedActiveId)),
-      getDocs(query(collection(db, 'users'), where('companyId', '==', resolvedActiveId))),
-      ...memberIds.filter(id => id !== resolvedActiveId).map(id => getDoc(doc(db, 'companies', id))),
-    ])
-
-    if (!companySnap.exists()) {
-      // companies/{companyId} is missing — auto-create it
-      const now = new Date().toISOString()
-      const recoveredCompany: Company = {
-        id: resolvedActiveId, name: 'Моя компания', legalType: 'ip',
-        currency: 'RUB', createdAt: now, ownerId: currentUser.id,
-      }
-      currentCompany = recoveredCompany
-
-      try {
-        await Promise.all([
-          setDoc(doc(db, 'companies',    resolvedActiveId), recoveredCompany),
-          setDoc(doc(db, 'company_data', resolvedActiveId), {
-            accounts: [], categories: DEFAULT_CATEGORIES_AUTH, counterparties: [],
-            transactions: [], projects: [], rules: [],
-          }),
-        ])
-        console.log('[authStore] Auto-recovered missing company doc:', resolvedActiveId)
-      } catch (recoveryErr) {
-        console.warn('[authStore] Company recovery write failed (will use localStorage fallback):', recoveryErr)
-      }
-    } else {
-      const parsedCompany = parseCompanyDocument(resolvedActiveId, companySnap.data())
-      if (!parsedCompany.ok) { setDataErrorState(parsedCompany.error); return }
-      currentCompany = parsedCompany.data
-    }
-
-    const parsedUsers = parseLegacyUsersList(usersSnap.docs)
-    if (!parsedUsers.ok) { setDataErrorState(parsedUsers.error); return }
-    companyUsers = parsedUsers.data
-
-    // Build list of all companies user belongs to
-    const parsedExtraCompanies = parseCompanyDocsList(extraSnaps)
-    if (!parsedExtraCompanies.ok) { setDataErrorState(parsedExtraCompanies.error); return }
-    allUserCompanies = [
-      ...(currentCompany ? [currentCompany] : []),
-      ...parsedExtraCompanies.data,
-    ]
-
-    // SEC-011: the effective role comes from here, not from the profile that
-    // was just parsed above. Without this the user has no capabilities.
-    await loadCanonicalMembership(resolvedActiveId, currentUser.id)
-
-    authDataStatus = 'ready'
-    lastDataError = null
+    // SEC-011 R3: companies, the active one and the role all come from the
+    // user's own canonical memberships (see resolveCompanyAccess). The legacy
+    // profile only suggested where to look.
+    const resolution = await resolveCompanyAccess(user, activeCompanyId, isSuperseded)
+    if (resolution.kind === 'superseded' || isSuperseded()) return
+    if (resolution.kind === 'data_error') { setDataErrorState(resolution.error); return }
+    if (resolution.kind === 'no_access') commitNoAccess(user)
+    else commitResolvedAccess(user, resolution)
   } catch (err) {
+    if (isSuperseded()) return
     console.error('[authStore] onAuthStateChanged error:', err)
     currentUser = null; currentCompany = null; companyUsers = []; clearCanonicalMembership()
+    allUserCompanies = []
     authDataStatus = 'data_error'
     lastDataError = { code: 'data_error', source: 'onAuthStateChanged', issues: ['unexpected_error'] }
   }
@@ -761,7 +947,7 @@ export const authStore = {
   getCurrentUser()    { return currentUser },
   getCurrentCompany() { return currentCompany },
   getCompanyUsers(_companyId: string) { return companyUsers },
-  getSession()        { return auth.currentUser ? { userId: auth.currentUser.uid, companyId: currentUser?.companyId ?? '', expiresAt: '' } : null },
+  getSession()        { return auth.currentUser ? { userId: auth.currentUser.uid, companyId: activeCompanyId ?? '', expiresAt: '' } : null },
   getAuthDataStatus(): AuthDataStatus { return authDataStatus },
   getDataError(): DataError | null { return lastDataError },
 
@@ -779,6 +965,7 @@ export const authStore = {
     const result = await memberApi.remove({ companyId, subjectUid })
     await refreshCanonicalMembership(companyId)
     notify()
+    await reconcileOwnAccess(subjectUid)
     return result
   },
 
@@ -793,6 +980,7 @@ export const authStore = {
     const result = await memberApi.disable({ companyId, subjectUid })
     await refreshCanonicalMembership(companyId)
     notify()
+    await reconcileOwnAccess(subjectUid)
     return result
   },
 
@@ -879,7 +1067,9 @@ export const authStore = {
   // rights at all" — never as a viewer default.
   getEffectiveRole(): Role | null {
     if (!currentUser) return null
-    const activeId = activeCompanyId ?? currentUser.companyId
+    // SEC-011 R3: only the verified active company counts — never the legacy
+    // profile's home company.
+    const activeId = activeCompanyId
     if (!activeId || activeMembershipCompanyId !== activeId) return null
     if (!activeMembership || activeMembership.status !== 'active') return null
     return activeMembership.role
@@ -928,8 +1118,11 @@ export const authStore = {
   isAdmin() { return this.getEffectiveRole() === 'admin' },
 
   // ── Multi-company: getters ────────────────────────────────────────────────
+  // SEC-011 R3: null while loading and in the no-access state. It used to fall
+  // back to the legacy `users.companyId`, which kept pointing at a company the
+  // user had just been removed from and made the financial store try to open it.
   getActiveCompanyId() {
-    return activeCompanyId ?? currentUser?.companyId ?? null
+    return activeCompanyId
   },
 
   getAllCompanies() {
@@ -937,8 +1130,17 @@ export const authStore = {
   },
 
   // ── Multi-company: switch active company ──────────────────────────────────
+  //
+  // SEC-011 R3: only a company that is in the switcher right now can be
+  // selected, and the selection is then CONFIRMED against the canonical
+  // memberships before it is published. A company that was removed or disabled
+  // since the list was built is refused here: it leaves the switcher and the
+  // store lands on another accessible company (or the no-access state) instead
+  // of keeping a selection the server no longer honours.
   async switchCompany(companyId: string) {
     if (companyId === activeCompanyId) return
+    const user = currentUser
+    if (!user || !allUserCompanies.some(company => company.id === companyId)) return
     activeCompanyId = companyId
     localStorage.setItem(LS_ACTIVE_COMPANY, companyId)
     // SEC-011: drop the previous company's canonical role immediately, so no
@@ -948,25 +1150,15 @@ export const authStore = {
     // SEC-006: immediately unmount company-scoped invitation UI before I/O.
     selectionListeners.forEach(listener => listener())
 
-    // Load new company metadata
-    const snap = await getDoc(doc(db, 'companies', companyId))
-    if (snap.exists()) {
-      const parsedCompany = parseCompanyDocument(companyId, snap.data())
-      if (!parsedCompany.ok) { setDataErrorState(parsedCompany.error); return }
-      currentCompany = parsedCompany.data
-    }
+    // Metadata and role for the NEW company come from its own canonical
+    // membership; if it is refused, the resolution falls back.
+    await reloadCompanyAccess(user, companyId)
+  },
 
-    // Refresh users for new company
-    const usersSnap = await getDocs(query(collection(db, 'users'), where('companyId', '==', companyId)))
-    const parsedUsers = parseLegacyUsersList(usersSnap.docs)
-    if (!parsedUsers.ok) { setDataErrorState(parsedUsers.error); return }
-    companyUsers = parsedUsers.data
-
-    // Role for the NEW company comes from that company's own membership.
-    if (currentUser) await loadCanonicalMembership(companyId, currentUser.id)
-
-    authDataStatus = 'ready'
-    lastDataError = null
-    notify()
+  /** Re-resolves which companies the signed-in user may use, keeping the
+   * current one when it is still accessible. */
+  async refreshCompanyAccess() {
+    if (!currentUser) return
+    await reloadCompanyAccess(currentUser, activeCompanyId)
   },
 }
