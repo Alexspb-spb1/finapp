@@ -2,9 +2,15 @@
 
 ## Итоговый статус
 
-READY_FOR_REVIEW (round 3). Все обязательные проверки зелёные локально; CI
-нового HEAD — по факту после push (см. «Проверки»). Merge и deploy по этому
-отчёту не выполнялись.
+READY_FOR_REVIEW (round 3). Все обязательные проверки зелёные локально.
+Первый CI на `c4512ca` был **красным** — упал шаг
+`tsc --noEmit -p tests/rules/tsconfig.json` (в `tests/rules/tsconfig.json` не
+было `vite/client`, а новый интеграционный Rules-тест импортирует реальный
+`authStore` с `import.meta.env`); READY_FOR_REVIEW был объявлен преждевременно,
+потому что эту команду CI я локально не запускал. Исправлено отдельным
+коммитом. Результат CI на итоговом HEAD указывается в сообщении о передаче на
+ревью, а не здесь: правка отчёта меняла бы HEAD, который CI проверяет. Merge и
+deploy по этому отчёту не выполнялись.
 
 **История независимых ревью.** Round 0–2: PASS на
 `8f7d495f03b70a6f279f3622d61d5380db611a92` (2026-09-11). Последний аудит HEAD
@@ -466,6 +472,8 @@ invitation-entry) и multi-company. Найдено и исправлено в х
 | `root: lint` | PASS | 0 ошибок, прежний warning в `Balance.tsx` |
 | `root: typecheck` | PASS | чисто |
 | `root: build` | PASS | vite build успешен |
+| `root: tsc --noEmit -p tests/rules/tsconfig.json` (шаг CI) | PASS | на `c4512ca` FAIL (3 ошибки `import.meta.env`); после добавления `vite/client` в `tests/rules/tsconfig.json` — exit 0 |
+| `root: test:invitation-*` (12), `test:functions-api-preflight`, `test:staging-resources`, `test:release-artifact-preflight` (остальные 16 шагов CI) | PASS | все 16 — exit 0; код round 3 их не затрагивает, прогнаны локально после того, как выяснилось, что часть шагов CI не запускалась |
 | `root: test:unit` | PASS | 357/357 (было 311; +46: `companyAccess` 36, `companyStore.noAccess` 4, `ProtectedRoute.noAccess` 5, redirect 1) |
 | `root: test:rules` | PASS | 153/153 в двух прогонах подряд (было 129): `firestore.rules.test.ts` 141 (+12 нетто) и `authStore.rulesIntegration.test.ts` 12 |
 | `root: test:migration` | PASS | 570/570 |
