@@ -552,3 +552,19 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   там же (раздел «Round 3»). Merge, deploy, staging/production и новые письма
   в этом раунде не выполнялись. Next: один независимый повторный аудит
   итогового HEAD; следующий этап (SEC-008/SEC-009) не начинать.
+
+## M1-SAFE-STOP-RECOVERY-01 (2026-10-07) — SAFE_STOP staging-run, recovery и совместимость
+
+- Статус: READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT), только локальная работа. Ветка
+  `remediation/M1-SAFE-STOP-RECOVERY-01-runner-recovery` от точного HEAD PR #28
+  `714d0f91c60a582ee87dc7da82d6249b3106329f`; PR #28, hotfix и consumed-пакет не менялись.
+- Run `r3-ab9fb2fe` (staging, пакет v6): шаги 0–5 выполнены, STOP на seed (`transport: network failure POST accounts`,
+  исход единственного запроса создания Auth-пользователя неизвестен), cleanup отказал (G2/G3) без удалений.
+  Первопричина сетевого сбоя не установлена. Не повторять run; не переклассифицировать его evidence.
+- Исправление runner (кандидат `.runtime/m1-r4-staging`, PREPARED_NOT_AUTHORIZED; снимок и patch в
+  `docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/`): классификация сбоя fetch замкнутыми кодами, cleanup разблокируется
+  только при доказанном сбое фазы соединения с журнальным доказательством; неизвестный исход по-прежнему отказывает.
+- Отчёт: `docs/remediation/reports/M1-SAFE-STOP-RECOVERY-01.md`; матрица совместимости и rollout/rollback proposal:
+  `docs/remediation/runbooks/M1-COMPATIBILITY-ROLLOUT-20261007.md`.
+- Production: Rules canonical уже live (окна Rules нет), VDS = login hotfix, развёрнуты только createCompany/authzProbe;
+  пакет v6 для production не запускать (guard `m1p-pins.mjs`). Любые live-шаги — только по отдельному допуску на актуальные bytes.
