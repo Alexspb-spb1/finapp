@@ -1,0 +1,201 @@
+{
+  "format": "finapp-m1-expected-state-v2",
+  "revision": "r3",
+  "derivedFrom": {
+    "evidence": "m1-stg-rev8-8526a79",
+    "functionsFinalAt": "2026-09-22T15:46:30.268Z",
+    "rulesFinalFinishedAt": "2026-09-22T15:46:33.870Z",
+    "note": "read-only derivation; fixture.json was not read"
+  },
+  "project": "finapp-staging",
+  "sourceHead": "714d0f91c60a582ee87dc7da82d6249b3106329f",
+  "priorHead": "8526a791ce3f62dee5a64aa239b795c609a39226",
+  "caps": {
+    "memory": "256Mi",
+    "cpu": 1,
+    "concurrency": 1,
+    "minInstances": 0,
+    "maxInstances": 1,
+    "timeoutSeconds": 60
+  },
+  "functions": [
+    {
+      "id": "acceptInvite",
+      "group": "baseline",
+      "revision": "acceptinvite-00001-guy",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceReferenceSha256": "1473073995ec652e895225c14f2524e5a958a39f1ad08ada443320f81e3e06b3"
+    },
+    {
+      "id": "cancelInvite",
+      "group": "baseline",
+      "revision": "cancelinvite-00001-zow",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceReferenceSha256": "290c4547578df2bf43ef5acb3f099f4633c7fd89f6cd5e4989508d20e456069e"
+    },
+    {
+      "id": "changeMemberRole",
+      "group": "m1",
+      "revision": "changememberrole-00001-rav",
+      "build": "projects/860039810193/locations/us-central1/builds/0bd3dd0e-221e-40e3-97aa-e4ede175fefd",
+      "sourceReferenceSha256": "d9f816de02c971a16c170354d55d6675c0083ade360722055a76c70805820a58"
+    },
+    {
+      "id": "createCompany",
+      "group": "baseline",
+      "revision": "createcompany-00001-xiv",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceReferenceSha256": "037b59c09041dc8a2425c6864d9c85d519454d0afcc674bbf9e6ed270d90baa4"
+    },
+    {
+      "id": "disableMember",
+      "group": "m1",
+      "revision": "disablemember-00001-qoy",
+      "build": "projects/860039810193/locations/us-central1/builds/0bd3dd0e-221e-40e3-97aa-e4ede175fefd",
+      "sourceReferenceSha256": "2ee59d07a903667eab5e276980aba187c3e03ea7d0d9850ffab96a9f9d5eeede"
+    },
+    {
+      "id": "getCompanyAccess",
+      "group": "baseline",
+      "revision": "getcompanyaccess-00001-qeg",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceReferenceSha256": "ee5377479c6ebf88e141590a35f890c634c4e3370a79df698ade8b9c50c38e9c"
+    },
+    {
+      "id": "inviteMember",
+      "group": "baseline",
+      "revision": "invitemember-00001-cig",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceReferenceSha256": "58ad3a8ecaece6edf9f10d5a8893dc1d149f319439bd4a12d708230639805f99"
+    },
+    {
+      "id": "listCompanyMembers",
+      "group": "m1",
+      "revision": "listcompanymembers-00001-row",
+      "build": "projects/860039810193/locations/us-central1/builds/0bd3dd0e-221e-40e3-97aa-e4ede175fefd",
+      "sourceReferenceSha256": "b8db66802d74efac5d6e16c27dd64c512504ff1d5f28b579e54d113eae7991ea"
+    },
+    {
+      "id": "listInvitations",
+      "group": "baseline",
+      "revision": "listinvitations-00001-bix",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceReferenceSha256": "d03f6980f99a06ff881aa07acca5c0d749b9f44d3f33ef96b925e7873e7eb559"
+    },
+    {
+      "id": "previewInvite",
+      "group": "baseline",
+      "revision": "previewinvite-00001-raf",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceReferenceSha256": "462ef2cb3172d90c6201338551260fd0d37f44ac0e67a60efbb076c87f94ac6a"
+    },
+    {
+      "id": "removeMember",
+      "group": "m1",
+      "revision": "removemember-00001-pol",
+      "build": "projects/860039810193/locations/us-central1/builds/0bd3dd0e-221e-40e3-97aa-e4ede175fefd",
+      "sourceReferenceSha256": "6a7fd6cacd1880f38ca575e51a27e266deca4f919d4ff08eec03a7ff45346a4a"
+    },
+    {
+      "id": "resendInvite",
+      "group": "baseline",
+      "revision": "resendinvite-00001-nuv",
+      "build": "projects/860039810193/locations/us-central1/builds/30e8f58b-e5a3-458b-8604-948fb44c1c61",
+      "sourceReferenceSha256": "0b0c15e52336ca43d8f4f50e821373039ac23de576a74604d06c4b67adab6ef1"
+    },
+    {
+      "id": "restoreMember",
+      "group": "m1",
+      "revision": "restoremember-00001-boy",
+      "build": "projects/860039810193/locations/us-central1/builds/0bd3dd0e-221e-40e3-97aa-e4ede175fefd",
+      "sourceReferenceSha256": "e3db83b75c2603f7b24d25e187edfb5b0f1bfbaf709f92850ef555238fcd97d4"
+    }
+  ],
+  "rulesPre": {
+    "rulesetName": "projects/finapp-staging/rulesets/cbfcc160-cd1e-4466-a016-e5ff1f5a8256",
+    "canonicalSha256": "f117e489f9549da9083c19bdf4104b3651aa500061aa52426f09cb6fe492adda",
+    "rawSha256": "f8b4cae2a8c20254071b1a2ddf5880ecc166934e4613dc9fa6d0459b6c2053d8",
+    "sourceBytes": 23936
+  },
+  "rulesTarget": {
+    "canonicalSha256": "c4fe4c097c333f71d971691a2c3be24d15434220bd5f9574fb761494874719fd",
+    "rawSha256": "c4fe4c097c333f71d971691a2c3be24d15434220bd5f9574fb761494874719fd",
+    "sourceBytes": 24015,
+    "source": "git 714d0f91:firestore.rules (LF)"
+  },
+  "rollback": {
+    "note": "The rollback publishes the FRESH backup of the live pre-release Rules (CRLF form of the round-2 file); the blob is the reviewed text it must equal after CRLF normalisation.",
+    "canonicalSha256": "f117e489f9549da9083c19bdf4104b3651aa500061aa52426f09cb6fe492adda",
+    "blobFile": "rules/r2-8526a791-firestore.rules",
+    "blobSha256": "f117e489f9549da9083c19bdf4104b3651aa500061aa52426f09cb6fe492adda",
+    "blobBytes": 23595,
+    "blobCrlfSha256": "f8b4cae2a8c20254071b1a2ddf5880ecc166934e4613dc9fa6d0459b6c2053d8",
+    "blobCrlfBytes": 23936
+  },
+  "priorEvidence": [
+    {
+      "root": "evidence",
+      "path": "orchestrator-result.json",
+      "sha256": "9e51444f11ae380f491756053c2779f5b01be436102f449b99cf7a3eb18ccb17",
+      "bytes": 2041
+    },
+    {
+      "root": "evidence",
+      "path": "orchestrator-state.json",
+      "sha256": "efce7ed9944b2976b4f460ebb724899a4e1b8ec8f83874b84d537ff9ac98b301",
+      "bytes": 1665
+    },
+    {
+      "root": "evidence",
+      "path": "orchestrator-journal.jsonl",
+      "sha256": "24af82d2705477e9feb119f2c7ab0cc9262fa2e08cd6bc77be341c8b6ea2384a",
+      "bytes": 5253
+    },
+    {
+      "root": "evidence",
+      "path": "m1-stg-functions-state-final-rev8.json",
+      "sha256": "3bb35a4fab8828916500f62981aee721ddba0b508a56bbdaf57ecfe1386a82ae",
+      "bytes": 7190
+    },
+    {
+      "root": "evidence",
+      "path": "m1-stg-functions-state-pre-rev8.json",
+      "sha256": "4573c34ae339e82eed646e14854436de457226282915ea79839f0bb645ae4d3e",
+      "bytes": 7190
+    },
+    {
+      "root": "evidence",
+      "path": "m1-stg-rules-state-final-rev8.jsonl",
+      "sha256": "34013ce63f194d0f25961898a3a3dc8aa7bf22f5e2e5f9bd8c5eaff00aa26caf",
+      "bytes": 612
+    },
+    {
+      "root": "evidence",
+      "path": "m1-stg-rules-state-pre-rev8.jsonl",
+      "sha256": "0402893aa97cfac2784e18602186c52cef0dcf94d84ca1e0fe15791e062de165",
+      "bytes": 612
+    },
+    {
+      "root": "run",
+      "path": "result-verify-clean-1790091986509.json",
+      "sha256": "c9536767be13843097b3f0d3a19da5f333669f90c06e63263cde6d57e11eb829",
+      "bytes": 567
+    },
+    {
+      "root": "run",
+      "path": "result-cleanup-1790091971187.json",
+      "sha256": "7f22dd63ecfeddc97b1b992accafa200af3942ad07b63193a2a07cafa675da1c",
+      "bytes": 562
+    },
+    {
+      "root": "run",
+      "path": "journal.jsonl",
+      "sha256": "a3ee7d360f4d4e92c2deab4527e66b257c91d957ad9015dabe4e0eecee596205",
+      "bytes": 6694
+    }
+  ],
+  "priorRunIds": [
+    "bbb573d8",
+    "acf785fd"
+  ]
+}

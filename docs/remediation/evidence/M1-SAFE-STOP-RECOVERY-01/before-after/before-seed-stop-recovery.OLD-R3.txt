@@ -1,0 +1,14 @@
+FAIL s1 seed: the first Auth create fails in the connect phase -> exit 2, kind transport-not-dispatched (the old runner: kind transport)
+     detail: {"preflight":0,"seed":2,"stop":{"kind":"transport"}}
+FAIL s1 seed: intent-before-dispatch is kept (AUTH_CREATE_MAY_BE_SENT precedes the failure) and the proven non-dispatch is journaled for the same key before MODE_STOP
+PASS s1 seed: no second create (no retry): only one create intent, no company/commit intents, 0 acknowledged creates, 0 operator commits
+FAIL s1 RECOVERY: cleanup after a proven pre-dispatch stop completes (exit 0, zero deletes) and verify-clean passes - the OLD runner refuses (exit 3, G2/G3)
+     detail: {"accounts":0,"cleanup":3,"verifyClean":null,"failures":[2,"cleanup: refused without deletes: G2 STOP in seed of kind transport; G3 auth user admin may exist without recorded uid"]}
+FAIL s2 seed: a failure AFTER the request reached the provider (account created, answer lost) is NOT pre-dispatch: kind transport, dispatch unknown, no NOT_DISPATCHED event
+     detail: {"seed":2,"stop":{"kind":"transport"},"accounts":1}
+PASS s2 FAIL-CLOSED: cleanup REFUSES (exit 3, no deletes) - the possibly created account has no recorded uid; it is still there afterwards
+FAIL s3 BACKSTOP: even if a stop WAS wrongly classified as pre-dispatch, cleanup looks the exact synthetic subject up and REFUSES (G4) while the account exists - no deletes
+     detail: {"seed":"transport","accounts":1,"cleanup":3,"reason":"cleanup: refused without deletes: G2 STOP in seed of kind transport; G3 auth user admin may exist without recorded uid; G4 auth account does not match manifest"}
+FAIL s4 an abort timeout (outcome unknown) keeps the old behaviour: kind transport, dispatch unknown, cleanup REFUSES (exit 3)
+     detail: {"seed":"transport","cleanup":3}
+SEED_STOP_RECOVERY_EMULATOR FAIL 2/8 (package under test: D:\projects\finapp\.runtime\m1-r3-staging)

@@ -1,0 +1,15 @@
+{
+  "gh": {
+    "kind": "success"
+  },
+  "firebase": {
+    "deploy": "success",
+    "rollback": "success"
+  },
+  "export": "no-metadata",
+  "stagingTools": {},
+  "smoke": {},
+  "readiness": {
+    "kind": "ready"
+  }
+}

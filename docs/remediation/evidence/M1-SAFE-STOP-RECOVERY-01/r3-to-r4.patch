@@ -1,0 +1,688 @@
+--- a/m1-core.mjs
++++ b/m1-core.mjs
+@@ -48,11 +48,21 @@
+ // (the browser flow itself failed) leave the manifest and transport trustworthy
+ // enough for cleanup. Every other kind — guard, transport, manifest, unexpected
+ // exception — makes cleanup refuse and write a recovery manifest instead.
+-export const CLEANUP_SAFE_STOP_KINDS = Object.freeze(['assertion', 'ui-flow'])
++// Closed set of reason codes that PROVE a transport failure happened in the connect phase (no byte of the request sent); see classifyFetchError in m1-transport.mjs.
++export const PRE_DISPATCH_REASON_CODES = Object.freeze(['connect-timeout', 'connection-refused', 'dns', 'network-unreachable', 'tls-verify'])
++// `transport-not-dispatched` (M1-SAFE-STOP-RECOVERY-01) is a transport failure of the CONNECT phase: no byte of the request can have been sent. It is safe only
++// together with its journaled proof (see assessCleanup G2/G3) and the live exact-subject lookup of G4. A plain `transport` stop (unknown outcome) still refuses.
++export const CLEANUP_SAFE_STOP_KINDS = Object.freeze(['assertion', 'ui-flow', 'transport-not-dispatched'])
+ export class Stop extends Error {
+-  constructor(step, reason, kind = 'integrity') { super(`${step}: ${reason}`); this.step = step; this.reason = reason; this.kind = kind }
++  // `evidence` is optional and holds ONLY closed-set / numeric fields (reasonCode, dispatch, elapsedMs) - never text taken from an underlying error.
++  constructor(step, reason, kind = 'integrity', evidence = {}) {
++    super(`${step}: ${reason}`); this.step = step; this.reason = reason; this.kind = kind
++    if (evidence.reasonCode !== undefined) this.reasonCode = evidence.reasonCode
++    if (evidence.dispatch !== undefined) this.dispatch = evidence.dispatch
++    if (evidence.elapsedMs !== undefined) this.elapsedMs = evidence.elapsedMs
++  }
+ }
+-export const stop = (step, reason, kind) => { throw new Stop(step, reason, kind) }
++export const stop = (step, reason, kind, evidence) => { throw new Stop(step, reason, kind, evidence) }
+ export const sha256 = value => createHash('sha256').update(value).digest('hex')
+ 
+ export function gitState() {
+--- a/m1-orchestrator.ps1
++++ b/m1-orchestrator.ps1
+@@ -16,7 +16,7 @@
+ Run (local rehearsal against emulators and no-network stubs):
+   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <pkg>\m1-orchestrator.ps1
+       -RunProfile rehearsal -WebConfig <abs> -Node22Dir <abs> -ExportUri gs://<bucket>/<path> -EvidenceRoot <new abs dir under
+-      D:\projects\finapp\.runtime\m1-r3-rehearsal\> -Scenario <abs scenario json> [-SmokeMode emulator|stub]
++      D:\projects\finapp\.runtime\m1-r4-rehearsal\> -Scenario <abs scenario json> [-SmokeMode emulator|stub]
+       [-PriorEvidenceRoot <abs> -PriorRunRoot <abs>]   (rehearsal only)
+ 
+ Steps:
+@@ -70,7 +70,7 @@
+ $PRE       = 'f117e489f9549da9083c19bdf4104b3651aa500061aa52426f09cb6fe492adda'
+ $TARGET    = 'c4fe4c097c333f71d971691a2c3be24d15434220bd5f9574fb761494874719fd'
+ $M1List    = @('changeMemberRole', 'disableMember', 'restoreMember', 'removeMember', 'listCompanyMembers')
+-$RehearsalBase = 'D:\projects\finapp\.runtime\m1-r3-rehearsal\'
++$RehearsalBase = 'D:\projects\finapp\.runtime\m1-r4-rehearsal\'
+ $PriorEvidenceDefault = 'D:\projects\finapp\.runtime\m1-stg-rev8-8526a79'
+ $PriorRunDefault      = 'D:\projects\finapp\.runtime\m1-staging-run-8526a79-rev8'
+ $ExportMaxAgeMinutes  = 30
+@@ -91,8 +91,8 @@
+ if ($RunProfile -eq 'staging') {
+   if ($PSBoundParameters.ContainsKey('EvidenceRoot') -or $PSBoundParameters.ContainsKey('Scenario') -or $PSBoundParameters.ContainsKey('SmokeMode') -or $PSBoundParameters.ContainsKey('PriorEvidenceRoot') -or $PSBoundParameters.ContainsKey('PriorRunRoot')) { Refuse-Init 'staging profile takes no EvidenceRoot/Scenario/SmokeMode/Prior override' }
+   if ($stubVars.Count -gt 0) { Refuse-Init 'stub environment variables present' }
+-  $Ev       = Join-Path $R 'm1-stg-r3v5-714d0f91'
+-  $RunDir   = Join-Path $R 'm1-staging-run-714d0f91-v5'
++  $Ev       = Join-Path $R 'm1-stg-r4-714d0f91'
++  $RunDir   = Join-Path $R 'm1-staging-run-714d0f91-v6'
+   $PriorEv  = $PriorEvidenceDefault
+   $PriorRun = $PriorRunDefault
+ } else {
+@@ -118,7 +118,7 @@
+ $nodeCmd = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+ if (-not $nodeCmd) { Refuse-Init 'node not found' }
+ $NodeExe = $nodeCmd.Source
+-if (-not (Test-Path -LiteralPath (Join-Path $R 'm1-r3-rehearsal')) -and $RunProfile -eq 'rehearsal') { New-Item -ItemType Directory -Path (Join-Path $R 'm1-r3-rehearsal') | Out-Null }
++if (-not (Test-Path -LiteralPath (Join-Path $R 'm1-r4-rehearsal')) -and $RunProfile -eq 'rehearsal') { New-Item -ItemType Directory -Path (Join-Path $R 'm1-r4-rehearsal') | Out-Null }
+ try { New-Item -ItemType Directory -Path $Ev -ErrorAction Stop | Out-Null } catch { Refuse-Init 'could not create evidence directory' }
+ if ($RunProfile -eq 'rehearsal') {
+   $env:M1_STUB_SCENARIO    = $Scenario
+--- a/m1-smoke.mjs
++++ b/m1-smoke.mjs
+@@ -26,6 +26,7 @@
+ import fs from 'node:fs'
+ import {
+   EXPECTED_HEAD, guardRun, privateDir, loadStagingWebConfig, journal, writeOnce, readJson, newFixturePlan, stop, Stop, saveFixture, readJournal, sha256, CLEANUP_SAFE_STOP_KINDS,
++  PRE_DISPATCH_REASON_CODES,
+   encodeFields, decodeFields, randomUUID, MAX_DOCUMENTS, MAX_AUTH_USERS, DOC_BUDGET,
+ } from './m1-core.mjs'
+ import { makeTransport } from './m1-transport.mjs'
+@@ -109,6 +110,11 @@
+ }
+ 
+ // ── seed ────────────────────────────────────────────────────────────────────
++/** After a creation intent: when the transport PROVED that nothing was sent, say so in the journal (same key, the very next event). Unknown outcomes journal nothing. */
++function journalNotDispatched(log, event, fields, error) {
++  if (error instanceof Stop && error.dispatch === 'not-dispatched' && PRE_DISPATCH_REASON_CODES.includes(error.reasonCode)) log.append(event, { ...fields, reasonCode: error.reasonCode })
++}
++
+ async function seed(t, runDir, log) {
+   const fixtureFile = path.join(runDir, 'fixture.json')
+   const fx = readJson(fixtureFile)
+@@ -118,7 +124,7 @@
+ 
+   for (const u of [admin, second, viewer]) {
+     log.append('AUTH_CREATE_MAY_BE_SENT', { key: u.key })
+-    u.uid = await t.createAuthUser(u)
++    try { u.uid = await t.createAuthUser(u) } catch (error) { journalNotDispatched(log, 'AUTH_CREATE_NOT_DISPATCHED', { key: u.key }, error); throw error }
+     saveFixture(fixtureFile, fx, log)
+   }
+   const idAdmin = await t.signIn(admin)
+@@ -126,7 +132,8 @@
+ 
+   for (const [key, owner, token] of [['A', admin, idAdmin], ['B', second, idSecond]]) {
+     log.append('CREATE_COMPANY_MAY_BE_SENT', { company: key })
+-    const r = await t.call('createCompany', token, { idempotencyKey: randomUUID(), ownerName: owner.name, companyName: fx.companies[key].name, legalType: 'ip' })
++    let r
++    try { r = await t.call('createCompany', token, { idempotencyKey: randomUUID(), ownerName: owner.name, companyName: fx.companies[key].name, legalType: 'ip' }) } catch (error) { journalNotDispatched(log, 'CREATE_COMPANY_NOT_DISPATCHED', { company: key }, error); throw error }
+     check(`seed.createCompany-${key}`, r.ok && typeof r.result?.companyId === 'string', r.ok ? undefined : { status: r.status, appCode: r.appCode })
+     fx.companies[key].id = r.result.companyId
+     saveFixture(fixtureFile, fx, log)
+@@ -361,13 +368,17 @@
+     if (e.event === 'MODE_STOP' && !CLEANUP_SAFE_STOP_KINDS.includes(e.kind) && !(e.mode === 'cleanup' && e.kind === 'cleanup-refused')) {
+       failures.push(`G2 STOP in ${e.mode} of kind ${e.kind ?? 'unknown'}`)
+     }
++    if (e.event === 'MODE_STOP' && e.kind === 'transport-not-dispatched' && (e.dispatch !== 'not-dispatched' || !PRE_DISPATCH_REASON_CODES.includes(e.reasonCode))) failures.push(`G2 transport stop in ${e.mode} without proof that nothing was dispatched`)
+   }
+   if (open) failures.push(`G2 mode ${open} never finished`)
+ 
+   // G3 — every possibly-sent creation has a recorded identifier.
+-  for (const e of events) {
+-    if (e.event === 'AUTH_CREATE_MAY_BE_SENT' && !fx.users[e.key]?.uid) failures.push(`G3 auth user ${e.key} may exist without recorded uid`)
+-    if (e.event === 'CREATE_COMPANY_MAY_BE_SENT' && !fx.companies[e.company]?.id) failures.push(`G3 company ${e.company} may exist without recorded id`)
++  // The ONLY resolution is the proof event journaled directly after the intent (nothing can lie between them: the journal is written by one process, in order) for the same
++  // key, carrying a connect-phase reason code. Anything else - including a plain transport stop whose outcome is unknown - keeps the creation unresolved.
++  const provenNotDispatched = (i, event, field, value) => events[i + 1]?.event === event && events[i + 1][field] === value && PRE_DISPATCH_REASON_CODES.includes(events[i + 1].reasonCode)
++  for (const [i, e] of events.entries()) {
++    if (e.event === 'AUTH_CREATE_MAY_BE_SENT' && !fx.users[e.key]?.uid && !provenNotDispatched(i, 'AUTH_CREATE_NOT_DISPATCHED', 'key', e.key)) failures.push(`G3 auth user ${e.key} may exist without recorded uid`)
++    if (e.event === 'CREATE_COMPANY_MAY_BE_SENT' && !fx.companies[e.company]?.id && !provenNotDispatched(i, 'CREATE_COMPANY_NOT_DISPATCHED', 'company', e.company)) failures.push(`G3 company ${e.company} may exist without recorded id`)
+   }
+ 
+   // G4 — ownership of every synthetic resource (read-only).
+@@ -538,8 +549,9 @@
+   const kind = error instanceof Stop ? error.kind : 'unexpected'
+   const exitCode = kind === 'cleanup-refused' ? EXIT.CLEANUP_REFUSED
+     : opts.mode === 'cleanup' && deletesMayHaveBeenSent ? EXIT.CLEANUP_PARTIAL : EXIT.STOP
+-  if (log) log.append('MODE_STOP', { mode: opts.mode, kind, reason, exitCode, deletesMayHaveBeenSent, counters })
+-  if (runDir && fs.existsSync(runDir)) writeOnce(path.join(runDir, `result-${opts.mode}-${Date.now()}.json`), { mode: opts.mode, status: 'STOP', kind, reason, exitCode, deletesMayHaveBeenSent, results, counters })
++  const evidence = error instanceof Stop ? Object.fromEntries(['reasonCode', 'dispatch', 'elapsedMs'].filter(k => error[k] !== undefined).map(k => [k, error[k]])) : {}
++  if (log) log.append('MODE_STOP', { mode: opts.mode, kind, reason, ...evidence, exitCode, deletesMayHaveBeenSent, counters })
++  if (runDir && fs.existsSync(runDir)) writeOnce(path.join(runDir, `result-${opts.mode}-${Date.now()}.json`), { mode: opts.mode, status: 'STOP', kind, reason, ...evidence, exitCode, deletesMayHaveBeenSent, results, counters })
+   console.error(`M1_SMOKE_STOP mode=${opts.mode} kind=${kind} exit=${exitCode} ${reason}`)
+   if (!(error instanceof Stop)) console.error(error?.stack?.split('\n').slice(0, 3).join('\n'))
+   process.exitCode = exitCode
+--- a/m1-transport.mjs
++++ b/m1-transport.mjs
+@@ -5,8 +5,50 @@
+ import { createRequire } from 'node:module'
+ import { REPO, M1_CALLABLES, SEED_CALLABLES, INVITATION_CALLABLES, stop } from './m1-core.mjs'
+ 
++// ── transport failure classification (M1-SAFE-STOP-RECOVERY-01) ─────────────────────────────────────────────────────────────────────
++// The consumed R3 run stopped with `transport: network failure POST accounts` after 10.7 s and the durable evidence could not say whether the request
++// ever left the process. fetch() rejects for very different reasons. Only a failure of the CONNECT phase (name resolution, TCP connect, the undici
++// connect timer, TLS certificate verification) proves that no byte of the request was sent; everything else (a reset or close while or after the request
++// was written, a response timeout, the runner's own abort, an error of unknown shape) may have happened after the provider received the mutation and
++// stays an UNKNOWN outcome - fail closed. The result is a closed set of codes: no URL, host, message text or stack of the underlying error is kept.
++// (PRE_DISPATCH_REASON_CODES, the closed set of connect-phase codes, lives in m1-core.mjs: the transport, the seed journal and the cleanup gate share it.)
++const CONNECT_PHASE_CODES = new Map([['ECONNREFUSED', 'connection-refused'], ['ENETUNREACH', 'network-unreachable'], ['EHOSTUNREACH', 'network-unreachable'], ['ENETDOWN', 'network-unreachable'], ['ETIMEDOUT', 'connect-timeout']])
++const NAME_RESOLUTION_CODES = new Map([['ENOTFOUND', 'dns'], ['EAI_AGAIN', 'dns'], ['EAI_FAIL', 'dns']])
++const TLS_VERIFY_CODES = new Set(['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID'])
++const object = v => (v !== null && typeof v === 'object' ? v : null)
++function preDispatchCode(e) {
++  if (!object(e)) return null
++  if (e.code === 'UND_ERR_CONNECT_TIMEOUT') return 'connect-timeout'
++  if (typeof e.code === 'string' && CONNECT_PHASE_CODES.has(e.code) && e.syscall === 'connect') return CONNECT_PHASE_CODES.get(e.code)
++  if (typeof e.code === 'string' && NAME_RESOLUTION_CODES.has(e.code) && e.syscall === 'getaddrinfo') return NAME_RESOLUTION_CODES.get(e.code)
++  if (typeof e.code === 'string' && TLS_VERIFY_CODES.has(e.code)) return 'tls-verify'
++  return null
++}
++/** Pure. Returns { reasonCode, dispatch } with dispatch 'not-dispatched' (proven: the connect phase failed) or 'unknown'. Never throws. */
++export function classifyFetchError(error) {
++  try {
++    const top = object(error)
++    if (top?.name === 'TimeoutError') return { reasonCode: 'abort-timeout', dispatch: 'unknown' }
++    const node = object(top?.cause) ?? top
++    if (node && Array.isArray(node.errors) && node.errors.length > 0) {
++      // dual-stack connect attempts: every single attempt must have failed in connect()/name resolution
++      const codes = node.errors.map(preDispatchCode)
++      if (codes.every(Boolean)) return { reasonCode: codes.includes('connect-timeout') ? 'connect-timeout' : codes[0], dispatch: 'not-dispatched' }
++      return { reasonCode: 'other', dispatch: 'unknown' }
++    }
++    const pre = preDispatchCode(node)
++    if (pre) return { reasonCode: pre, dispatch: 'not-dispatched' }
++    if (node?.code === 'ECONNRESET') return { reasonCode: 'connection-reset', dispatch: 'unknown' }
++    if (node?.code === 'UND_ERR_SOCKET') return { reasonCode: 'socket-closed', dispatch: 'unknown' }
++    if (node?.code === 'UND_ERR_HEADERS_TIMEOUT' || node?.code === 'UND_ERR_BODY_TIMEOUT') return { reasonCode: 'response-timeout', dispatch: 'unknown' }
++  } catch { /* an unclassifiable error is an unknown outcome */ }
++  return { reasonCode: 'other', dispatch: 'unknown' }
++}
++
+ /** `webConfig` is the result of loadStagingWebConfig(--web-config) for staging. */
+-export async function makeTransport(target, { counters, webConfig }) {
++export async function makeTransport(target, { counters, webConfig, requestTimeoutMs }) {
++  // The request timeout is 30 s. Only a test may shorten it (100..30000 ms); anything else keeps 30 s.
++  const timeoutMs = Number.isInteger(requestTimeoutMs) && requestTimeoutMs >= 100 && requestTimeoutMs <= 30000 ? requestTimeoutMs : 30000
+   if (target.name === 'staging' && webConfig?.projectId !== 'finapp-staging') stop('transport', 'verified staging web config required', 'integrity')
+   const docsRoot = `${target.firestore}/v1/projects/${target.project}/databases/(default)/documents`
+   let operatorHeaders
+@@ -50,11 +92,14 @@
+     if (bearer) headers.authorization = `Bearer ${bearer}`
+     counters.requests++
+     let res
++    const startedAt = Date.now()
+     try {
+-      res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(30000) })
+-    } catch {
+-      // Outcome unknown (timeout/network): never classified as a smoke assertion.
+-      stop('transport', `network failure ${method} ${new URL(url).pathname.split('/').slice(-1)[0]}`, 'transport')
++      res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(timeoutMs) })
++    } catch (error) {
++      // Never classified as a smoke assertion. The reason text stays fixed; reasonCode/dispatch/elapsedMs are closed-set evidence. Only a failure of the connect phase
++      // is a PROVEN non-dispatch (kind transport-not-dispatched); every other outcome stays unknown (kind transport) and refuses cleanup. No retry, ever.
++      const { reasonCode, dispatch } = classifyFetchError(error)
++      stop('transport', `network failure ${method} ${new URL(url).pathname.split('/').slice(-1)[0]}`, dispatch === 'not-dispatched' ? 'transport-not-dispatched' : 'transport', { reasonCode, dispatch, elapsedMs: Date.now() - startedAt })
+     }
+     const text = await res.text()
+     let json = null
+--- a/tests/collect-results.mjs
++++ b/tests/collect-results.mjs
+@@ -8,7 +8,7 @@
+ import { fileURLToPath } from 'node:url'
+ 
+ const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+-const BASE = 'D:\\projects\\finapp\\.runtime\\m1-r3-rehearsal'
++const BASE = 'D:\\projects\\finapp\\.runtime\\m1-r4-rehearsal'
+ const OUT = path.join(PKG, 'results', 'rehearsal')
+ fs.rmSync(OUT, { recursive: true, force: true })
+ fs.mkdirSync(OUT, { recursive: true })
+--- a/tests/direct-emulator-smoke.mjs
++++ b/tests/direct-emulator-smoke.mjs
+@@ -11,7 +11,7 @@
+ const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+ const H = '714d0f91c60a582ee87dc7da82d6249b3106329f'
+ const NEW = 'c4fe4c097c333f71d971691a2c3be24d15434220bd5f9574fb761494874719fd'
+-const base = path.join('D:\\projects\\finapp\\.runtime', `m1-r3-direct-${Date.now()}`)
++const base = path.join('D:\\projects\\finapp\\.runtime', `m1-r4-direct-${Date.now()}`)
+ fs.mkdirSync(base)
+ const runDir = path.join(base, 'run')
+ const evidence = path.join(base, 'rules-evidence.jsonl')
+--- a/tests/mutation-checks-extra.mjs
++++ b/tests/mutation-checks-extra.mjs
+@@ -5,7 +5,7 @@
+ import { fileURLToPath } from 'node:url'
+ 
+ const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+-const MUTANTS = 'D:\\projects\\finapp\\.runtime\\m1-r3-mutants-extra'
++const MUTANTS = 'D:\\projects\\finapp\\.runtime\\m1-r4-mutants-extra'
+ fs.mkdirSync(MUTANTS, { recursive: true })
+ const dir = path.join(MUTANTS, `m29-settle-${Date.now()}`)
+ fs.cpSync(PKG, dir, { recursive: true, filter: src => !src.includes(`${path.sep}results`) })
+--- a/tests/mutation-checks.mjs
++++ b/tests/mutation-checks.mjs
+@@ -1,6 +1,6 @@
+ // Controlled local mutations: each mutant is a COPY of the package with one deliberate defect
+ // (originals are never edited). A mutation counts as "detected" when the relevant test outcome
+-// changes from the expected safe result. Copies live under .runtime\m1-r3-mutants and are
++// changes from the expected safe result. Copies live under .runtime\m1-r4-mutants and are
+ // removed afterwards; only the summary is kept.
+ import fs from 'node:fs'
+ import path from 'node:path'
+@@ -8,8 +8,8 @@
+ import { fileURLToPath } from 'node:url'
+ 
+ const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+-const MUTANTS = 'D:\\projects\\finapp\\.runtime\\m1-r3-mutants'
+-const BASE = 'D:\\projects\\finapp\\.runtime\\m1-r3-rehearsal'
++const MUTANTS = 'D:\\projects\\finapp\\.runtime\\m1-r4-mutants'
++const BASE = 'D:\\projects\\finapp\\.runtime\\m1-r4-rehearsal'
+ const PRIOR_EV = 'D:\\projects\\finapp\\.runtime\\m1-stg-rev8-8526a79'
+ const PRIOR_RUN = 'D:\\projects\\finapp\\.runtime\\m1-staging-run-8526a79-rev8'
+ const H = '714d0f91c60a582ee87dc7da82d6249b3106329f'
+--- a/tests/node-helper-tests.mjs
++++ b/tests/node-helper-tests.mjs
+@@ -511,7 +511,7 @@
+   record('orchestrator source: a 60-second Rules settle wait (staging only) sits between the confirmed deploy and the first smoke mode', /\$RulesSettleSeconds\s+= if \(\$RunProfile -eq 'staging'\) \{ 60 \} else \{ 0 \}/.test(orch) && at(/RULES_SETTLE_WAIT/) > at(/\$State\.rulesTargetVerified = \$true/) && at(/RULES_SETTLE_WAIT/) < at(/foreach \(\$stage in/) && /Start-Sleep -Seconds \$RulesSettleSeconds/.test(orch))
+   record('orchestrator source: smoke modes are seed, ui, api, ui-r3 in this order', /@\('seed', 'ui', 'api', 'ui-r3'\)/.test(orch))
+   record('orchestrator source: the Rules constants are the pinned pre-release and target canonical hashes', orch.includes(`$PRE       = '${RULES_PRE}'`) && orch.includes(`$TARGET    = '${RULES_TARGET}'`) && orch.includes(`$H         = '${H}'`) && orch.includes("$CiRunId   = '36830077757'"))
+-  record('orchestrator source: the fixed repository is the release clone and the evidence/run names are new (no rev8 path can be reused)', orch.includes("$Repo      = 'D:\\projects\\finapp\\m1-release-714d0f91'") && orch.includes("'m1-stg-r3v5-714d0f91'") && orch.includes("'m1-staging-run-714d0f91-v5'") && !/m1-stg-rev8-8526a79'\)|m1-staging-run-8526a79-rev8'\)/.test(orch.replace(/\$Prior\w+\s*=\s*'[^']+'/g, '')))
++  record('orchestrator source: the fixed repository is the release clone and the evidence/run names are new (no rev8 path can be reused)', orch.includes("$Repo      = 'D:\\projects\\finapp\\m1-release-714d0f91'") && orch.includes("'m1-stg-r4-714d0f91'") && orch.includes("'m1-staging-run-714d0f91-v6'") && !/m1-stg-rev8-8526a79'\)|m1-staging-run-8526a79-rev8'\)/.test(orch.replace(/\$Prior\w+\s*=\s*'[^']+'/g, '')))
+ }
+ 
+ // ── Budgets of the R3 smoke ─────────────────────────────────────────────────────────────────────
+--- a/tests/ps51-orchestrator-tests.ps1
++++ b/tests/ps51-orchestrator-tests.ps1
+@@ -9,7 +9,7 @@
+ param([Parameter(Mandatory = $true)][ValidateSet('stub', 'emulator', 'helpers')][string]$Set)
+ Set-StrictMode -Version 2.0
+ $Pkg = Split-Path $PSScriptRoot -Parent
+-$Base = 'D:\projects\finapp\.runtime\m1-r3-rehearsal'
++$Base = 'D:\projects\finapp\.runtime\m1-r4-rehearsal'
+ $PriorEv = 'D:\projects\finapp\.runtime\m1-stg-rev8-8526a79'
+ $PriorRun = 'D:\projects\finapp\.runtime\m1-staging-run-8526a79-rev8'
+ $Repo = 'D:\projects\finapp\m1-release-714d0f91'
+@@ -595,7 +595,7 @@
+     $o5 = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $orch -RunProfile staging -WebConfig 'relative.env' -Node22Dir 'relative' -ExportUri $bad
+     Record "orchestrator staging: ExportUri '$bad' refused at init (exit 3)" ($LASTEXITCODE -eq 3 -and ($o5 -join ' ') -match 'ExportUri') ($o5 -join ' ')
+   }
+-  Record 'orchestrator staging: no R3 staging evidence or run directory was created' ((-not (Test-Path -LiteralPath 'D:\projects\finapp\.runtime\m1-stg-r3v5-714d0f91')) -and (-not (Test-Path -LiteralPath 'D:\projects\finapp\.runtime\m1-staging-run-714d0f91-v5'))) $null
++  Record 'orchestrator staging: no R3 staging evidence or run directory was created' ((-not (Test-Path -LiteralPath 'D:\projects\finapp\.runtime\m1-stg-r4-714d0f91')) -and (-not (Test-Path -LiteralPath 'D:\projects\finapp\.runtime\m1-staging-run-714d0f91-v6'))) $null
+   $o3 = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $orch -RunProfile rehearsal -WebConfig 'D:\projects\finapp\finapp\.env.staging.local' -Node22Dir 'C:\x' -ExportUri $gsUri -EvidenceRoot 'D:\projects\finapp\.runtime\elsewhere' -Scenario (Join-Path $Pkg 'stubs\scenarios\pass-stub-clean.json')
+   Record 'orchestrator rehearsal: evidence root outside rehearsal base refused (exit 3)' ($LASTEXITCODE -eq 3) ($o3 -join ' ')
+   $o4 = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $orch -RunProfile rehearsal -WebConfig 'D:\projects\finapp\finapp\.env.staging.local' -Node22Dir 'C:\x' -ExportUri $gsUri -EvidenceRoot (Join-Path $Base 'never-created') -Scenario (Join-Path $Pkg 'stubs\scenarios\pass-stub-clean.json') -PriorEvidenceRoot 'D:\projects\finapp\.runtime' -PriorRunRoot $PriorRun
+--- a/tests/run-orchestrator.ps1
++++ b/tests/run-orchestrator.ps1
+@@ -16,7 +16,7 @@
+ )
+ $Pkg = if ($PackageDir) { $PackageDir } else { Split-Path $PSScriptRoot -Parent }
+ $Node22 = 'D:\projects\finapp\.runtime\node22-portable\node-v22.23.3-win-x64'
+-$Base = 'D:\projects\finapp\.runtime\m1-r3-rehearsal'
++$Base = 'D:\projects\finapp\.runtime\m1-r4-rehearsal'
+ if (-not (Test-Path -LiteralPath $Base)) { New-Item -ItemType Directory -Path $Base | Out-Null }
+ if (-not $EvidenceRoot) { $EvidenceRoot = $Base + '\' + $Name + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') }
+ $logDir = Join-Path $Base '_console'
+--- /dev/null
++++ b/tests/fault-auth-create-connect-timeout.cjs
+@@ -0,0 +1,14 @@
++// Test-only fault injection (emulator, M1-SAFE-STOP-RECOVERY-01 scenario 1). Preloaded with --require into ONE seed process: the first Auth account
++// creation (POST .../projects/<p>/accounts) is rejected the way undici reports a connect timer expiry - the request is NOT forwarded anywhere.
++// Every other request passes. Never used by the package.
++'use strict'
++const originalFetch = globalThis.fetch
++globalThis.fetch = async function faultyFetch(input, init) {
++  const url = typeof input === 'string' ? input : String(input && input.url ? input.url : input)
++  if (/\/projects\/[^/]+\/accounts$/.test(new URL(url).pathname) && (init && init.method) === 'POST') {
++    await new Promise(r => setTimeout(r, 50))
++    const cause = Object.assign(new Error('Connect Timeout Error (injected)'), { name: 'ConnectTimeoutError', code: 'UND_ERR_CONNECT_TIMEOUT' })
++    throw Object.assign(new TypeError('fetch failed'), { cause })
++  }
++  return originalFetch(input, init)
++}
+--- /dev/null
++++ b/tests/fault-auth-create-reset-after-send.cjs
+@@ -0,0 +1,14 @@
++// Test-only fault injection (emulator, scenario 2). The first Auth account creation IS forwarded and succeeds at the provider, then the answer is
++// lost: the connection is reported as reset while reading. The account exists, the runner never learns its uid. Never used by the package.
++'use strict'
++const originalFetch = globalThis.fetch
++globalThis.fetch = async function faultyFetch(input, init) {
++  const url = typeof input === 'string' ? input : String(input && input.url ? input.url : input)
++  if (/\/projects\/[^/]+\/accounts$/.test(new URL(url).pathname) && (init && init.method) === 'POST') {
++    const res = await originalFetch(input, init)
++    await res.arrayBuffer()
++    const cause = Object.assign(new Error('read ECONNRESET (injected)'), { code: 'ECONNRESET', syscall: 'read' })
++    throw Object.assign(new TypeError('fetch failed'), { cause })
++  }
++  return originalFetch(input, init)
++}
+--- /dev/null
++++ b/tests/fault-auth-create-sent-but-connect-timeout.cjs
+@@ -0,0 +1,14 @@
++// Test-only fault injection (emulator, scenario 3): a LYING error. The first Auth account creation is forwarded and succeeds, but the failure that is
++// reported has the shape of a connect-phase timeout. It checks that the cleanup gate does not trust the classification alone. Never used by the package.
++'use strict'
++const originalFetch = globalThis.fetch
++globalThis.fetch = async function faultyFetch(input, init) {
++  const url = typeof input === 'string' ? input : String(input && input.url ? input.url : input)
++  if (/\/projects\/[^/]+\/accounts$/.test(new URL(url).pathname) && (init && init.method) === 'POST') {
++    const res = await originalFetch(input, init)
++    await res.arrayBuffer()
++    const cause = Object.assign(new Error('Connect Timeout Error (injected, lying)'), { name: 'ConnectTimeoutError', code: 'UND_ERR_CONNECT_TIMEOUT' })
++    throw Object.assign(new TypeError('fetch failed'), { cause })
++  }
++  return originalFetch(input, init)
++}
+--- /dev/null
++++ b/tests/fault-auth-create-timeout-abort.cjs
+@@ -0,0 +1,11 @@
++// Test-only fault injection (emulator, scenario 4): the first Auth account creation fails with the runner's own abort (TimeoutError) - the outcome of
++// the request is unknown. Never used by the package.
++'use strict'
++const originalFetch = globalThis.fetch
++globalThis.fetch = async function faultyFetch(input, init) {
++  const url = typeof input === 'string' ? input : String(input && input.url ? input.url : input)
++  if (/\/projects\/[^/]+\/accounts$/.test(new URL(url).pathname) && (init && init.method) === 'POST') {
++    throw Object.assign(new Error('The operation was aborted due to timeout (injected)'), { name: 'TimeoutError' })
++  }
++  return originalFetch(input, init)
++}
+--- /dev/null
++++ b/tests/mutation-checks-recovery.mjs
+@@ -0,0 +1,56 @@
++// M1-SAFE-STOP-RECOVERY-01 - controlled mutations of the fix. Each mutant is a COPY of the package with one deliberate defect (the original is never edited);
++// "detected" = the relevant test file of the copy fails. The emulator scenarios need the Auth and Firestore emulators (demo project) on 9099/8080.
++import fs from 'node:fs'
++import os from 'node:os'
++import path from 'node:path'
++import { spawnSync } from 'node:child_process'
++import { fileURLToPath } from 'node:url'
++
++const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
++const MUT = fs.mkdtempSync(path.join(os.tmpdir(), 'm1-mut-recovery-'))
++const results = []
++function mutant(name, file, from, to, suites) {
++  const dir = path.join(MUT, String(results.length + 1))
++  fs.cpSync(PKG, dir, { recursive: true, filter: s => !s.includes(`${path.sep}results`) })
++  const f = path.join(dir, file)
++  const text = fs.readFileSync(f, 'utf8')
++  if (!text.includes(from)) throw new Error(`anchor not found in ${file}: ${from.slice(0, 70)}`)
++  fs.writeFileSync(f, text.replace(from, () => to))
++  const failed = []
++  for (const suite of suites) {
++    const r = spawnSync(process.execPath, [path.join(dir, 'tests', suite)], { encoding: 'utf8', cwd: dir, timeout: 20 * 60 * 1000 })
++    failed.push(...(r.stdout.match(/^FAIL .*$/gm) ?? []).map(l => l.slice(0, 110)))
++    if (r.status !== 0 && !(r.stdout.match(/^FAIL .*$/gm) ?? []).length) failed.push(`${suite} exited ${r.status}`)
++    if (failed.length) break
++  }
++  const detected = failed.length > 0
++  results.push({ mutation: name, detected, failed: failed.slice(0, 3) })
++  console.log(`${detected ? 'DETECTED' : 'NOT DETECTED'} ${name} ${JSON.stringify(failed.slice(0, 2))}`)
++}
++const C = ['transport-classification-tests.mjs'], E = ['seed-stop-recovery-emulator.mjs'], CE = [...C, ...E]
++const T = 'm1-transport.mjs', S = 'm1-smoke.mjs', K = 'm1-core.mjs'
++
++mutant('R1 ECONNRESET is reported as a connect-phase failure (a delivered request would count as not dispatched)', T, "if (node?.code === 'ECONNRESET') return { reasonCode: 'connection-reset', dispatch: 'unknown' }", "if (node?.code === 'ECONNRESET') return { reasonCode: 'connect-timeout', dispatch: 'not-dispatched' }", C)
++mutant('R2 the connect() syscall is no longer required for errno codes (ETIMEDOUT/ECONNREFUSED of a read count as connect-phase)', T, "CONNECT_PHASE_CODES.has(e.code) && e.syscall === 'connect'", 'CONNECT_PHASE_CODES.has(e.code)', C)
++mutant('R3 the runner\'s own abort timeout is reported as a connect-phase failure', T, "if (top?.name === 'TimeoutError') return { reasonCode: 'abort-timeout', dispatch: 'unknown' }", "if (top?.name === 'TimeoutError') return { reasonCode: 'connect-timeout', dispatch: 'not-dispatched' }", C)
++mutant('R4 an AggregateError is pre-dispatch when SOME attempt failed in connect()', T, 'codes.every(Boolean)', 'codes.some(Boolean)', C)
++mutant('R5 every transport failure is classified transport-not-dispatched', T, "dispatch === 'not-dispatched' ? 'transport-not-dispatched' : 'transport'", "'transport-not-dispatched'", C)
++mutant('R6 the STOP reason carries the raw text of the underlying error', T, "`network failure ${method} ${new URL(url).pathname.split('/').slice(-1)[0]}`", "`network failure ${method} ${new URL(url).pathname.split('/').slice(-1)[0]} ${String(error?.message)}`", C)
++mutant('R7 a second request (retry/probe) is added next to the fetch', T, 'res = await fetch(url, {', "try { await fetch(url, { method: 'HEAD' }) } catch { /* probe */ }\n      res = await fetch(url, {", C)
++mutant('R8 the elapsed time of the failed request is no longer recorded', T, 'elapsedMs: Date.now() - startedAt', 'elapsedMs: undefined', C)
++mutant('R9 the TLS verification codes are dropped from the connect-phase set but unknown codes are accepted', T, "if (typeof e.code === 'string' && TLS_VERIFY_CODES.has(e.code)) return 'tls-verify'", "if (typeof e.code === 'string') return 'tls-verify'", C)
++mutant('R10 the cleanup gate G3 never reports a creation without recorded identifier', S, "!provenNotDispatched(i, 'AUTH_CREATE_NOT_DISPATCHED', 'key', e.key)", 'false', E)
++mutant('R11 the proof event may be anywhere after the intent (not necessarily the very next event)', S, "events[i + 1]?.event === event && events[i + 1][field] === value && PRE_DISPATCH_REASON_CODES.includes(events[i + 1].reasonCode)", "events.slice(i + 1).some(x => x.event === event && x[field] === value && PRE_DISPATCH_REASON_CODES.includes(x.reasonCode))", E)
++mutant('R12 the proof event reason code is not checked against the connect-phase set', S, ' && PRE_DISPATCH_REASON_CODES.includes(events[i + 1].reasonCode)', '', E)
++mutant('R13 a plain transport stop (unknown outcome) counts as a safe cleanup stop kind', K, "['assertion', 'ui-flow', 'transport-not-dispatched']", "['assertion', 'ui-flow', 'transport-not-dispatched', 'transport']", E)
++mutant('R14 the G2 proof fields of a transport-not-dispatched stop are not verified', S, "if (e.event === 'MODE_STOP' && e.kind === 'transport-not-dispatched' && (e.dispatch !== 'not-dispatched' || !PRE_DISPATCH_REASON_CODES.includes(e.reasonCode))) failures.push(", 'if (false) failures.push(', E)
++mutant('R15 the proof event is journaled for every transport stop, also when the outcome is unknown', S, "if (error instanceof Stop && error.dispatch === 'not-dispatched' && PRE_DISPATCH_REASON_CODES.includes(error.reasonCode)) log.append(", "if (error instanceof Stop && error.dispatch !== undefined) log.append(", E)
++mutant('R16 the live exact-subject lookup no longer refuses an account that is not in the manifest (the backstop of a wrong classification)', S, "failures.push('G4 auth account does not match manifest')", 'void 0', E)
++mutant('R17 the seed journals no proof after a connect-phase failure (the recovery path is dead)', S, "try { u.uid = await t.createAuthUser(u) } catch (error) { journalNotDispatched(log, 'AUTH_CREATE_NOT_DISPATCHED', { key: u.key }, error); throw error }", 'u.uid = await t.createAuthUser(u)', E)
++
++fs.rmSync(MUT, { recursive: true, force: true })
++const undetected = results.filter(r => !r.detected).length
++fs.mkdirSync(path.join(PKG, 'results'), { recursive: true })
++fs.writeFileSync(path.join(PKG, 'results', 'mutation-checks-recovery.json'), `${JSON.stringify({ total: results.length, undetected, results, at: new Date().toISOString() }, null, 2)}\n`)
++console.log(`RECOVERY_MUTATION_CHECKS ${undetected ? 'FAIL' : 'PASS'} detected=${results.length - undetected}/${results.length}`)
++process.exitCode = undetected ? 1 : 0
+--- /dev/null
++++ b/tests/seed-stop-recovery-emulator.mjs
+@@ -0,0 +1,128 @@
++// M1-SAFE-STOP-RECOVERY-01 - emulator integration of the seed STOP -> cleanup recovery path with SYNTHETIC data only (demo-finapp, loopback).
++// Requires the Auth and Firestore emulators (auth 9099, firestore 8080) and the firestore.rules the other emulator suites load.
++//   node tests/seed-stop-recovery-emulator.mjs                                          (this package)
++//   M1_PKG_UNDER_TEST=<other package dir> node tests/seed-stop-recovery-emulator.mjs     (the OLD package: scenario 1 must show the defect there)
++// Each scenario runs the REAL m1-smoke.mjs (preflight, seed, cleanup, verify-clean, inventory) as separate processes; a fault-injection preload
++// (--require, test only) makes the FIRST Auth account creation fail the way the consumed staging run failed. Nothing here reaches a cloud.
++import fs from 'node:fs'
++import path from 'node:path'
++import http from 'node:http'
++import { spawnSync } from 'node:child_process'
++import { fileURLToPath } from 'node:url'
++
++const HERE = path.dirname(fileURLToPath(import.meta.url))
++const PKG = process.env.M1_PKG_UNDER_TEST ? path.resolve(process.env.M1_PKG_UNDER_TEST) : path.resolve(HERE, '..')
++const H = '714d0f91c60a582ee87dc7da82d6249b3106329f'
++const NEW_RULES = 'c4fe4c097c333f71d971691a2c3be24d15434220bd5f9574fb761494874719fd'
++const BASE = path.join('D:\\projects\\finapp\\.runtime', `m1-r4-recovery-test-${Date.now()}`)
++fs.mkdirSync(BASE)
++const results = []
++const record = (name, pass, detail) => { results.push({ name, pass: Boolean(pass), detail }); console.log(`${pass ? 'PASS' : 'FAIL'} ${name}`); if (!pass && detail !== undefined) console.log('     detail: ' + JSON.stringify(detail).slice(0, 600)) }
++
++// Loopback calls to the EMULATORS only, one connection per call (the emulators close idle keep-alive sockets, a pooled one would be reset).
++const emulatorCall = (port, method, urlPath, body) => new Promise((resolve, reject) => {
++  const headers = { authorization: 'Bearer owner', connection: 'close', ...(body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}) }
++  const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, headers, agent: false }, res => { let t = ''; res.on('data', d => { t += d }); res.on('end', () => resolve({ status: res.statusCode, text: t })) })
++  req.on('error', reject)
++  req.end(body)
++})
++async function clearEmulators() {
++  await emulatorCall(9099, 'DELETE', '/emulator/v1/projects/demo-finapp/accounts')
++  await emulatorCall(8080, 'DELETE', '/emulator/v1/projects/demo-finapp/databases/(default)/documents')
++}
++const emulatorAccounts = async () => {
++  const r = await emulatorCall(9099, 'POST', '/identitytoolkit.googleapis.com/v1/projects/demo-finapp/accounts:query', JSON.stringify({ returnSecureToken: false }))
++  const j = JSON.parse(r.text)
++  return Array.isArray(j.userInfo) ? j.userInfo.length : 0
++}
++
++function smoke(runDir, mode, extra = [], preload) {
++  const args = [...(preload ? ['--require', path.join(HERE, preload)] : []), path.join(PKG, 'm1-smoke.mjs'), '--target', 'emulator', '--expected-head', H, '--run-dir', runDir, '--mode', mode, ...extra]
++  const r = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 180000 })
++  const journalFile = path.join(runDir, 'journal.jsonl')
++  const journal = fs.existsSync(journalFile) ? fs.readFileSync(journalFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
++  const stops = journal.filter(e => e.event === 'MODE_STOP')
++  return { status: r.status, out: r.stdout + r.stderr, journal, lastStop: stops.at(-1) }
++}
++function scenario(name) {
++  const dir = path.join(BASE, name)
++  fs.mkdirSync(dir)
++  const evidence = path.join(dir, 'rules-evidence.jsonl')
++  const now = new Date().toISOString()
++  fs.writeFileSync(evidence, `${JSON.stringify({ task: 'SEC-006 Stage 8', mode: 'verify-current-rules', project: 'finapp-staging', sourceHead: H, startedAt: now, canonicalSha256: NEW_RULES, status: 'CURRENT_RULES_HASH_VERIFIED', finishedAt: now })}\n`)
++  return { runDir: path.join(dir, 'run'), evidence, cleanupArgs: ['--rules-status', 'verified-new', '--rules-evidence', evidence] }
++}
++
++try {
++  // ── scenario 1: the consumed run - the first Auth create fails in the CONNECT phase (nothing was sent) ─────────────────────────────────
++  await clearEmulators()
++  const s1 = scenario('s1-connect-timeout')
++  const pre1 = smoke(s1.runDir, 'preflight')
++  const seed1 = smoke(s1.runDir, 'seed', [], 'fault-auth-create-connect-timeout.cjs')
++  const intent1 = seed1.journal.findIndex(e => e.event === 'AUTH_CREATE_MAY_BE_SENT' && e.key === 'admin')
++  const after1 = seed1.journal.slice(intent1 + 1)
++  record('s1 seed: the first Auth create fails in the connect phase -> exit 2, kind transport-not-dispatched (the old runner: kind transport)', pre1.status === 0 && seed1.status === 2 && seed1.lastStop?.kind === 'transport-not-dispatched' && seed1.lastStop?.reasonCode === 'connect-timeout' && seed1.lastStop?.dispatch === 'not-dispatched', { preflight: pre1.status, seed: seed1.status, stop: seed1.lastStop && { kind: seed1.lastStop.kind, reasonCode: seed1.lastStop.reasonCode, dispatch: seed1.lastStop.dispatch, elapsedMs: seed1.lastStop.elapsedMs } })
++  record('s1 seed: intent-before-dispatch is kept (AUTH_CREATE_MAY_BE_SENT precedes the failure) and the proven non-dispatch is journaled for the same key before MODE_STOP', intent1 >= 0 && after1.some(e => e.event === 'AUTH_CREATE_NOT_DISPATCHED' && e.key === 'admin' && e.reasonCode === 'connect-timeout') && after1.findIndex(e => e.event === 'AUTH_CREATE_NOT_DISPATCHED') < after1.findIndex(e => e.event === 'MODE_STOP'))
++  record('s1 seed: no second create (no retry): only one create intent, no company/commit intents, 0 acknowledged creates, 0 operator commits', seed1.journal.filter(e => e.event === 'AUTH_CREATE_MAY_BE_SENT').length === 1 && !seed1.journal.some(e => /CREATE_COMPANY|SEED_COMMIT/.test(e.event)) && seed1.lastStop?.counters?.authCreates === 0 && seed1.lastStop?.counters?.operatorCommits === 0)
++  const accounts1 = await emulatorAccounts()
++  const clean1 = smoke(s1.runDir, 'cleanup', s1.cleanupArgs)
++  const verify1 = clean1.status === 0 ? smoke(s1.runDir, 'verify-clean') : { status: null }
++  record('s1 RECOVERY: cleanup after a proven pre-dispatch stop completes (exit 0, zero deletes) and verify-clean passes - the OLD runner refuses (exit 3, G2/G3)', accounts1 === 0 && clean1.status === 0 && verify1.status === 0 && clean1.journal.some(e => e.event === 'CLEANUP_OK' && e.documentsDeleted === 0 && e.authUsersDeleted === 0), { accounts: accounts1, cleanup: clean1.status, verifyClean: verify1.status, failures: clean1.journal.filter(e => e.event === 'CLEANUP_REFUSED' || (e.event === 'MODE_STOP' && e.mode === 'cleanup')).map(e => e.reason ?? e.failures).slice(0, 2) })
++
++  // ── scenario 2: the request WAS delivered (the account exists) and the connection died afterwards ─────────────────────────────────────
++  await clearEmulators()
++  const s2 = scenario('s2-reset-after-send')
++  smoke(s2.runDir, 'preflight')
++  const seed2 = smoke(s2.runDir, 'seed', [], 'fault-auth-create-reset-after-send.cjs')
++  const accounts2 = await emulatorAccounts()
++  record('s2 seed: a failure AFTER the request reached the provider (account created, answer lost) is NOT pre-dispatch: kind transport, dispatch unknown, no NOT_DISPATCHED event', seed2.status === 2 && seed2.lastStop?.kind === 'transport' && seed2.lastStop?.dispatch === 'unknown' && !seed2.journal.some(e => e.event === 'AUTH_CREATE_NOT_DISPATCHED') && accounts2 === 1, { seed: seed2.status, stop: seed2.lastStop && { kind: seed2.lastStop.kind, reasonCode: seed2.lastStop.reasonCode, dispatch: seed2.lastStop.dispatch }, accounts: accounts2 })
++  const clean2 = smoke(s2.runDir, 'cleanup', s2.cleanupArgs)
++  record('s2 FAIL-CLOSED: cleanup REFUSES (exit 3, no deletes) - the possibly created account has no recorded uid; it is still there afterwards', clean2.status === 3 && clean2.lastStop?.kind === 'cleanup-refused' && clean2.lastStop?.deletesMayHaveBeenSent === false && (await emulatorAccounts()) === 1 && /G2|G3/.test(clean2.lastStop?.reason ?? ''), { cleanup: clean2.status, reason: clean2.lastStop?.reason })
++
++  // ── scenario 3: a LYING classification (pre-dispatch claimed, but the account was created) is still caught by the live lookup of cleanup ─────
++  await clearEmulators()
++  const s3 = scenario('s3-misclassified')
++  smoke(s3.runDir, 'preflight')
++  const seed3 = smoke(s3.runDir, 'seed', [], 'fault-auth-create-sent-but-connect-timeout.cjs')
++  const accounts3 = await emulatorAccounts()
++  const clean3 = smoke(s3.runDir, 'cleanup', s3.cleanupArgs)
++  record('s3 BACKSTOP: even if a stop WAS wrongly classified as pre-dispatch, cleanup looks the exact synthetic subject up and REFUSES (G4) while the account exists - no deletes', seed3.lastStop?.kind === 'transport-not-dispatched' && accounts3 === 1 && clean3.status === 3 && /G4/.test(clean3.lastStop?.reason ?? '') && (await emulatorAccounts()) === 1, { seed: seed3.lastStop?.kind, accounts: accounts3, cleanup: clean3.status, reason: clean3.lastStop?.reason })
++
++  // ── scenario 4: other stop kinds keep refusing (unchanged gates) ───────────────────────────────────────────────────────────────────────
++  await clearEmulators()
++  const s4 = scenario('s4-unexpected-stop-kind')
++  smoke(s4.runDir, 'preflight')
++  const seed4 = smoke(s4.runDir, 'seed', [], 'fault-auth-create-timeout-abort.cjs')
++  const clean4 = smoke(s4.runDir, 'cleanup', s4.cleanupArgs)
++  record('s4 an abort timeout (outcome unknown) keeps the old behaviour: kind transport, dispatch unknown, cleanup REFUSES (exit 3)', seed4.lastStop?.kind === 'transport' && seed4.lastStop?.reasonCode === 'abort-timeout' && seed4.lastStop?.dispatch === 'unknown' && clean4.status === 3, { seed: seed4.lastStop?.kind, code: seed4.lastStop?.reasonCode, cleanup: clean4.status })
++
++  // ── scenarios 5-8: the proof is checked by the cleanup gate itself (a damaged or forged journal cannot unlock cleanup) ────────────────────
++  const tamper = (runDir, fn) => { const f = path.join(runDir, 'journal.jsonl'); fs.writeFileSync(f, fn(fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))).map(e => JSON.stringify(e)).join('\n') + '\n') }
++  const forged = async (name, change) => {
++    await clearEmulators()
++    const s = scenario(name)
++    smoke(s.runDir, 'preflight')
++    smoke(s.runDir, 'seed', [], 'fault-auth-create-connect-timeout.cjs')
++    tamper(s.runDir, change)
++    const c = smoke(s.runDir, 'cleanup', s.cleanupArgs)
++    return { status: c.status, reason: c.lastStop?.reason ?? '', accounts: await emulatorAccounts() }
++  }
++  const noProof = await forged('s5-proof-missing', events => events.filter(e => e.event !== 'AUTH_CREATE_NOT_DISPATCHED'))
++  record('s5 the proof event is missing from the journal -> cleanup REFUSES (G3): a stop kind alone does not resolve a possibly sent creation', noProof.status === 3 && /G3/.test(noProof.reason), noProof)
++  const badCode = await forged('s6-proof-code-not-connect-phase', events => events.map(e => (e.event === 'AUTH_CREATE_NOT_DISPATCHED' ? { ...e, reasonCode: 'connection-reset' } : e)))
++  record('s6 the proof event carries a reason code outside the connect-phase set -> cleanup REFUSES (G3)', badCode.status === 3 && /G3/.test(badCode.reason), badCode)
++  const wrongKind = await forged('s7-stop-kind-plain-transport', events => events.map(e => (e.event === 'MODE_STOP' && e.mode === 'seed' ? { ...e, kind: 'transport' } : e)))
++  record('s7 the seed MODE_STOP is a plain transport stop (outcome unknown) even though a proof event exists -> cleanup REFUSES (G2)', wrongKind.status === 3 && /G2/.test(wrongKind.reason), wrongKind)
++  const noDispatchField = await forged('s8-stop-without-dispatch-proof', events => events.map(e => (e.event === 'MODE_STOP' && e.mode === 'seed' ? { ...e, dispatch: 'unknown' } : e)))
++  record('s8 a transport-not-dispatched stop whose dispatch field is not "not-dispatched" -> cleanup REFUSES (G2: without proof)', noDispatchField.status === 3 && /G2.*without proof/.test(noDispatchField.reason), noDispatchField)
++  const gapProof = await forged('s9-proof-not-adjacent', events => { const i = events.findIndex(e => e.event === 'AUTH_CREATE_NOT_DISPATCHED'); const copy = events.slice(); const [proof] = copy.splice(i, 1); copy.splice(i + 1, 0, proof); return copy })
++  record('s9 the proof event is not the event directly after the intent (something lies between them) -> cleanup REFUSES (G3)', gapProof.status === 3 && /G3/.test(gapProof.reason), gapProof)
++} finally {
++  await clearEmulators().catch(() => {})
++}
++
++const failed = results.filter(r => !r.pass).length
++const out = path.join(HERE, '..', 'results')
++if (!process.env.M1_PKG_UNDER_TEST) { fs.mkdirSync(out, { recursive: true }); fs.writeFileSync(path.join(out, 'seed-stop-recovery-emulator.json'), `${JSON.stringify({ total: results.length, failed, results, at: new Date().toISOString() }, null, 2)}\n`) }
++console.log(`SEED_STOP_RECOVERY_EMULATOR ${failed ? 'FAIL' : 'PASS'} ${results.length - failed}/${results.length}${process.env.M1_PKG_UNDER_TEST ? ` (package under test: ${PKG})` : ''}`)
++process.exitCode = failed ? 1 : 0
+--- /dev/null
++++ b/tests/transport-classification-tests.mjs
+@@ -0,0 +1,120 @@
++// M1-SAFE-STOP-RECOVERY-01 - regression tests for the transport failure classification of the smoke runner (offline, loopback only).
++// The consumed R3 run stopped with `transport: network failure POST accounts` after 10.7 s: the runner threw away the error class, so nothing in
++// the durable evidence could tell a connection that never opened (no request bytes can have been sent) from a failure after the request left.
++//   node tests/transport-classification-tests.mjs                              (against this package)
++//   M1_PKG_UNDER_TEST=<other package dir> node tests/transport-classification-tests.mjs   (the same assertions against the OLD package: they must FAIL there)
++// No cloud, no firebase-tools, no credentials: the emulator target is used with a local fake server (real Node fetch error shapes) and injected errors.
++import fs from 'node:fs'
++import net from 'node:net'
++import http from 'node:http'
++import path from 'node:path'
++import { pathToFileURL, fileURLToPath } from 'node:url'
++
++const HERE = path.dirname(fileURLToPath(import.meta.url))
++const PKG = process.env.M1_PKG_UNDER_TEST ? path.resolve(process.env.M1_PKG_UNDER_TEST) : path.resolve(HERE, '..')
++const load = f => import(pathToFileURL(path.join(PKG, f)).href)
++const transportMod = await load('m1-transport.mjs')
++const core = await load('m1-core.mjs')
++const { makeTransport } = transportMod
++const results = []
++const record = (name, pass, detail) => { results.push({ name, pass: Boolean(pass), detail }); console.log(`${pass ? 'PASS' : 'FAIL'} ${name}`); if (!pass && detail !== undefined) console.log('     detail: ' + JSON.stringify(detail).slice(0, 400)) }
++const USER = { email: 'm1-00000000-admin@example.invalid', password: 'synthetic-not-a-secret', name: 'M1 smoke admin 00000000' }
++
++function target(port) {
++  return { ...core.TARGETS.emulator, auth: `http://127.0.0.1:${port}/identitytoolkit.googleapis.com`, firestore: `http://127.0.0.1:${port}` }
++}
++async function attempt(fetchImpl, { port = 9, opts = {} } = {}) {
++  const original = globalThis.fetch
++  let calls = 0
++  globalThis.fetch = async (...a) => { calls++; return fetchImpl(...a) }
++  const counters = { requests: 0, authCreates: 0, authDeletes: 0, operatorCommits: 0, invitationCallsRefused: 0, callables: {} }
++  try {
++    const t = await makeTransport(target(port), { counters, webConfig: null, ...opts })
++    try { await t.createAuthUser(USER); return { calls, counters, stop: null } } catch (e) { return { calls, counters, stop: e } }
++  } finally { globalThis.fetch = original }
++}
++const err = (code, { syscall, name } = {}) => Object.assign(new Error(`injected ${code} for identitytoolkit.googleapis.com Bearer ya29.SECRET-TOKEN m1-00000000-admin@example.invalid`), { code, ...(syscall ? { syscall } : {}), ...(name ? { name } : {}) })
++const fetchFailed = cause => Object.assign(new TypeError('fetch failed'), { cause })
++
++// ── injected provider-contract shapes (Node/undici) ──────────────────────────
++const shapes = [
++  ['connect timeout (undici, the 10 s connect timer)', fetchFailed(err('UND_ERR_CONNECT_TIMEOUT', { name: 'ConnectTimeoutError' })), 'connect-timeout', 'not-dispatched'],
++  ['connection refused', fetchFailed(err('ECONNREFUSED', { syscall: 'connect' })), 'connection-refused', 'not-dispatched'],
++  ['DNS name not found', fetchFailed(err('ENOTFOUND', { syscall: 'getaddrinfo' })), 'dns', 'not-dispatched'],
++  ['DNS temporary failure', fetchFailed(err('EAI_AGAIN', { syscall: 'getaddrinfo' })), 'dns', 'not-dispatched'],
++  ['network unreachable', fetchFailed(err('ENETUNREACH', { syscall: 'connect' })), 'network-unreachable', 'not-dispatched'],
++  ['host unreachable', fetchFailed(err('EHOSTUNREACH', { syscall: 'connect' })), 'network-unreachable', 'not-dispatched'],
++  ['TLS certificate verification failed', fetchFailed(err('UNABLE_TO_VERIFY_LEAF_SIGNATURE')), 'tls-verify', 'not-dispatched'],
++  ['dual-stack AggregateError, every attempt failed in connect()', fetchFailed(Object.assign(new AggregateError([err('ETIMEDOUT', { syscall: 'connect' }), err('ENETUNREACH', { syscall: 'connect' })], 'agg'), { code: 'ETIMEDOUT' })), 'connect-timeout', 'not-dispatched'],
++  // everything below may have happened AFTER the request left the process: unknown outcome, fail closed
++  ['connection reset while reading the answer', fetchFailed(err('ECONNRESET', { syscall: 'read' })), 'connection-reset', 'unknown'],
++  ['socket closed by the peer (undici)', fetchFailed(err('UND_ERR_SOCKET')), 'socket-closed', 'unknown'],
++  ['response headers timeout (undici)', fetchFailed(err('UND_ERR_HEADERS_TIMEOUT')), 'response-timeout', 'unknown'],
++  ['response body timeout (undici)', fetchFailed(err('UND_ERR_BODY_TIMEOUT')), 'response-timeout', 'unknown'],
++  ['the runner own 30 s abort (TimeoutError)', Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }), 'abort-timeout', 'unknown'],
++  ['ETIMEDOUT outside connect() (a read)', fetchFailed(err('ETIMEDOUT', { syscall: 'read' })), 'other', 'unknown'],
++  ['ECONNREFUSED without syscall (cannot prove connect phase)', fetchFailed(err('ECONNREFUSED')), 'other', 'unknown'],
++  ['AggregateError where ONE attempt failed after connect', fetchFailed(Object.assign(new AggregateError([err('ETIMEDOUT', { syscall: 'connect' }), err('ECONNRESET', { syscall: 'read' })], 'agg'), { code: 'ETIMEDOUT' })), 'other', 'unknown'],
++  ['plain fetch failed without a cause', new TypeError('fetch failed'), 'other', 'unknown'],
++  ['an unknown non-Error value', 'boom', 'other', 'unknown'],
++]
++for (const [label, error, code, dispatch] of shapes) {
++  const t0 = Date.now()
++  const r = await attempt(async () => { throw error })
++  const s = r.stop
++  const ok = s?.kind === (dispatch === 'not-dispatched' ? 'transport-not-dispatched' : 'transport') && s?.reasonCode === code && s?.dispatch === dispatch && Number.isFinite(s?.elapsedMs) && s.elapsedMs >= 0 && s.elapsedMs < 5000
++  record(`classification: ${label} -> ${code}, dispatch ${dispatch}`, ok, { kind: s?.kind, reasonCode: s?.reasonCode, dispatch: s?.dispatch, elapsedMs: s?.elapsedMs, took: Date.now() - t0 })
++}
++
++// ── the reason text stays the one the orchestrator and the old evidence use; nothing private leaks ──
++{
++  const r = await attempt(async () => { throw fetchFailed(err('UND_ERR_CONNECT_TIMEOUT')) })
++  const dump = JSON.stringify({ message: r.stop?.message, reason: r.stop?.reason, kind: r.stop?.kind, reasonCode: r.stop?.reasonCode, dispatch: r.stop?.dispatch, elapsedMs: r.stop?.elapsedMs })
++  record('sanitizer: the STOP reason keeps the fixed text `network failure POST accounts` (old evidence and the orchestrator patterns stay valid)', r.stop?.reason === 'network failure POST accounts' && /^transport: network failure POST accounts$/.test(r.stop?.message ?? ''), dump)
++  record('sanitizer: no URL, host, e-mail, token or raw error text from the underlying error reaches the STOP (only fixed codes)', !/SECRET|ya29|Bearer|identitytoolkit|googleapis|@example|http|127\.0\.0\.1/.test(dump), dump)
++  record('sanitizer: reasonCode and dispatch come from closed sets', ['connect-timeout', 'connection-refused', 'dns', 'network-unreachable', 'tls-verify', 'connection-reset', 'socket-closed', 'response-timeout', 'abort-timeout', 'other'].includes(r.stop?.reasonCode) && ['not-dispatched', 'unknown'].includes(r.stop?.dispatch))
++}
++
++// ── no retry: one failed request is exactly one fetch call ──
++{
++  const r = await attempt(async () => { throw fetchFailed(err('UND_ERR_CONNECT_TIMEOUT')) })
++  record('no retry: a pre-dispatch failure is reported once - the fetch was called exactly once and requests=1, authCreates=0', r.calls === 1 && r.counters.requests === 1 && r.counters.authCreates === 0, { calls: r.calls, counters: r.counters })
++}
++
++// ── real Node fetch against a local fake server: the shapes that matter, not only invented ones ──
++{
++  // (1) closed loopback port: a real ECONNREFUSED from connect()
++  const closed = await new Promise(resolve => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)) }) })
++  const refused = await attempt(globalThis.fetch.bind(globalThis), { port: closed })
++  record('real fetch: a closed loopback port (real ECONNREFUSED) is a proven pre-dispatch failure and nothing reached any server', refused.stop?.kind === 'transport-not-dispatched' && refused.stop?.reasonCode === 'connection-refused' && refused.stop?.dispatch === 'not-dispatched', { kind: refused.stop?.kind, code: refused.stop?.reasonCode })
++
++  // (2) the server READS the request and then kills the socket: the request was delivered, the outcome is unknown
++  let seen = 0
++  const resetServer = http.createServer((req, res) => { req.on('data', () => {}); req.on('end', () => { seen++; req.socket.destroy() }) })
++  await new Promise(r => resetServer.listen(0, '127.0.0.1', r))
++  const reset = await attempt(globalThis.fetch.bind(globalThis), { port: resetServer.address().port })
++  record('real fetch: a server that received the request and then reset the connection is NOT pre-dispatch (the request was delivered) -> kind transport, dispatch unknown', seen === 1 && reset.stop?.kind === 'transport' && reset.stop?.dispatch === 'unknown', { seen, kind: reset.stop?.kind, code: reset.stop?.reasonCode })
++  resetServer.close()
++
++  // (3) a server that accepts and never answers, with the runner's own timeout shortened for the test
++  let hang = 0
++  const hangServer = http.createServer((req) => { hang++; req.on('data', () => {}) })
++  await new Promise(r => hangServer.listen(0, '127.0.0.1', r))
++  const t0 = Date.now()
++  const slow = await attempt(globalThis.fetch.bind(globalThis), { port: hangServer.address().port, opts: { requestTimeoutMs: 400 } })
++  record('real fetch: an answer that never comes ends at the request timeout (TimeoutError) -> dispatch unknown, elapsed recorded, one request seen by the server', hang === 1 && slow.stop?.kind === 'transport' && slow.stop?.reasonCode === 'abort-timeout' && slow.stop?.dispatch === 'unknown' && slow.stop.elapsedMs >= 300 && Date.now() - t0 < 5000, { hang, code: slow.stop?.reasonCode, elapsed: slow.stop?.elapsedMs })
++  hangServer.closeAllConnections?.(); hangServer.close()
++}
++
++// ── API contract used by the runner ──
++{
++  record('contract: the classifier is exported as a pure function and refuses to promote an unknown error to pre-dispatch', typeof transportMod.classifyFetchError === 'function' && transportMod.classifyFetchError(new Error('anything')).dispatch === 'unknown' && transportMod.classifyFetchError(undefined).dispatch === 'unknown' && transportMod.classifyFetchError(null).dispatch === 'unknown')
++  const src = fs.readFileSync(path.join(PKG, 'm1-transport.mjs'), 'utf8').replace(/\/\/.*$/gm, '')
++  record('contract: the transport still has no retry loop and no second fetch call (code only, comments ignored)', (src.match(/\bfetch\(/g) ?? []).length === 1 && !/retry|attempts|for \(let attempt/i.test(src))
++}
++
++const failed = results.filter(r => !r.pass).length
++const out = path.join(HERE, '..', 'results')
++if (!process.env.M1_PKG_UNDER_TEST) { fs.mkdirSync(out, { recursive: true }); fs.writeFileSync(path.join(out, 'transport-classification-tests.json'), `${JSON.stringify({ total: results.length, failed, results, at: new Date().toISOString() }, null, 2)}\n`) }
++console.log(`TRANSPORT_CLASSIFICATION_TESTS ${failed ? 'FAIL' : 'PASS'} ${results.length - failed}/${results.length}${process.env.M1_PKG_UNDER_TEST ? ` (package under test: ${PKG})` : ''}`)
++process.exitCode = failed ? 1 : 0

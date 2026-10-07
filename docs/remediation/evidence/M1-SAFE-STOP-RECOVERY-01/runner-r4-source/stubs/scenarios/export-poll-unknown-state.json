@@ -1,0 +1,15 @@
+{
+  "gh": {
+    "kind": "success"
+  },
+  "firebase": {
+    "deploy": "success",
+    "rollback": "success"
+  },
+  "export": "poll-unknown-state",
+  "stagingTools": {},
+  "smoke": {},
+  "readiness": {
+    "kind": "ready"
+  }
+}

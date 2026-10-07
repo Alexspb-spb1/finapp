@@ -1,0 +1,28 @@
+CODE-SHA256SUMS.txt files=149
+parse exit=0 :: PS51_PARSE_CHECK psVersion=5.1.19041.6456 files=4 failed=0
+node-helper exit=0 :: NODE_HELPER_TESTS PASS 202/202
+export-poll exit=0 :: EXPORT_POLL_TESTS PASS 47/47
+transport-classification exit=0 :: TRANSPORT_CLASSIFICATION_TESTS PASS 27/27
+ui-route exit=0 :: UI_ROUTE_POLICY_TESTS PASS 82/82
+local-acl exit=0 :: LOCAL_ACL_WEBCONFIG_TESTS PASS 10/10
+orch-helpers exit=0 :: PS51_ORCHESTRATOR_TESTS set=helpers PASS 44/44
+orch-stub exit=0 :: PS51_ORCHESTRATOR_TESTS set=stub PASS 763/763
+emulators ready
+LOAD_RULES status=200
+gate-tests exit=0 :: GATE_TESTS PASS 20/20
+LOAD_RULES status=200
+direct-smoke exit=0 :: direct smoke chain exit=0
+seed-stop-recovery exit=0 :: SEED_STOP_RECOVERY_EMULATOR PASS 13/13
+LOAD_RULES status=200
+orch-emulator exit=0 :: PS51_ORCHESTRATOR_TESTS set=emulator PASS 52/52
+mutation exit=0 :: MUTATION_CHECKS PASS detected=28/28
+mutation-extra exit=0 :: MUTATION_CHECKS_EXTRA PASS detected=1/1
+mutation-export exit=0 :: EXPORT_MUTATION_CHECKS PASS detected=20/20
+mutation-recovery exit=0 :: RECOVERY_MUTATION_CHECKS PASS detected=17/17
+emulators stopped; release clone changes: 0
+collected cases=113 files=2727
+files redacted=0
+results files=2754 secretPatternHits=1 rehearsal/rules-failure-round2-rollback-fails-20261007-221509-679/run/recovery-manifest-1791400583433.json
+CODE-SHA256SUMS.txt files=149
+M1_SUMS_VERIFIED files=149
+RUN_ALL_R4_DONE

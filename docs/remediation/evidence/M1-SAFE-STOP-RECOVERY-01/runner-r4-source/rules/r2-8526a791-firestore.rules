@@ -1,0 +1,341 @@
+rules_version = '2';
+
+// ФинУчёт — Firestore Rules: EMERGENCY REMEDIATION (BASE-004A).
+//
+// Контекст: независимый аудит BASE-004 подтвердил CRITICAL/SECURITY_RISK_C —
+// фактически развёрнутые production Rules позволяли любому авторизованному
+// пользователю самостоятельно менять поля users/{uid}, отвечающие за
+// авторизацию (role, companyId, companies[]), без каких-либо ограничений.
+// Это давало полную межарендную эскалацию privileged-доступа (чтение и
+// запись company_data/companies ЛЮБОЙ компании). Подробности и полная
+// матрица субъект→операция — docs/remediation/SECURITY_BASELINE.md.
+//
+// Это ЭКСТРЕННЫЙ (emergency) патч, а не финальная архитектура. Приложение —
+// чистый SPA без бэкенда/Cloud Functions/custom claims, поэтому members/roles
+// проверяются исключительно по документу users/{uid}. Единственный
+// защищённый вариант в этой ситуации — ЗАПРЕТИТЬ клиенту менять поля,
+// отвечающие за авторизацию (role/companyId/companies), а не пытаться
+// «доказать» их через недоказуемые эвристики. Целевая архитектура
+// (server-controlled members subcollection + callable Cloud Functions вместо
+// прямой клиентской записи привилегированных полей) — задокументирована как
+// архитектурный долг в docs/remediation/BASE-004A_EMERGENCY_RULES_PLAN.md и
+// НЕ реализована в этом патче.
+//
+// Известное следствие (breaking change, задокументировано в плане):
+// регистрация нового аккаунта/компании, приглашение сотрудника, смена роли
+// участника, создание доп. компании (multi-company) и удаление сотрудника —
+// все эти клиентские операции писали companyId/role/companies напрямую в
+// users/{uid} и теперь будут отклонены Rules, пока не появится серверный
+// (Cloud Functions) путь для этих операций.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Общие помощники ───────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function callerUid() {
+      return request.auth.uid;
+    }
+
+    // ── Канонический источник доступа ─────────────────────────────────────
+    // SEC-011: единственный источник полномочий — документ
+    // companies/{companyId}/members/{uid} (ADR-001). Legacy-поля профиля
+    // users.role / users.companyId / users.companies[] БОЛЬШЕ НЕ УЧАСТВУЮТ
+    // ни в одном решении allow/deny: их невозможно ни прочитать, ни
+    // подделать так, чтобы это дало доступ. Membership-документы пишет
+    // только сервер (Admin SDK через Cloud Functions) — см. правило
+    // members ниже и SEC-007.
+    //
+    // Firestore засчитывает повторные exists()/get() по ОДНОМУ и тому же
+    // пути как один доступ к документу, поэтому обращения к
+    // membershipData() внутри одной проверки не умножают стоимость.
+    function membershipPath(companyId) {
+      return /databases/$(database)/documents/companies/$(companyId)/members/$(callerUid());
+    }
+
+    function membershipData(companyId) {
+      return get(membershipPath(companyId)).data;
+    }
+
+    // Fail-closed по каждому признаку: документ должен существовать, его
+    // поле uid обязано совпадать с идентификатором документа (то же
+    // требование, что и у серверного requireActiveMember), статус —
+    // строго 'active', роль — из явного списка. Отсутствующее поле или
+    // повреждённый документ приводят к ошибке вычисления, то есть к отказу.
+    function roleForCompanyIn(companyId, roles) {
+      return isSignedIn() &&
+        exists(membershipPath(companyId)) &&
+        membershipData(companyId).uid == callerUid() &&
+        membershipData(companyId).status == 'active' &&
+        membershipData(companyId).role in roles;
+    }
+
+    function isMemberOf(companyId) {
+      return roleForCompanyIn(companyId, ['viewer', 'accountant', 'admin']);
+    }
+
+    function isAdminOf(companyId) {
+      return roleForCompanyIn(companyId, ['admin']);
+    }
+
+    // SEC-005 production preflight — maintenance/read-only mode. Reads
+    // system/maintenance (never client-writable — falls through to the
+    // deny-by-default catch-all at the end of this file, so ONLY the
+    // Admin SDK, i.e. an operator running the SEC-005 runbook, can ever
+    // set it). `get()`/`exists()` inside a Rules function are NOT subject
+    // to the `allow read` rules of the target document — this works even
+    // though there is no explicit read rule for `system/{doc}`. When
+    // active, every client write rule below additionally requires
+    // `!isMaintenanceModeActive()` — this is what actually prevents a
+    // live user's browser (or any other client SDK caller) from writing
+    // users/companies/company_data while a SEC-005 production apply is in
+    // flight. It does NOT and cannot affect Admin SDK callers (the
+    // migration tool itself, or a Cloud Function using Admin SDK
+    // privileges) — Firestore Rules are never evaluated for Admin SDK
+    // requests at all; those need their own explicit check (see
+    // functions/src/lib/authz.ts's requireNotInMaintenanceMode(), used by
+    // the createCompany callable).
+    function isMaintenanceModeActive() {
+      return exists(/databases/$(database)/documents/system/maintenance) &&
+        get(/databases/$(database)/documents/system/maintenance).data.enabled == true;
+    }
+
+    // ── users/{userId} ───────────────────────────────────────────────────
+    //
+    // КРИТИЧЕСКОЕ ограничение (закрывает BASE-004 CRITICAL): поля, влияющие
+    // на авторизацию, НЕЛЬЗЯ менять клиенту ни при create, ни при update —
+    // ни на своём документе, ни тем более на чужом. Единственный способ
+    // назначить/сменить role, companyId, companies — доверенная серверная
+    // операция (Cloud Function), которой сегодня не существует (архитектурный
+    // долг, см. план). Это сознательное emergency-ограничение: лучше временно
+    // не давать клиенту менять членство вообще, чем пытаться доказать
+    // безопасность неатомарной клиентской эвристики.
+
+    match /users/{userId} {
+
+      // Поля профиля, которые пользователь МОЖЕТ менять сам — не влияют на
+      // авторизацию и не участвуют ни в одной проверке isMemberOf/isAdminOf.
+      function selfEditableFields() {
+        return ['name', 'avatar'];
+      }
+
+      // Поля, которые категорически нельзя трогать клиенту ни при create,
+      // ни при update — ни на своём документе, ни на чужом.
+      // `id` НЕ входит в этот список: он обязателен на create и отдельно
+      // жёстко проверяется ниже (`request.resource.data.id == userId`) —
+      // клиент физически не может присвоить чужой `id`, поэтому поле не
+      // авторизационно-опасно само по себе.
+      function authSensitiveFields() {
+        return ['role', 'companyId', 'companies', 'email',
+                'owner', 'isOwner', 'admin', 'isAdmin', 'createdAt'];
+      }
+
+      // Разрешено читать: свой профиль, либо профиль коллеги по компании —
+      // это нужно для отображения имени/email в списке участников.
+      //
+      // SEC-011: решение принимается ТОЛЬКО по каноническим memberships.
+      // resource.data.companyId здесь не даёт прав — это лишь указание, в
+      // какой компании проверять. Доступ получен, если вызывающий сам
+      // является активным участником этой компании И у целевого профиля
+      // есть membership-документ в ней. Поддельный companyId в чужом
+      // профиле бесполезен: без собственного активного membership в той же
+      // компании первая же проверка отказывает.
+      allow get: if isSignedIn() && (
+        callerUid() == userId ||
+        (
+          resource.data.companyId is string &&
+          isMemberOf(resource.data.companyId) &&
+          exists(/databases/$(database)/documents/companies/$(resource.data.companyId)/members/$(userId))
+        )
+      );
+
+      // Firestore Rules не фильтруют результаты запроса — правило
+      // вычисляется отдельно для КАЖДОГО потенциального документа результата
+      // через resource.data, поэтому неограниченный или межкорпоративный
+      // query по-прежнему целиком отклоняется, как только встречается ЛЮБОЙ
+      // документ компании, участником которой вызывающий не является.
+      //
+      // SEC-011: решение принимает та же каноническая isMemberOf, что и для
+      // companies/company_data — роль берётся из membership-документа
+      // запрашиваемой компании, а не из профиля вызывающего. Multi-company
+      // при этом работает без особого случая: для каждой компании читается
+      // её собственный membership, поэтому роль в одной компании никогда не
+      // переносится на другую. resource.data.companyId служит только
+      // фильтром запроса и сам по себе прав не даёт.
+      //
+      // Канонический реестр участников — companies/{companyId}/members;
+      // этот запрос нужен лишь для отображаемых полей профиля.
+      allow list: if isMemberOf(resource.data.companyId);
+
+      // Создание СВОЕГО профиля разрешено, но БЕЗ единого поля, влияющего
+      // на авторизацию — role/companyId/companies должны отсутствовать в
+      // создаваемом документе. Реальное назначение компании/роли —
+      // отдельная доверенная операция (см. план, breaking change #1).
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
+      allow create: if isSignedIn() && callerUid() == userId &&
+        request.resource.data.id == userId &&
+        !request.resource.data.keys().hasAny(authSensitiveFields()) &&
+        !isMaintenanceModeActive();
+
+      // Обновление СВОЕГО профиля — только явный allowlist полей, никогда
+      // не auth-поля. Никаких self-update role/companyId/companies.
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
+      allow update: if isSignedIn() && callerUid() == userId &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(selfEditableFields()) &&
+        !isMaintenanceModeActive();
+
+      // Управление ДРУГИМИ пользователями (смена роли, добавление в
+      // компанию, удаление сотрудника admin'ом) через клиентские Rules
+      // НЕ реализовано в этом emergency-патче — безопасная модель для
+      // этого сценария недоказуема без атомарной серверной проверки
+      // (требование плана п.7: «либо отсутствовать в клиентских Rules,
+      // если безопасную модель невозможно доказать»). Управление
+      // участниками — только вручную (Firebase Console / Admin SDK) до
+      // реализации Cloud Functions.
+      allow update: if false; // чужой документ — запрещено
+      allow delete: if false; // удаление запрещено (в т.ч. защита от delete+recreate обхода)
+    }
+
+    // ── companies/{companyId} ────────────────────────────────────────────
+
+    match /companies/{companyId} {
+
+      function companyEditableFields() {
+        return ['name', 'legalType', 'inn', 'currency'];
+      }
+
+      allow get: if isMemberOf(companyId) ||
+        (isSignedIn() && resource.data.ownerId == callerUid());
+
+      // Приложение загружает известные компании адресными get. Collection
+      // query нельзя безопасно доказать через legacy companies[] — запрещён.
+      allow list: if false;
+
+      // SEC-007 R2: создание компании клиентом разрешено ТОЛЬКО тому, у кого
+      // уже есть канонический active-admin membership в этой же компании.
+      //
+      // Раньше правило допускало любого авторизованного пользователя. После
+      // перехода на канонические memberships это давало orphan company:
+      // документ компании создавался, но membership — нет (клиент его писать
+      // не может вообще), поэтому созданную компанию не мог открыть даже её
+      // собственный создатель, а место в базе занималось. Единственный
+      // законный клиентский сценарий — восстановление ИСЧЕЗНУВШЕГО документа
+      // компании, у которой membership сохранился; он этим правилом
+      // сохраняется, а создание «с нуля» становится невозможным.
+      //
+      // Нормальное создание компании идёт серверным callable createCompany
+      // через Admin SDK, на который Rules не распространяются, поэтому
+      // ужесточение его не затрагивает. Полное удаление recovery-пути —
+      // SEC-008.
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
+      allow create: if isAdminOf(companyId) &&
+        request.resource.data.id == companyId &&
+        request.resource.data.ownerId == callerUid() &&
+        !isMaintenanceModeActive();
+
+      // Изменение — только подтверждённый admin ЭТОЙ ЖЕ компании, и только
+      // разрешённые поля (ownerId и id неизменны с клиента).
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
+      allow update: if isAdminOf(companyId) &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(companyEditableFields()) &&
+        request.resource.data.ownerId == resource.data.ownerId &&
+        request.resource.data.id == resource.data.id &&
+        !isMaintenanceModeActive();
+
+      allow delete: if false;
+
+      // ── companies/{companyId}/members/{memberUid} ──────────────────────
+      // Канонический источник полномочий (ADR-001). Читать роестр может
+      // любой АКТИВНЫЙ участник этой же компании — это нужно интерфейсу,
+      // чтобы показать список участников и собственную роль, и сам по себе
+      // документ не содержит секретов (uid, role, status, отметки времени).
+      //
+      // Писать клиент не может НИКОГДА, ни своё, ни чужое членство: любое
+      // изменение роли/статуса и удаление доступа проходит только через
+      // серверные callable (SEC-007 changeMemberRole/disableMember/
+      // restoreMember/removeMember), где действуют транзакционная проверка
+      // прав, защита последнего администратора и audit log. Это правило
+      // делает невозможным самоповышение даже при полном контроле над
+      // клиентом.
+      match /members/{memberUid} {
+        allow get: if isMemberOf(companyId);
+        allow list: if isMemberOf(companyId);
+        allow create, update, delete: if false;
+      }
+    }
+
+    // ── company_data/{companyId} ─────────────────────────────────────────
+
+    match /company_data/{companyId} {
+
+      // Поля, которые обычный участник (accountant) НЕ может менять —
+      // закрытие периода доступно только admin (сохраняет исходную бизнес-
+      // логику production Rules, но теперь поверх доказанного membership).
+      function adminOnlyFields() {
+        return ['closingDate'];
+      }
+
+      allow get: if isMemberOf(companyId);
+      // company_data — один документ на компанию, приложение читает его get.
+      // Любой list/query мог бы перечислить чужие финансовые документы.
+      allow list: if false;
+
+      // Создание — только подтверждённому участнику компании (закрывает
+      // HIGH-риск BASE-004: раньше create не проверял membership вообще).
+      // viewer не пишет — минимум accountant/admin.
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
+      allow create: if roleForCompanyIn(companyId, ['accountant', 'admin']) &&
+        !isMaintenanceModeActive();
+
+      // SEC-005: заблокировано во время maintenance mode (production preflight).
+      allow update: if roleForCompanyIn(companyId, ['admin']) && !isMaintenanceModeActive();
+      allow update: if
+        roleForCompanyIn(companyId, ['accountant']) &&
+        !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(adminOnlyFields()) &&
+        !isMaintenanceModeActive();
+
+      allow delete: if false;
+    }
+
+    // ── invitations/{inviteId}, invitationLocks/{lockId} — SEC-006 ───────
+    //
+    // Полностью server-only. Приглашение и его lock-документ (не более
+    // одного pending-приглашения на пару companyId+email, см.
+    // docs/adr/001-company-membership-and-roles.md и план SEC-006) создаются,
+    // читаются и изменяются ИСКЛЮЧИТЕЛЬНО доверенными Cloud Functions через
+    // Admin SDK (Admin SDK не подчиняется этим Rules вообще). Ни один
+    // клиент — включая admin своей же компании — не получает прямого
+    // доступа ни при каких обстоятельствах: безопасная модель для клиентской
+    // проверки "это приглашение адресовано мне и не истекло" недоказуема без
+    // атомарной серверной сверки tokenHash/status/expiresAt (тот же принцип,
+    // что уже применён к management других участников — см. блок
+    // `users/{userId}` выше, "Управление ДРУГИМИ пользователями").
+    //
+    // Эти явные deny-all блоки размещены здесь, ДО общего catch-all ниже,
+    // намеренно — чтобы более общий match не мог случайно предоставить
+    // доступ при будущих правках (даже притом что сам catch-all тоже
+    // deny-all, явный блок для этих двух коллекций не оставляет
+    // двусмысленности при чтении Rules).
+
+    match /invitations/{inviteId} {
+      allow read, write: if false;
+    }
+
+    match /invitationLocks/{lockId} {
+      allow read, write: if false;
+    }
+
+    // ── Всё остальное — deny-by-default ──────────────────────────────────
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

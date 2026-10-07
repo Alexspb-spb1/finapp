@@ -1,0 +1,2 @@
+# the runner sources are committed byte-exact: their SHA-256 (CODE-SHA256SUMS.txt, r3-to-r4.patch hashes) must survive checkout on any platform
+* -text

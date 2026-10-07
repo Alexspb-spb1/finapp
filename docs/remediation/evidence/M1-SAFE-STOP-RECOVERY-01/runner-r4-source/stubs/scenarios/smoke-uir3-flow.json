@@ -1,0 +1,17 @@
+{
+  "gh": {
+    "kind": "success"
+  },
+  "firebase": {
+    "deploy": "success",
+    "rollback": "success"
+  },
+  "export": "success",
+  "stagingTools": {},
+  "smoke": {
+    "uiR3": "UI_FLOW"
+  },
+  "readiness": {
+    "kind": "ready"
+  }
+}
