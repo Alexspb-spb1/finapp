@@ -2,7 +2,7 @@
 
 ## Итоговый статус
 READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью локальный: новых live-запусков, provider-вызовов, cleanup, merge и deploy не было.
-Статус не закрывает SEC-007/010/011 и не означает готовность релиза к production. CI для финального HEAD и состояние Draft PR — в разделе «CI».
+Статус не закрывает SEC-007/010/011 и не означает готовность релиза к production. Результат CI на точном финальном HEAD указан в сообщении передачи и в комментарии Draft PR, а не здесь: правка отчёта меняла бы проверяемый HEAD (CI на pull_request для base не `main` автоматически не запускается — запуск вручную через `workflow_dispatch` на ветке, без секретов и deploy-шагов).
 
 ## Branch / commit
 - worktree: `D:/projects/finapp/m1-safe-stop-recovery-01`; ветка `remediation/M1-SAFE-STOP-RECOVERY-01-runner-recovery`
@@ -87,7 +87,7 @@ READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью лока
 - [x] исправленные helpers/source/regression входят в Git diff (побайтный снимок + patch + SHA), не только `.runtime`
 - [x] компатибильность и rollout/rollback proposal для staging и production, с allowlists, проверками и откатом
 - [x] regression «запрет users list не ломает вход» включён в проверки релиза (G1) и выполнен локально (`test:rules` 153/153)
-- [ ] CI на точном финальном HEAD — см. «CI»
+- [ ] CI на точном финальном HEAD — фиксируется вне файла (см. выше): сообщение передачи и комментарий PR
 - [ ] первопричина сетевого сбоя — не установлена и не устранена (не входит в блок)
 
 ## Проверки
