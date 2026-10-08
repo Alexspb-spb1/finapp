@@ -8,6 +8,7 @@ import { RECON, Blocked, sha256Hex, namespaceProblems, targetProblems } from './
 import { compareFunctions, validateExpected, canonicalOf } from './m1-state-lib.mjs'
 import { permitProblems } from './recon-permit.mjs'
 import { readCachedLogin } from './recon-bootstrap.mjs'
+import { integrityProblems } from './recon-integrity.mjs'
 
 export const EXIT = Object.freeze({ ALL_MATCH: 0, STOP: 2, INIT_REFUSED: 3, DIFFERENCES: 4 })
 const record = v => v !== null && typeof v === 'object' && !Array.isArray(v)
@@ -92,15 +93,19 @@ export function createLedger(file, now = () => Date.now()) {
 }
 
 // ── the client: allowlist, budgets, no retry, redirect=error, intent-before-dispatch ─────────────────────────────────────────────────
-export function createClient({ fetchImpl, entries, ledger, token: initialToken = null, now = () => Date.now(), limits = RECON.limits }) {
+// The global deadline is HARD: it limits when a request may start, how long its headers and streamed body may take (the request signal is the smaller of the per-request timeout and
+// the budget left) and when it may complete. A request that completes after the deadline is a STOP `deadline`, never a success. `startedAt` is the start of the whole run;
+// `signalFor` is injectable so that the budget given to a request can be asserted without sleeping.
+export function createClient({ fetchImpl, entries, ledger, token: initialToken = null, now = () => Date.now(), limits = RECON.limits, startedAt, signalFor = ms => AbortSignal.timeout(ms) }) {
   let token = initialToken
   const counts = new Map()
   let total = 0, totalBytes = 0, tokenSent = 0
-  const t0 = now()
+  const deadlineAt = (startedAt ?? now()) + limits.globalDeadlineMs
+  const over = () => now() > deadlineAt
   const deny = (code, extra = {}) => { ledger.event({ phase: 'DENIED', code, ...extra }); return new Blocked(code) }
   return {
     async request(method, urlString, body) {
-      if (now() - t0 > limits.globalDeadlineMs) throw deny('deadline')
+      if (now() >= deadlineAt) throw deny('deadline')
       let entry
       try { entry = matchEntry(entries, method, urlString, body) } catch (e) {
         let host = null; try { host = new URL(urlString).hostname.slice(0, 80) } catch { /* unparseable */ }
@@ -116,12 +121,17 @@ export function createClient({ fetchImpl, entries, ledger, token: initialToken =
       if (body !== undefined) headers['content-type'] = 'application/json'
       const started = now()
       const finish = (outcome, extra = {}) => ledger.event({ phase: 'RESULT', id: entry.id, outcome, elapsedMs: now() - started, ...extra })
+      const left = deadlineAt - started
+      if (left <= 0) { finish('deadline'); throw new Blocked('deadline') } // the budget ran out while the INTENT was being written: nothing is dispatched
+      const limited = left < entry.timeoutMs
+      const abortCode = () => (limited || over() ? 'deadline' : 'timeout')
       let res
-      try { res = await fetchImpl(urlString, { method, headers, body, redirect: 'error', signal: AbortSignal.timeout(entry.timeoutMs) }) } catch (e) {
-        const code = e?.name === 'TimeoutError' || e?.name === 'AbortError' ? 'timeout' : 'network-unknown'
+      try { res = await fetchImpl(urlString, { method, headers, body, redirect: 'error', signal: signalFor(Math.min(entry.timeoutMs, left)) }) } catch (e) {
+        const code = e?.name === 'TimeoutError' || e?.name === 'AbortError' ? abortCode() : 'network-unknown'
         finish(code)
         throw new Blocked(code)
       }
+      if (over()) { try { await res.body?.cancel() } catch { /* ignored */ }; finish('deadline', { status: res.status }); throw new Blocked('deadline') }
       const status = res.status
       if (res.redirected || (status >= 300 && status < 400)) { finish('redirect', { status }); throw new Blocked('redirect') }
       if (status !== 200) {
@@ -135,6 +145,7 @@ export function createClient({ fetchImpl, entries, ledger, token: initialToken =
         const reader = res.body?.getReader()
         for (;;) {
           const r = reader ? await reader.read() : { done: true }
+          if (over()) { try { await reader?.cancel() } catch { /* ignored */ }; finish('deadline', { status, bytes: size }); throw new Blocked('deadline') }
           if (r.done) break
           size += r.value.byteLength
           if (size > entry.maxResponseBytes || totalBytes + size > limits.maxTotalResponseBytes) { try { await reader.cancel() } catch { /* ignored */ } finish('oversize', { status, bytes: size }); throw new Blocked('oversize') }
@@ -142,7 +153,7 @@ export function createClient({ fetchImpl, entries, ledger, token: initialToken =
         }
       } catch (e) {
         if (e instanceof Blocked) throw e
-        const code = e?.name === 'TimeoutError' || e?.name === 'AbortError' ? 'timeout' : 'network-unknown'
+        const code = e?.name === 'TimeoutError' || e?.name === 'AbortError' ? abortCode() : 'network-unknown'
         finish(code, { status }); throw new Blocked(code)
       }
       totalBytes += size
@@ -267,6 +278,9 @@ export async function runRecon(cfg) {
   const now = cfg.now ?? (() => Date.now())
   const refuse = reason => ({ status: 'INIT_REFUSED', exitCode: EXIT.INIT_REFUSED, reason })
   if (!['staging', 'rehearsal'].includes(profile)) return refuse('unknown profile')
+  // BYTE INTEGRITY FIRST: the actual files of the package must equal the owner-bound manifest before anything else is read, claimed, authenticated or requested (CR1).
+  const integrity = integrityProblems(pkg)
+  if (integrity.length) return refuse(`integrity: ${integrity[0]}`)
   const env = { ...cfg.env }
   if (profile === 'staging' && Object.entries(env).some(([k, v]) => v && FORBIDDEN_ENV.test(k))) return refuse('forbidden environment for a staging reading')
   if (typeof cfg.fetchImpl !== 'function') return refuse('no fetch implementation')
@@ -301,7 +315,8 @@ export async function runRecon(cfg) {
     ledger = createLedger(path.join(evDir, 'recon-ledger.jsonl'), now)
     ledger.event({ phase: 'START', task: RECON.taskId, profile, operations: ops, allowlistSha256: pins.hashes.requestAllowlistSha256 })
     save()
-    client = createClient({ fetchImpl: cfg.fetchImpl, entries, ledger, token: null, now })
+    const runStart = now()
+    client = createClient({ fetchImpl: cfg.fetchImpl, entries, ledger, token: null, now, startedAt: runStart, signalFor: cfg.signalFor })
     const stage = async (name, fn) => { try { state.branches[name] = await fn(); } catch (e) { state.stop = { branch: name, code: e instanceof Blocked ? e.code : 'unexpected' }; ledger.event({ phase: 'STOP', branch: name, code: state.stop.code }); save(); throw e } ledger.event({ phase: 'BRANCH_DONE', branch: name }); save() }
     // ONE client for the whole run, so that every budget is global; the token is attached only after the (permitted) bootstrap
     if (ops.frontendPublicRead) await stage('frontend', () => runFrontend(client, entries, pins.frontend))
@@ -319,6 +334,8 @@ export async function runRecon(cfg) {
       const journalPath = profile === 'staging' ? RECON.consumedJournal : (cfg.consumedJournalPath ?? RECON.consumedJournal)
       await stage('auth', async () => { let bytes; try { bytes = fs.readFileSync(journalPath) } catch { throw new Blocked('subject-source-mismatch') } return runAuthLookup(client, entries, pins.subject, bytes) })
     }
+    // a run that ends after its global deadline is never a success, whatever the last request did (the requests themselves are bounded inside the client)
+    if (now() - runStart > RECON.limits.globalDeadlineMs) { state.stop = { branch: 'run', code: 'deadline' }; ledger.event({ phase: 'STOP', branch: 'run', code: 'deadline' }); save() }
   } catch (e) {
     if (!state.stop) { state.stop = { branch: 'init', code: e instanceof Blocked ? e.code : 'unexpected' }; try { ledger?.event({ phase: 'STOP', branch: 'init', code: state.stop.code }); save() } catch { /* nothing more can be recorded */ } }
   }

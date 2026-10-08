@@ -10,6 +10,8 @@
 // plan / selftest / permit-draft are OFFLINE modes: they refuse to start unless the loopback-only network fence is preloaded (use recon-offline.mjs, which builds the
 // isolated environment) and no credential-like variable is present. They never read an owner credential file and never import a live adapter.
 // Exit codes of execute: 0 every comparison equals its pin; 4 the reading completed and DIFFERENCES were observed; 2 STOP; 3 INIT_REFUSED (nothing was run).
+// `execute` first compares the ACTUAL bytes of every file of this package with CODE-SHA256SUMS.txt (recon-integrity.mjs) and only then checks the permit, claims the namespace,
+// reads the cached login or sends a request; a changed, missing or unlisted file is INIT_REFUSED (exit 3) with nothing claimed.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,6 +20,7 @@ import { RECON, STOP_CODES } from './recon-pins.mjs'
 import { permitTemplate } from './recon-permit.mjs'
 import { loadPins, pinProblems, buildEntries, runRecon } from './recon-core.mjs'
 import { validateExpected } from './m1-state-lib.mjs'
+import { integrityProblems, parseSums, SUMS_FILE } from './recon-integrity.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CREDENTIAL_ENV = /^(GOOGLE_(?!CLOUD_PROJECT$)|GCLOUD(?!_PROJECT$)|CLOUDSDK_(?!CONFIG$)|FIREBASE_(?!EMULATORS_PATH$|CLI_DISABLE_UPDATE_CHECK$)|GH_|GITHUB_|AWS_|AZURE_|NPM_TOKEN|NODE_AUTH_TOKEN|HTTPS?_PROXY|ALL_PROXY)/i
@@ -30,15 +33,11 @@ export function offlineGuardProblems(env) {
   return problems
 }
 
+/** The same byte-integrity function that `execute` runs before its claim (actual files vs the manifest, unlisted files, unlisted imports). */
 export function sumsProblems(dir = HERE) {
-  const lines = fs.readFileSync(path.join(dir, 'CODE-SHA256SUMS.txt'), 'utf8').split('\n').filter(Boolean)
-  const problems = []
-  for (const l of lines) {
-    let actual = null
-    try { actual = createHash('sha256').update(fs.readFileSync(path.join(dir, ...l.slice(66).split('/')))).digest('hex') } catch { /* missing */ }
-    if (actual !== l.slice(0, 64)) problems.push(`code hash ${l.slice(66)}`)
-  }
-  return { problems, files: lines.length }
+  let files = 0
+  try { files = parseSums(fs.readFileSync(path.join(dir, SUMS_FILE), 'utf8'))?.length ?? 0 } catch { /* reported by integrityProblems */ }
+  return { problems: integrityProblems(dir), files }
 }
 
 export function selftest(dir = HERE) {
@@ -67,6 +66,11 @@ async function main() {
   if (['plan', 'selftest', 'permit-draft'].includes(cmd)) {
     const g = offlineGuardProblems(process.env)
     if (g.length) { line('INIT_REFUSED', `reason=offline guard: ${g[0]}`); process.exit(3) }
+  }
+  if (cmd === 'plan' || cmd === 'permit-draft') {
+    // the bindings printed by these modes are the hashes of the manifest: they are only meaningful for a package whose actual bytes equal it
+    const ip = integrityProblems(HERE)
+    if (ip.length) { line('INIT_REFUSED', `reason=integrity: ${ip[0]}`); process.exit(3) }
   }
   if (cmd === 'plan') {
     const pins = loadPins(HERE)

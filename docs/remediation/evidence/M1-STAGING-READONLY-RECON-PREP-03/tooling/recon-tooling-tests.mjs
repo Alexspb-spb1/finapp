@@ -60,16 +60,29 @@ t('the consumed-subject pin equals the accepted local evidence (journal hash, si
 })
 function sha256s(s) { return createHash('sha256').update(Buffer.from(s, 'utf8')).digest('hex') }
 t('the committed sanitized test evidence has no secret-pattern hit and no operating-system user name', () => {
-  const dir = path.join(EV, 'test-results')
-  if (!fs.existsSync(dir)) return 'test-results missing'
-  const s = scanSecrets(dir), u = scanUserNames(dir, currentUserNames())
+  const dirs = [path.join(EV, 'test-results'), path.join(EV, 'corrections-v1', 'test-results')].filter(d => fs.existsSync(d))
+  if (dirs.length === 0) return 'test-results missing'
+  const s = dirs.flatMap(d => scanSecrets(d)), u = dirs.flatMap(d => scanUserNames(d, currentUserNames()))
   return s.length === 0 && u.length === 0 ? true : `secret=${s.length} user=${u.length}`
+})
+t('the superseded v1 candidate (when present on this machine) is unchanged: its own manifest verifies and the manifest hash is the recorded one; the v1 evidence (test-results, recon-files.txt) is still in place', () => {
+  const V1 = 'D:\\projects\\finapp\\.runtime\\m1-recon-readonly-staging', RECORDED = '6fdb5009455c6c4377754d95495fb36c91775d8677dd1f977edb0eb5763c1622'
+  if (!fs.existsSync(path.join(EV, 'test-results', 'checks.txt')) || !fs.existsSync(path.join(EV, 'recon-files.txt'))) return 'the v1 evidence was removed'
+  if (!fs.existsSync(V1)) return 'SKIP'
+  const lines = fs.readFileSync(path.join(V1, 'CODE-SHA256SUMS.txt'), 'utf8').split('\n').filter(Boolean)
+  const bad = lines.filter(l => sha(path.join(V1, ...l.slice(66).split('/'))) !== l.slice(0, 64))
+  return sha(path.join(V1, 'CODE-SHA256SUMS.txt')) === RECORDED && bad.length === 0 && lines.length === 22 && !fs.existsSync(path.join(V1, 'recon-integrity.mjs')) ? true : `v1 changed: ${bad.length}`
+})
+t('the v2 source tree is a superset of the v1 file set plus recon-integrity.mjs and tests/relocate.mjs; recon-core.mjs, recon.mjs and the tests changed, the reused S1b files did not', () => {
+  const added = ['recon-integrity.mjs', 'tests/relocate.mjs']
+  const files = new Set(walk(SOURCE))
+  return added.every(f => files.has(f)) && files.size === 25 ? true : `files=${files.size}`
 })
 t('the runbook exists and carries the separate owner decision block, the PREPARED_NOT_AUTHORIZED status, the bootstrap limitation and the operation table', () => {
   const rb = path.resolve(EV, '..', '..', 'runbooks', 'M1-STAGING-READONLY-RECON-PREPARED.md')
   if (!fs.existsSync(rb)) return 'runbook missing'
   const text = fs.readFileSync(rb, 'utf8')
-  return ['PREPARED_NOT_AUTHORIZED', 'Решение владельца', 'authExactLookup', 'configstore', 'не входит в S1b'].every(s => text.includes(s)) ? true : 'runbook sections missing'
+  return ['PREPARED_NOT_AUTHORIZED', 'Решение владельца', 'authExactLookup', 'configstore', 'не входит в S1b', 'recon-integrity', 'm1-recon-readonly-staging-v2', 'SUPERSEDED'].every(s => text.includes(s)) ? true : 'runbook sections missing'
 })
 
 fs.rmSync(tmp, { recursive: true, force: true })

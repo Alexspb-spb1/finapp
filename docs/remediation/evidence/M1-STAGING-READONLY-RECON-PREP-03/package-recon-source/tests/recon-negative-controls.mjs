@@ -8,6 +8,7 @@ import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { makeWorld, rehearsalCfg, recorderFetch, rawFunction, FN_IDS, RULES_TEXT, RULES_PRE_TEXT, SYNTH_TOKEN, bootstrapOk, newUnit, sha, PKG } from './synthetic.mjs'
+import { relocatedCopy, writeSums, rootsOf } from './relocate.mjs'
 
 const imp = f => import(pathToFileURL(path.join(PKG, f)).href)
 const { RECON, STOP_CODES, Blocked, namespaceProblems, targetProblems } = await imp('recon-pins.mjs')
@@ -96,9 +97,9 @@ await t('allowlist: the Auth lookup body must be exactly {"email":[<one syntheti
 const mkClient = (world, opts = {}) => {
   const unit = newUnit(); fs.mkdirSync(unit, { recursive: true })
   const ledgerFile = path.join(unit, 'ledger.jsonl')
-  const ledger = createLedger(ledgerFile)
+  const ledger = createLedger(ledgerFile, opts.ledgerNow)
   const rec = recorderFetch(world ?? makeWorld(), opts.override)
-  const client = createClient({ fetchImpl: opts.fetchImpl ?? rec.fetchImpl, entries, ledger, token: 'token' in opts ? opts.token : SYNTH_TOKEN, now: opts.now, limits: opts.limits })
+  const client = createClient({ fetchImpl: opts.fetchImpl ?? rec.fetchImpl, entries, ledger, token: 'token' in opts ? opts.token : SYNTH_TOKEN, now: opts.now, limits: opts.limits, signalFor: opts.signalFor })
   return { client, calls: rec.calls, ledgerFile, ledger }
 }
 const ledgerOf = f => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
@@ -151,6 +152,106 @@ await t('client: the deadline stops everything before the next request', async (
   clock += RECON.limits.globalDeadlineMs + 1
   return (await rejectsWith(client.request('GET', entryUrl(entries.find(e => e.id === 'functions-v1-list'))), 'deadline')) && calls.length === 1
 })
+
+// ── the HARD global deadline (corrections V1, CR3): deterministic (injected clock and signal factory, no sleep, no socket) ──────────────────────
+const DL = RECON.limits.globalDeadlineMs
+const V1URL = entryUrl(entries.find(e => e.id === 'functions-v1-list'))
+const timed = (opts = {}) => { const st = { clock: 0 }; const seen = []; const c = mkClient(null, { now: () => st.clock, signalFor: ms => { seen.push(ms); return new AbortController().signal }, ...opts }); return { ...c, st, seen } }
+const chunk = s => new TextEncoder().encode(s)
+/** A response whose body yields one step per READ (highWaterMark 0: nothing is pulled early); a step returns bytes, or null to close; `cancelled()` reports a cancel of the stream. */
+const steppedBody = steps => { let i = 0, cancelled = false; const body = new ReadableStream({ pull(c) { const v = steps[i++](); if (v === null) c.close(); else c.enqueue(v) }, cancel() { cancelled = true } }, { highWaterMark: 0 }); return { response: new Response(body, { status: 200 }), cancelled: () => cancelled } }
+const lastResult = f => ledgerOf(f).filter(e => e.phase === 'RESULT').at(-1)
+await t('deadline (start): a request may START only while budget is left - DL-1 ms starts, exactly DL and DL+1 are denied before any dispatch', async () => {
+  const a = timed(); a.st.clock = DL - 1; await a.client.request('GET', V2)
+  const b = timed(); b.st.clock = DL; const rb = await rejectsWith(b.client.request('GET', V2), 'deadline')
+  const c = timed(); c.st.clock = DL + 1; const rc = await rejectsWith(c.client.request('GET', V2), 'deadline')
+  return a.calls.length === 1 && rb && rc && b.calls.length === 0 && c.calls.length === 0 && ledgerOf(b.ledgerFile)[0].phase === 'DENIED' && ledgerOf(b.ledgerFile).length === 1
+})
+await t('deadline (signal): the request signal is the SMALLER of the per-request timeout and the budget left (10000 ms at the start, 500 ms with 500 ms left, 10000 ms with 20 s left)', async () => {
+  const a = timed(); await a.client.request('GET', V2)
+  const b = timed(); b.st.clock = DL - 500; await b.client.request('GET', V2)
+  const c = timed(); c.st.clock = DL - 20000; await c.client.request('GET', V2)
+  return [a, b, c].map(x => x.seen.join()).join('|') === '10000|500|10000'
+})
+await t('deadline (headers): the auditor counterexample - started 119500 ms, answered 128500 ms (9 s, inside the 10 s request timeout) - is a STOP deadline, not a success; the body is cancelled and no later request is dispatched', async () => {
+  let tm, cancelled = false
+  tm = timed({ override: () => { tm.st.clock = 128500; const body = new ReadableStream({ pull(c) { c.enqueue(chunk('{}')); c.close() }, cancel() { cancelled = true } }, { highWaterMark: 0 }); return new Response(body, { status: 200 }) } })
+  tm.st.clock = 119500
+  const stopped = await rejectsWith(tm.client.request('GET', V2), 'deadline')
+  const last = lastResult(tm.ledgerFile)
+  const later = await rejectsWith(tm.client.request('GET', V1URL), 'deadline')
+  return stopped && cancelled && last.outcome === 'deadline' && last.elapsedMs === 9000 && later && tm.calls.length === 1 && !ledgerOf(tm.ledgerFile).some(e => e.outcome === 'ok')
+})
+await t('deadline (headers boundary): an answer exactly AT the deadline is accepted, one millisecond after it is a STOP', async () => {
+  let at, tm
+  const mk = () => { const t2 = timed({ override: () => { t2.st.clock = at; return new Response('{}', { status: 200 }) } }); t2.st.clock = DL - 2000; return t2 }
+  at = DL; tm = mk(); const okAt = (await tm.client.request('GET', V2)).status === 200
+  at = DL + 1; tm = mk(); const late = await rejectsWith(tm.client.request('GET', V2), 'deadline')
+  return okAt && late
+})
+await t('deadline (status): an error status or a redirect that ARRIVES after the deadline is a STOP deadline (never http-5xx / redirect decided after the budget), and the body is cancelled', async () => {
+  const out = []
+  for (const make of [() => new Response('x', { status: 503 }), () => new Response(null, { status: 302, headers: { location: 'https://evil.example/' } })]) {
+    let tm
+    tm = timed({ override: () => { tm.st.clock = DL + 1; return make() } }); tm.st.clock = DL - 1000
+    out.push(await rejectsWith(tm.client.request('GET', V2), 'deadline') && lastResult(tm.ledgerFile).outcome === 'deadline')
+  }
+  return out.every(Boolean)
+})
+await t('deadline (body): a streamed body that crosses the deadline between chunks is cancelled and ends in a STOP deadline (no success, no later request)', async () => {
+  let tm, probe
+  tm = timed({ override: () => { probe = steppedBody([() => chunk('{"functions":['), () => { tm.st.clock = DL + 5000; return chunk(']}') }]); return probe.response } })
+  tm.st.clock = DL - 1000
+  const stopped = await rejectsWith(tm.client.request('GET', V2), 'deadline')
+  const last = lastResult(tm.ledgerFile)
+  return stopped && probe.cancelled() && last.outcome === 'deadline' && last.bytes === 14 && !ledgerOf(tm.ledgerFile).some(e => e.outcome === 'ok') && (await rejectsWith(tm.client.request('GET', V1URL), 'deadline')) && tm.calls.length === 1
+})
+await t('deadline (last read): the FINAL read that reports the end of the body after the deadline is a STOP deadline, not the success of the last request', async () => {
+  let tm
+  tm = timed({ override: () => steppedBody([() => chunk('{}'), () => { tm.st.clock = DL + 1; return null }]).response })
+  tm.st.clock = DL - 1000
+  const stopped = await rejectsWith(tm.client.request('GET', V2), 'deadline')
+  return stopped && lastResult(tm.ledgerFile).outcome === 'deadline' && !ledgerOf(tm.ledgerFile).some(e => e.outcome === 'ok')
+})
+await t('deadline (body boundary): a body that ends exactly AT the deadline is a success', async () => {
+  let tm
+  tm = timed({ override: () => steppedBody([() => chunk('{}'), () => { tm.st.clock = DL; return null }]).response })
+  tm.st.clock = DL - 1000
+  const r = await tm.client.request('GET', V2)
+  return r.bytes.toString() === '{}' && lastResult(tm.ledgerFile).outcome === 'ok'
+})
+await t('deadline (abort): an abort while the budget bounds the request is `deadline`, an abort of the full per-request timeout stays `timeout` - for the headers and for the body', async () => {
+  const timeoutErr = () => Object.assign(new Error('t'), { name: 'TimeoutError' })
+  const code = async (clock, mode) => {
+    const tm = timed({ override: () => { if (mode === 'headers') throw timeoutErr(); return new Response(new ReadableStream({ pull() { throw timeoutErr() } }, { highWaterMark: 0 }), { status: 200 }) } })
+    tm.st.clock = clock
+    try { await tm.client.request('GET', V2); return 'resolved' } catch (e) { return e.code }
+  }
+  return [await code(DL - 500, 'headers'), await code(0, 'headers'), await code(DL - 500, 'body'), await code(0, 'body')].join() === 'deadline,timeout,deadline,timeout'
+})
+await t('deadline (intent): when the budget runs out while the INTENT is being written, the request is NOT dispatched (INTENT then RESULT deadline)', async () => {
+  const st = { clock: 0, ledgerCalls: 0 }
+  const m = mkClient(null, { now: () => st.clock, ledgerNow: () => { if (++st.ledgerCalls === 1) st.clock = DL + 10; return st.clock } })
+  const stopped = await rejectsWith(m.client.request('GET', V2), 'deadline')
+  const ev = ledgerOf(m.ledgerFile)
+  return stopped && m.calls.length === 0 && ev.map(e => e.phase).join() === 'INTENT,RESULT' && ev[1].outcome === 'deadline'
+})
+await t('deadline (real signal on a loopback server): headers that never arrive and a body that stalls halfway both end as STOP deadline when the budget is small, long before the 10 s request timeout', async () => {
+  const http = await import('node:http')
+  const server = http.createServer((req, res) => { if (req.url === '/body') { res.writeHead(200, { 'content-type': 'application/json' }); res.write('{"functions":[') } /* /headers: never answers */ })
+  await new Promise(r => server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${server.address().port}`
+  try {
+    const one = async route => {
+      const unit = newUnit(); fs.mkdirSync(unit, { recursive: true })
+      const c = createClient({ fetchImpl: (url, init) => fetch(`${base}${route}`, init), entries, ledger: createLedger(path.join(unit, 'l.jsonl')), token: SYNTH_TOKEN, limits: { ...RECON.limits, globalDeadlineMs: 400 } })
+      const t0 = Date.now(); const code = await c.request('GET', V2).then(() => 'resolved', e => e.code)
+      return { code, ms: Date.now() - t0 }
+    }
+    const h = await one('/headers'), b = await one('/body')
+    return h.code === 'deadline' && b.code === 'deadline' && h.ms < 5000 && b.ms < 5000 ? true : `${JSON.stringify(h)} ${JSON.stringify(b)}`
+  } finally { server.closeAllConnections?.(); server.close() }
+})
 await t('client: the bearer token goes ONLY to the googleapis entries, together with the quota project; the stage host never sees an Authorization header', async () => {
   const w = makeWorld()
   const { cfg, calls } = rehearsalCfg(w)
@@ -202,6 +303,34 @@ await t('permit operations are independent: functions only / frontend only / no 
   const c = rehearsalCfg(makeWorld(), { ops: { credentialConfigRead: true, functionsMetadataRead: true, rulesReleaseRead: true, frontendPublicRead: true, authExactLookup: false } })
   await runRecon(c.cfg)
   return ra.exitCode === 0 && a.calls.length === 2 && a.bootstrapCalls.length === 1 && rb.exitCode === 0 && b.calls.length === 17 && b.bootstrapCalls.length === 0 && c.calls.length === 21 && !c.calls.some(x => x.method === 'POST')
+})
+
+// ── the hard deadline at the level of the whole reading (injected clock) ───────────────────────────────────────────────────────────────────
+const T0 = Date.parse('2026-11-01T12:00:00Z')
+await t('deadline (run): the LAST frontend request that completes after the global deadline ends the reading as STOP deadline (exit 2, no success, no result for that request)', async () => {
+  const st = { clock: T0 }; const w = makeWorld(); const lastKey = `GET stage.aktivmetr.ru/finapp/${w.frontend.files.at(-1).path}`
+  const { cfg, calls } = rehearsalCfg(w, { override: k => { if (k === lastKey) st.clock += DL + 1000 }, extra: { now: () => st.clock } })
+  const r = await runRecon(cfg)
+  const ev = ledgerOf(path.join(cfg.evDir, 'recon-ledger.jsonl'))
+  const res = JSON.parse(fs.readFileSync(path.join(cfg.evDir, 'recon-result.json'), 'utf8'))
+  return r.exitCode === 2 && r.status === 'STOP' && r.stop.code === 'deadline' && r.stop.branch === 'frontend' && calls.length === 17 && res.status === 'STOP' && !res.branches.frontend && ev.filter(e => e.phase === 'RESULT' && e.outcome === 'ok').length === 16 &&
+    ev.filter(e => e.phase === 'RESULT' && e.outcome === 'deadline').length === 1 ? true : `${r.status} ${JSON.stringify(r.stop)} calls=${calls.length}`
+})
+await t('deadline (run): non-request work that crosses the deadline (the cached-login read) is not a success either - STOP deadline at the end of the run; the same crossing before further requests stops them undispatched', async () => {
+  const onlyBootstrap = { credentialConfigRead: true, functionsMetadataRead: false, rulesReleaseRead: false, frontendPublicRead: false, authExactLookup: false }
+  const a = { clock: T0 }
+  const ra = rehearsalCfg(makeWorld(), { ops: onlyBootstrap, bootstrap: () => { a.clock += DL + 1; return bootstrapOk() }, extra: { now: () => a.clock } })
+  const resA = await runRecon(ra.cfg)
+  const b = { clock: T0 }
+  const rb = rehearsalCfg(makeWorld(), { bootstrap: () => { b.clock += DL + 1; return bootstrapOk() }, extra: { now: () => b.clock } })
+  const resB = await runRecon(rb.cfg)
+  return resA.exitCode === 2 && resA.stop.code === 'deadline' && resA.stop.branch === 'run' && ra.calls.length === 0 && resB.exitCode === 2 && resB.stop.code === 'deadline' && resB.stop.branch === 'functions' && rb.calls.length === 17 ? true : `${JSON.stringify(resA.stop)} ${JSON.stringify(resB.stop)} ${rb.calls.length}`
+})
+await t('deadline (run): a reading that finishes exactly at its deadline is still complete (no STOP)', async () => {
+  const st = { clock: T0 }; const w = makeWorld(); const lastKey = `GET stage.aktivmetr.ru/finapp/${w.frontend.files.at(-1).path}`
+  const { cfg } = rehearsalCfg(w, { ops: { credentialConfigRead: false, functionsMetadataRead: false, rulesReleaseRead: false, frontendPublicRead: true, authExactLookup: false }, override: k => { if (k === lastKey) st.clock += DL }, extra: { now: () => st.clock } })
+  const r = await runRecon(cfg)
+  return r.exitCode === 0 && r.status === 'READ_COMPLETE_ALL_MATCH_PINS'
 })
 
 // ── observed DIFFERENCES (well-formed answers that differ from the pins): recorded, not hidden, not STOP ──────────────────────────────
@@ -364,6 +493,132 @@ await t('INIT: rehearsal reading outside the rehearsal base / unknown profile / 
   return rs.every(r => r.status === 'INIT_REFUSED') && a.calls.length + b.calls.length === 0 && !fs.existsSync('D:\\elsewhere')
 })
 
+// ── BYTE INTEGRITY of the package (corrections V1, CR1) ────────────────────────────────────────────────────────────────────────────────────
+// Every case below works on a self-consistent RELOCATED COPY of the package under test (roots in a sibling temp directory, manifest regenerated, frontend pins replaced by the
+// synthetic ones), drives the copy's OWN engine in the STAGING profile with an injected recorder fetch and an empty owner profile, and changes bytes AFTER the permit was bound.
+const fixtures = []
+const imp2 = (dir, f) => import(pathToFileURL(path.join(dir, f)).href)
+const integrityMod = await imp('recon-integrity.mjs')
+const ALL_OPS = Object.fromEntries(Object.keys(RECON.operationClasses).map(k => [k, true]))
+const FRONTEND_OPS = Object.fromEntries(Object.keys(RECON.operationClasses).map(k => [k, k === 'frontendPublicRead']))
+async function stagingFixture({ ops = FRONTEND_OPS, realPins = false, realClock = false } = {}) {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'recon-stg-')); fixtures.push(parent)
+  const dir = path.join(parent, 'pkg')
+  const w = makeWorld()
+  relocatedCopy(PKG, dir, realPins ? {} : { replace: { 'frontend-allowlist.json': `${JSON.stringify(w.frontend, null, 2)}\n` } })
+  const core2 = await imp2(dir, 'recon-core.mjs'), pins2 = await imp2(dir, 'recon-pins.mjs'), permit2 = await imp2(dir, 'recon-permit.mjs')
+  const h = core2.loadPins(dir).hashes
+  const permit = permit2.permitTemplate()
+  Object.assign(permit, {
+    status: 'APPROVED', bytes: { codeSums: h.codeSumsSha256, requestAllowlist: h.requestAllowlistSha256, frontendAllowlist: h.frontendAllowlistSha256, consumedSubjectPin: h.consumedSubjectPinSha256, expectedState: h.expectedStateSha256, distManifest: h.distManifestSha256 },
+    operations: { ...ops }, acknowledgements: Object.fromEntries(permit2.ACK_KEYS.map(k => [k, true])),
+    // a child process (CLI path) judges the permit window by the real clock; in-process cases use the injected NOW
+    owner: realClock ? { approvalRef: 'owner-decision-ref-1', approvedAtUtc: new Date(Date.now() - 60000).toISOString(), expiresAtUtc: new Date(Date.now() + 3600000).toISOString() } : { approvalRef: 'owner-decision-ref-1', approvedAtUtc: '2026-11-01T11:00:00Z', expiresAtUtc: '2026-11-01T12:30:00Z' }
+  })
+  const rec = recorderFetch(w)
+  const permitFile = path.join(parent, 'permit.json')
+  fs.writeFileSync(permitFile, JSON.stringify(permit))
+  const evDir = path.join(pins2.RECON.runtimeRoot, pins2.RECON.evidenceName)
+  return { dir, parent, w, core2, permit, permitFile, rec, evDir, cfg: (over = {}) => ({ profile: 'staging', pkg: dir, evDir, env: { XDG_CONFIG_HOME: emptyProfile }, fetchImpl: rec.fetchImpl, permit, now: () => NOW, ...over }) }
+}
+const touch = (dir, rel) => fs.appendFileSync(path.join(dir, ...rel.split('/')), /\.(json|txt)$/.test(rel) ? '\n' : '\n// changed after the permit was bound\n')
+const refusedIntegrity = async (fx, why) => {
+  const r = await fx.core2.runRecon(fx.cfg())
+  return r.status === 'INIT_REFUSED' && r.exitCode === 3 && /^integrity:/.test(r.reason) && (!why || why.test(r.reason)) && fx.rec.calls.length === 0 && !fs.existsSync(path.dirname(fx.evDir)) ? true : `${r.status} ${r.reason} calls=${fx.rec.calls.length}`
+}
+await t('integrity (positive control): an unchanged self-consistent copy passes integrity and the permit, claims its namespace and completes a staging-profile frontend reading (17 injected requests, exit 0)', async () => {
+  const fx = await stagingFixture(); const r = await fx.core2.runRecon(fx.cfg())
+  return r.exitCode === 0 && r.status === 'READ_COMPLETE_ALL_MATCH_PINS' && fx.rec.calls.length === 17 && fs.existsSync(path.join(fx.evDir, 'recon-claim.json')) && integrityMod.integrityProblems(fx.dir).length === 0 ? true : `${r.status} ${r.reason} calls=${fx.rec.calls.length}`
+})
+await t('integrity (positive control): the package under test itself has no integrity problem and its selftest passes', () => {
+  const p = integrityMod.integrityProblems(PKG); const s = selftest(PKG)
+  return p.length === 0 && s.ok && s.files === fs.readFileSync(path.join(PKG, 'CODE-SHA256SUMS.txt'), 'utf8').split('\n').filter(Boolean).length ? true : `${p.join('; ')} | ${s.problems.join('; ')}`
+})
+const CHANGED = ['recon-bootstrap.mjs', 'recon-core.mjs', 'recon.mjs', 'recon-permit.mjs', 'recon-pins.mjs', 'recon-integrity.mjs', 'm1-state-lib.mjs', 'recon-offline.mjs', 'offline-fence/loopback-only.cjs', 'offline-fence/isolated-env.mjs',
+  'offline-fence/FENCE-PINS.json', 'request-allowlist.json', 'frontend-allowlist.json', 'consumed-subject-pin.json', 'expected-state-r3.json', 'dist-staging-manifest.txt', 'tests/synthetic.mjs']
+for (const rel of CHANGED) {
+  await t(`integrity: ${rel} changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read`, async () => {
+    const fx = await stagingFixture({ ops: ALL_OPS }); touch(fx.dir, rel)
+    return refusedIntegrity(fx, new RegExp(`code hash ${rel.replace(/[.]/g, '\\.')}`))
+  })
+}
+const STRUCTURAL = [
+  ['a listed helper is missing', d => fs.rmSync(path.join(d, 'recon-bootstrap.mjs')), /file missing: recon-bootstrap\.mjs/],
+  ['an unlisted extra helper is added to the package', d => fs.writeFileSync(path.join(d, 'recon-extra.mjs'), 'export const x = 1\n'), /unlisted file: recon-extra\.mjs/],
+  ['an unlisted file is added inside the fence directory', d => fs.writeFileSync(path.join(d, 'offline-fence', 'extra.cjs'), 'module.exports = 1\n'), /unlisted file: offline-fence\/extra\.cjs/],
+  ['a results directory with a file is added', d => { fs.mkdirSync(path.join(d, 'results')); fs.writeFileSync(path.join(d, 'results', 'x.txt'), 'x') }, /unlisted file: results\/x\.txt/],
+  ['the manifest is emptied', d => fs.writeFileSync(path.join(d, 'CODE-SHA256SUMS.txt'), ''), /manifest malformed/],
+  ['the manifest is malformed', d => fs.writeFileSync(path.join(d, 'CODE-SHA256SUMS.txt'), 'not a manifest\n'), /manifest malformed/],
+  ['the manifest is missing', d => fs.rmSync(path.join(d, 'CODE-SHA256SUMS.txt')), /manifest unreadable/],
+  ['the manifest lacks a required helper', d => { const f = path.join(d, 'CODE-SHA256SUMS.txt'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').split('\n').filter(l => !l.endsWith('  recon-bootstrap.mjs')).join('\n')) }, /required file not listed: recon-bootstrap\.mjs/],
+  ['the manifest lists a file twice', d => { const f = path.join(d, 'CODE-SHA256SUMS.txt'); const t0 = fs.readFileSync(f, 'utf8'); fs.writeFileSync(f, t0 + t0.split('\n')[0] + '\n') }, /twice/]
+]
+for (const [name, fn, why] of STRUCTURAL) {
+  await t(`integrity: ${name} -> INIT_REFUSED, 0 requests, nothing claimed`, async () => { const fx = await stagingFixture({ ops: ALL_OPS }); fn(fx.dir); return refusedIntegrity(fx, why) })
+}
+await t('integrity: an OLD permit is invalid for changed code - refreshing the manifest after a change is refused by the permit binding (codeSums), still before any request or claim', async () => {
+  const fx = await stagingFixture({ ops: ALL_OPS }); touch(fx.dir, 'recon-bootstrap.mjs'); writeSums(fx.dir)
+  const r = await fx.core2.runRecon(fx.cfg())
+  return r.status === 'INIT_REFUSED' && /^permit: permit is not bound to these bytes \(codeSums\)/.test(r.reason) && fx.rec.calls.length === 0 && !fs.existsSync(path.dirname(fx.evDir)) ? true : `${r.status} ${r.reason}`
+})
+await t('integrity: the structural pin checks stay independent of the manifest - tampered pin DATA with a refreshed manifest and a matching permit is still refused by the pins (not by integrity)', async () => {
+  const fx = await stagingFixture(); const f = path.join(fx.dir, 'frontend-allowlist.json'); const j = JSON.parse(fs.readFileSync(f, 'utf8')); j.host = 'app.aktivmetr.ru'; fs.writeFileSync(f, JSON.stringify(j))
+  writeSums(fx.dir)
+  const h = fx.core2.loadPins(fx.dir).hashes; fx.permit.bytes = { codeSums: h.codeSumsSha256, requestAllowlist: h.requestAllowlistSha256, frontendAllowlist: h.frontendAllowlistSha256, consumedSubjectPin: h.consumedSubjectPinSha256, expectedState: h.expectedStateSha256, distManifest: h.distManifestSha256 }
+  const r = await fx.core2.runRecon(fx.cfg())
+  return r.status === 'INIT_REFUSED' && /^pins: frontend allowlist/.test(r.reason) && fx.rec.calls.length === 0 && !fs.existsSync(path.dirname(fx.evDir)) ? true : `${r.status} ${r.reason}`
+})
+await t('integrity: the selftest runs the same check - a changed helper makes SELFTEST fail with its path, an unchanged copy passes', async () => {
+  const fx = await stagingFixture({ realPins: true }); const s0 = (await imp2(fx.dir, 'recon.mjs')).selftest(fx.dir)
+  touch(fx.dir, 'recon-bootstrap.mjs'); const s1 = (await imp2(fx.dir, 'recon.mjs')).selftest(fx.dir)
+  return s0.ok && !s1.ok && s1.problems.includes('code hash recon-bootstrap.mjs') ? true : `${s0.ok} ${s1.problems}`
+})
+await t('integrity (unit): relative imports must be listed, only node: builtins may be imported, comments and method calls such as Buffer.from(\'x\') are not imports, a required file may not be absent from both disk and manifest', async () => {
+  const unit = async edit => { const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'recon-int-')); fixtures.push(parent); const d = path.join(parent, 'pkg'); relocatedCopy(PKG, d); edit(d); writeSums(d); return integrityMod.integrityProblems(d) }
+  const add = (rel, text) => d => fs.appendFileSync(path.join(d, rel), text)
+  const clean = await unit(() => {})
+  const ghost = await unit(add('recon-permit.mjs', "\nimport './ghost.mjs'\n"))
+  const dyn = await unit(add('recon-permit.mjs', "\nconst z = await import('./ghost2.mjs')\n"))
+  const req = await unit(add('offline-fence/loopback-only.cjs', "\nrequire('./ghost3.cjs')\n"))
+  const third = await unit(add('recon-permit.mjs', "\nimport lodash from 'lodash'\n"))
+  const reexp = await unit(add('recon-permit.mjs', "\nexport * from './ghost4.mjs'\n"))
+  const comment = await unit(add('recon-permit.mjs', "\n// import './ghost5.mjs'\nconst b = Buffer.from('x')\n"))
+  const noReq = await unit(d => fs.rmSync(path.join(d, 'recon-bootstrap.mjs')))
+  return clean.length === 0 && ghost.some(p => /dependency not listed: ghost\.mjs/.test(p)) && dyn.some(p => /dependency not listed: ghost2\.mjs/.test(p)) && req.some(p => /dependency not listed: offline-fence\/ghost3\.cjs/.test(p)) &&
+    third.some(p => /dependency outside the package in recon-permit\.mjs/.test(p)) && reexp.some(p => /dependency not listed: ghost4\.mjs/.test(p)) && comment.length === 0 && noReq.some(p => /required file not listed: recon-bootstrap\.mjs/.test(p)) ? true :
+    JSON.stringify({ clean, ghost, dyn, req, third, reexp, comment, noReq })
+})
+await t('integrity (CLI path, fenced): `recon.mjs execute` with a valid permit refuses a changed helper with exit 3 and reason integrity - the fence sees 0 events, nothing is claimed; the unchanged copy passes integrity and permit and its first request is stopped by the fence', async () => {
+  const run = (fx, log) => spawnSync(process.execPath, ['--require', path.join(fx.dir, 'offline-fence', 'loopback-only.cjs'), path.join(fx.dir, 'recon.mjs'), 'execute', '--permit', fx.permitFile],
+    { env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, XDG_CONFIG_HOME: emptyProfile, M1_FENCE_LOG: log }, encoding: 'utf8', windowsHide: true, timeout: 60000 })
+  const bad = await stagingFixture({ ops: ALL_OPS, realClock: true }); touch(bad.dir, 'recon-bootstrap.mjs')
+  const logBad = path.join(bad.parent, 'fence.jsonl'); fs.writeFileSync(logBad, '')
+  const rb = run(bad, logBad)
+  const ok = await stagingFixture({ realClock: true }); const logOk = path.join(ok.parent, 'fence.jsonl'); fs.writeFileSync(logOk, '')
+  const ro = run(ok, logOk)
+  const evOk = fs.readFileSync(logOk, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const stopped = rb.status === 3 && /INIT_REFUSED reason=integrity: code hash recon-bootstrap\.mjs/.test(rb.stdout) && fs.readFileSync(logBad, 'utf8') === '' && !fs.existsSync(path.dirname(bad.evDir))
+  const passed = ro.status === 2 && /STOP branch=frontend code=network-unknown/.test(ro.stdout) && evOk.length >= 1 && evOk.every(e => e.decision === 'blocked' && e.host === RECON.stageHost) && fs.existsSync(path.join(ok.evDir, 'recon-claim.json'))
+  return stopped && passed ? true : `stopped=${stopped} passed=${passed} ok=${ro.status} ${ro.stdout.slice(0, 100)} ${ro.stderr.slice(0, 100)} fence=${JSON.stringify(evOk.slice(0, 2))} bad=${rb.status}`
+})
+await t('integrity (offline launcher): plan / permit-draft / selftest of a package with a changed helper are refused (exit 3 / selftest fail) with 0 network events - the printed bindings are only meaningful for unchanged bytes', async () => {
+  const fx = await stagingFixture(); touch(fx.dir, 'recon-bootstrap.mjs')
+  const parent = { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH }
+  const run = cmd => spawnSync(process.execPath, [path.join(fx.dir, 'recon-offline.mjs'), cmd], { env: parent, encoding: 'utf8', windowsHide: true })
+  const [p, d, s] = ['plan', 'permit-draft', 'selftest'].map(run)
+  const ev = r => Number((r.stderr.match(/fenceEvents=(\d+)/) ?? [])[1])
+  return p.status === 3 && d.status === 3 && /integrity/.test(p.stdout) && /integrity/.test(d.stdout) && s.status === 2 && /SELFTEST_FAIL/.test(s.stdout) && ev(p) === 0 && ev(d) === 0 && ev(s) === 0 ? true : `${p.status} ${d.status} ${s.status} ${p.stdout.slice(0, 100)}`
+})
+await t('namespace gate itself: every consumed / reserved evidence name is refused in EVERY profile (the rehearsal profile reaches the gate without the pinned-name check in front of it), and the pinned name is not among them', async () => {
+  const gate = RECON.consumedNames.filter(n => !namespaceProblems({ profile: 'rehearsal', evidenceDir: RECON.rehearsalBase + n, exists: () => false }).some(p => /consumed or reserved/.test(p)))
+  const viaRun = []
+  for (const n of ['m1-stg-s1b-714d0f91', 'm1-staging-run-714d0f91-v5']) {
+    const { cfg, calls } = rehearsalCfg(makeWorld()); cfg.evDir = path.join(RECON.rehearsalBase, n)
+    const r = await runRecon(cfg); viaRun.push(r.status === 'INIT_REFUSED' && /consumed or reserved/.test(r.reason) && calls.length === 0 && !fs.existsSync(cfg.evDir))
+  }
+  return gate.length === 0 && viaRun.every(Boolean) && !RECON.consumedNames.includes(RECON.evidenceName) ? true : `gate=${gate} viaRun=${viaRun}`
+})
+
 // ── one-use claim ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 await t('claim: a competitor taking the namespace between the check and the claim wins - the loser runs nothing (0 fetch, 0 bootstrap) and the competitor evidence is preserved byte for byte', async () => {
   let opts = 'unset'
@@ -459,6 +714,7 @@ await t('real fetch semantics the engine relies on: redirect=error rejects (-> n
 })
 await t('the real staging namespace was never created by these tests, and no owner credential file was involved', () => startedClean && !fs.existsSync(realDir))
 
+for (const p of fixtures) fs.rmSync(p, { recursive: true, force: true })
 fs.rmSync(emptyProfile, { recursive: true, force: true })
 console.log(`RECON_NEGATIVE_CONTROLS ${fail ? 'FAIL' : 'PASS'} ${pass}/${pass + fail}${fail ? ` failed=${failures.join(' | ')}` : ''}`)
 process.exitCode = fail ? 1 : 0
