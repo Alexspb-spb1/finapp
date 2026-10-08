@@ -35,7 +35,7 @@ run "offline launcher: plan of the v2 candidate" bash -c 'node "$1/recon-offline
 run "offline launcher: permit-draft of the v2 candidate" bash -c 'node "$1/recon-offline.mjs" permit-draft > /dev/null' _ "$FINAL"
 if [ -n "$V1" ]; then
   run "the superseded v1 candidate is unchanged (its own sums verify)" bash -c 'cd "$1" && sha256sum -c --quiet CODE-SHA256SUMS.txt' _ "$V1"
-  run "the superseded v1 candidate sums file hash is the recorded one" bash -c '[ "$(sha256sum "$1/CODE-SHA256SUMS.txt" | cut -c1-64)" = "$2" ]' _ "$V1" "$V1_SUMS_SHA"
+  run "the superseded v1 candidate sums file hash is the recorded one" bash -c 'cd "$1" && [ "$(sha256sum CODE-SHA256SUMS.txt | cut -c1-64)" = "$2" ]' _ "$V1" "$V1_SUMS_SHA"
 fi
 [ -n "$S1B" ] && run "the previous candidates are unchanged (S1b v2)" bash -c 'cd "$1" && sha256sum -c --quiet CODE-SHA256SUMS.txt' _ "$S1B"
 echo "### fresh hashes"
