@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "target": "demo-finapp",
+  "startedUtc": "2026-10-08T05:42:46.683Z",
+  "credentialProfile": "isolated",
+  "selftests": {
+    "recorder": {
+      "exit": 0,
+      "total": 31,
+      "failed": 0
+    },
+    "live-loopback": {
+      "exit": 0,
+      "total": 4,
+      "failed": 0
+    }
+  },
+  "status": "INTEGRATION_PASS",
+  "emulatorsReady": true,
+  "credentialEnvNamesPresent": [],
+  "integration": {
+    "test": "tests/seed-stop-recovery-emulator.mjs",
+    "exit": 0,
+    "summaryLine": "SEED_STOP_RECOVERY_EMULATOR PASS 13/13",
+    "seconds": 119
+  },
+  "jvm": {
+    "samples": 38,
+    "sampleErrors": 0,
+    "maxOwnedProcesses": 2,
+    "establishedLoopback": 186,
+    "establishedNonLoopback": 0,
+    "nonLoopbackAnyState": 0,
+    "nonLoopbackRemotes": [],
+    "coverage": "observed-not-enforced; TCP only; interval sampling"
+  },
+  "ownProcessCleanup": {
+    "stoppedProcesses": 2,
+    "portsFreeAfter": true,
+    "portsStillBusy": []
+  },
+  "fence": {
+    "guardedApis": [
+      "net.Socket.connect (net/tls/http/https/undici)",
+      "dns.lookup + dns.resolve*/reverse (+promises)",
+      "fetch",
+      "dgram send/connect"
+    ],
+    "events": 157,
+    "loopbackOrLocal": 156,
+    "blocked": 1,
+    "allowedNonLoopback": 0,
+    "blockedDestinations": [
+      "firebase-public.firebaseio.com"
+    ],
+    "processesObserved": 23
+  },
+  "limits": [
+    "Java (Auth/Firestore emulator JVM) is not fenced: only sampled (observed, not enforced)",
+    "The Functions emulator was not started in this run",
+    "Non-Node child processes and native add-ons are not fenced",
+    "Not a retroactive proof for earlier runs, including the earlier full run that logged an ADC warning"
+  ],
+  "finishedUtc": "2026-10-08T05:44:56.788Z"
+}
