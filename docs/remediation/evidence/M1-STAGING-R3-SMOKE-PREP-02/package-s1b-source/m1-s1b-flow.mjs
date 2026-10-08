@@ -40,6 +40,30 @@ export function readRunJournal(runDir) {
     return { events: lines.map(l => JSON.parse(l)) }
   } catch { return { unreadable: true } }
 }
+/** Number of events in the run journal BEFORE a tool invocation: a missing file is an empty baseline, a damaged one is untrusted (null). */
+export function journalBaseline(runDir) {
+  try { return fs.readFileSync(path.join(runDir, 'journal.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).length } catch (e) { return e?.code === 'ENOENT' ? 0 : null }
+}
+/** The outcome of ONE invocation of mode, read from the events appended since baseline and tied to the process exit code. Anything not exactly one MODE_START and one
+ * matching MODE_STOP of this invocation (missing, stale, damaged, ambiguous, exit code mismatch) is untrusted: { verified: false, kind: <reason> }. */
+export function invocationOutcome(runDir, baseline, mode, exitCode) {
+  if (baseline === null) return { verified: false, kind: 'journal-untrusted' }
+  const j = readRunJournal(runDir)
+  if (j.unreadable) return { verified: false, kind: 'journal-unreadable' }
+  if (j.events.length < baseline) return { verified: false, kind: 'journal-stale' }
+  const fresh = j.events.slice(baseline)
+  const starts = fresh.filter(e => e.event === 'MODE_START' && e.mode === mode)
+  const stops = fresh.filter(e => e.event === 'MODE_STOP' && e.mode === mode)
+  if (starts.length !== 1) return { verified: false, kind: 'journal-missing-or-stale' }
+  if (stops.length !== 1 || fresh.some(e => e.event === 'MODE_PASS' && e.mode === mode)) return { verified: false, kind: 'journal-ambiguous' }
+  const e = stops[0]
+  if (e.exitCode !== exitCode) return { verified: false, kind: 'journal-exit-mismatch' }
+  return { verified: true, kind: e.kind, dispatch: e.dispatch ?? null, reasonCode: e.reasonCode ?? null, reason: typeof e.reason === 'string' ? e.reason : '', deletesMayHaveBeenSent: e.deletesMayHaveBeenSent === true }
+}
+/** The ONLY non-zero cleanup/verify-clean outcome that may be followed by the read-only inventory: a verified assertion that deletes completed but synthetic resources remain. */
+export function verifiedRemainder(o) { return o?.verified === true && o.kind === 'assertion' && /^verify-clean\.(documents-absent|auth-absent): /.test(o.reason) }
+/** A verified refusal by the cleanup gates (exit 3, no deletes): a STOP with a recovery manifest, never followed by anything. */
+export function verifiedRefusal(o, exitCode) { return exitCode === 3 && o?.verified === true && o.kind === 'cleanup-refused' && o.deletesMayHaveBeenSent === false }
 export function lastStopOf(events, mode) {
   const e = events.filter(x => x.event === 'MODE_STOP' && x.mode === mode).at(-1)
   return e ? { kind: e.kind, dispatch: e.dispatch ?? null, reasonCode: e.reasonCode ?? null, reason: typeof e.reason === 'string' ? e.reason : '' } : null
@@ -104,7 +128,13 @@ export function runFlow(cfg) {
     ops = cfg.rehearsalOps ?? { cleanup: true, cleanupExactLookup: true, cleanupAfterProvenNonDispatch: false }
     if (!cfg.scenario || !path.isAbsolute(cfg.scenario) || !fs.existsSync(cfg.scenario)) return refuse('rehearsal requires an absolute scenario file')
   }
-  try { fs.mkdirSync(evDir, { recursive: true }) } catch { return refuse('could not create the evidence directory') }
+  // ONE-USE CLAIM of the evidence namespace: an ATOMIC, non-recursive mkdir (EEXIST = another run got there first or the namespace is consumed) BEFORE the first journal
+  // write, state write or tool call. The existence check above is only an early refusal; this is the claim. A partially claimed namespace stays consumed (never deleted
+  // or reused). Only the PARENT is created recursively. cfg.claimMkdir lets a test play the competitor at exactly this point (never passed by the CLI).
+  const claimMkdir = cfg.claimMkdir ?? fs.mkdirSync
+  try { fs.mkdirSync(path.dirname(evDir), { recursive: true }) } catch { return refuse('could not create the parent of the evidence directory') }
+  try { claimMkdir(evDir) } catch (e) { return refuse(e?.code === 'EEXIST' ? 'evidence namespace already claimed (lost the race or consumed): nothing was run' : 'could not claim the evidence directory') }
+  try { fs.writeFileSync(path.join(evDir, 's1b-claim.json'), JSON.stringify({ task: S1B.taskId, profile, pid: process.pid, claimedAt: new Date().toISOString() }) + '\n', { flag: 'wx' }) } catch { return refuse('could not write the claim marker (the namespace stays consumed)') }
 
   // ===== journal / state
   const journalFile = path.join(evDir, 's1b-journal.jsonl')
@@ -236,14 +266,33 @@ export function runFlow(cfg) {
         state.cleanup.run = false; state.cleanup.branch = 'RULES_EVIDENCE_NOT_LINKED'
         stopStage('step5', 'the Rules evidence changed after step 1: no cleanup')
       }
+      // Every non-zero cleanup / verify-clean is judged from ITS OWN MODE_STOP (this invocation's events only, tied to the exit code), never from the exit code alone.
+      // Only a verified refusal (3) or a verified remainder (assertion verify-clean.*) is a known class; everything else - unknown transport outcome, credentials, budget,
+      // integrity, unexpected, a missing/stale/damaged/ambiguous journal - is a SAFE_STOP with NO inventory, NO verify-clean, NO provider read, NO retry (manual classification).
+      const classify = (mode, code, baseline) => {
+        const o = invocationOutcome(runDir, baseline, mode, code)
+        journal('INVOCATION_CLASSIFIED', { mode, exitCode: code, verified: o.verified, kind: o.kind, dispatch: o.dispatch ?? null, reasonCode: o.reasonCode ?? null })
+        return o
+      }
+      const unsafe = (branch, o) => { state.cleanup.branch = branch; state.cleanup.manualClassificationRequired = true; state.cleanup.unsafeStop = { verified: o.verified, kind: o.kind, dispatch: o.dispatch ?? null } }
+      const baseCleanup = journalBaseline(runDir)
       const cx = runTool('cleanup', 'smoke', [...smokeBase(), '--mode', 'cleanup', '--rules-status', 'verified-new', '--rules-evidence', rulesEv], 'cleanup')
       state.cleanup.exitCode = cx
       if (cx === 0) {
+        const baseVerify = journalBaseline(runDir)
         state.cleanup.verifyCleanExit = runTool('verify-clean', 'smoke', [...smokeBase(), '--mode', 'verify-clean'], 'verify-clean')
-        if (state.cleanup.verifyCleanExit !== 0) { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); state.cleanup.branch = 'VERIFY_CLEAN_REMAINDER' }
-        else state.cleanup.branch = 'CLEANUP_COMPLETE_VERIFIED'
-      } else if (cx === 3) state.cleanup.branch = 'CLEANUP_REFUSED'
-      else { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); state.cleanup.branch = cx === 4 ? 'CLEANUP_PARTIAL' : 'CLEANUP_STOPPED_BEFORE_DELETES' }
+        if (state.cleanup.verifyCleanExit === 0) state.cleanup.branch = 'CLEANUP_COMPLETE_VERIFIED'
+        else {
+          const o = classify('verify-clean', state.cleanup.verifyCleanExit, baseVerify)
+          if (verifiedRemainder(o)) { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); state.cleanup.branch = 'VERIFY_CLEAN_REMAINDER' }
+          else unsafe('VERIFY_CLEAN_UNSAFE_STOP', o)
+        }
+      } else {
+        const o = classify('cleanup', cx, baseCleanup)
+        if (verifiedRefusal(o, cx)) state.cleanup.branch = 'CLEANUP_REFUSED'
+        else if (verifiedRemainder(o)) { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); state.cleanup.branch = 'CLEANUP_REMAINDER_VERIFIED' }
+        else unsafe('CLEANUP_UNSAFE_STOP', o)
+      }
       journal('CLEANUP_RESULT', state.cleanup); save()
       if (state.cleanup.branch === 'CLEANUP_COMPLETE_VERIFIED') checkpoint('step5')
     }

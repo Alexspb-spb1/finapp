@@ -105,6 +105,18 @@ try {
       return { pass: r.exit === 2 && r.res?.stop?.step === 'step4' && seed?.run === false && seed?.decision === 'manual-classification-required' && !l.includes('cleanup') && !l.includes('inventory') && l.filter(x => x === 'smoke-seed').length === 1 && !l.includes('smoke-ui') && remaining === 1,
         detail: { exit: r.exit, stop: r.res?.stop, decision: seed?.decision, authUsersRemaining: remaining, labels: l } }
     }],
+    // CR1 (Task02 review V1) with the REAL tools: the Auth delete of cleanup fails with an UNKNOWN outcome after the document deletes were sent (cleanup exit 4):
+    // the flow must stop - no inventory, no verify-clean, no further provider read - and the synthetic accounts remain for the manual decision.
+    ['cleanup-unknown-real', async () => {
+      await session.resetData()
+      const r = runRehearse('cleanup-unknown-real', { gh: { kind: 'success' }, reads: {} }, `--require=${path.join(pkg, 'tests', 'fault-auth-delete.cjs')}`)
+      const l = labelsOf(r)
+      const remaining = await authUsers()
+      const c = r.res?.cleanup
+      return { pass: r.exit === 2 && r.res?.stop?.step === 'step5' && c?.branch === 'CLEANUP_UNSAFE_STOP' && c?.exitCode === 4 && c?.manualClassificationRequired === true && c?.unsafeStop?.kind === 'transport' && c?.unsafeStop?.dispatch === 'unknown' &&
+        l.at(-1) === 'cleanup' && !l.includes('inventory') && !l.includes('verify-clean') && !l.includes('final-functions') && remaining === 3,
+      detail: { exit: r.exit, stop: r.res?.stop, branch: c?.branch, cleanupExit: c?.exitCode, unsafeStop: c?.unsafeStop, authUsersRemaining: remaining, lastLabel: l.at(-1) } }
+    }],
     ['budget-real-tool', async () => {
       await session.resetData()
       const runDir = path.join(S1B.rehearsalBase, `budget-${Date.now()}`)

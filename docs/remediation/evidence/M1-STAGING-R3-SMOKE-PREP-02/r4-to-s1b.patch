@@ -5581,7 +5581,7 @@
      const id = random()
 --- /dev/null
 +++ b/m1-s1b-flow.mjs
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,326 @@
 +// M1-STAGING-R3-SMOKE-PREP-02 (variant S1b) - the smoke-only flow:
 +//   readiness -> preflight (R3) -> seed -> ui -> api -> ui-r3 -> cleanup -> verify-clean
 +// for a staging project whose Rules are ALREADY the round-3 target. It has NO export, NO Rules/Functions/frontend deploy and NO Rules rollback branch.
@@ -5624,6 +5624,30 @@
 +    return { events: lines.map(l => JSON.parse(l)) }
 +  } catch { return { unreadable: true } }
 +}
++/** Number of events in the run journal BEFORE a tool invocation: a missing file is an empty baseline, a damaged one is untrusted (null). */
++export function journalBaseline(runDir) {
++  try { return fs.readFileSync(path.join(runDir, 'journal.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).length } catch (e) { return e?.code === 'ENOENT' ? 0 : null }
++}
++/** The outcome of ONE invocation of mode, read from the events appended since baseline and tied to the process exit code. Anything not exactly one MODE_START and one
++ * matching MODE_STOP of this invocation (missing, stale, damaged, ambiguous, exit code mismatch) is untrusted: { verified: false, kind: <reason> }. */
++export function invocationOutcome(runDir, baseline, mode, exitCode) {
++  if (baseline === null) return { verified: false, kind: 'journal-untrusted' }
++  const j = readRunJournal(runDir)
++  if (j.unreadable) return { verified: false, kind: 'journal-unreadable' }
++  if (j.events.length < baseline) return { verified: false, kind: 'journal-stale' }
++  const fresh = j.events.slice(baseline)
++  const starts = fresh.filter(e => e.event === 'MODE_START' && e.mode === mode)
++  const stops = fresh.filter(e => e.event === 'MODE_STOP' && e.mode === mode)
++  if (starts.length !== 1) return { verified: false, kind: 'journal-missing-or-stale' }
++  if (stops.length !== 1 || fresh.some(e => e.event === 'MODE_PASS' && e.mode === mode)) return { verified: false, kind: 'journal-ambiguous' }
++  const e = stops[0]
++  if (e.exitCode !== exitCode) return { verified: false, kind: 'journal-exit-mismatch' }
++  return { verified: true, kind: e.kind, dispatch: e.dispatch ?? null, reasonCode: e.reasonCode ?? null, reason: typeof e.reason === 'string' ? e.reason : '', deletesMayHaveBeenSent: e.deletesMayHaveBeenSent === true }
++}
++/** The ONLY non-zero cleanup/verify-clean outcome that may be followed by the read-only inventory: a verified assertion that deletes completed but synthetic resources remain. */
++export function verifiedRemainder(o) { return o?.verified === true && o.kind === 'assertion' && /^verify-clean\.(documents-absent|auth-absent): /.test(o.reason) }
++/** A verified refusal by the cleanup gates (exit 3, no deletes): a STOP with a recovery manifest, never followed by anything. */
++export function verifiedRefusal(o, exitCode) { return exitCode === 3 && o?.verified === true && o.kind === 'cleanup-refused' && o.deletesMayHaveBeenSent === false }
 +export function lastStopOf(events, mode) {
 +  const e = events.filter(x => x.event === 'MODE_STOP' && x.mode === mode).at(-1)
 +  return e ? { kind: e.kind, dispatch: e.dispatch ?? null, reasonCode: e.reasonCode ?? null, reason: typeof e.reason === 'string' ? e.reason : '' } : null
@@ -5688,7 +5712,13 @@
 +    ops = cfg.rehearsalOps ?? { cleanup: true, cleanupExactLookup: true, cleanupAfterProvenNonDispatch: false }
 +    if (!cfg.scenario || !path.isAbsolute(cfg.scenario) || !fs.existsSync(cfg.scenario)) return refuse('rehearsal requires an absolute scenario file')
 +  }
-+  try { fs.mkdirSync(evDir, { recursive: true }) } catch { return refuse('could not create the evidence directory') }
++  // ONE-USE CLAIM of the evidence namespace: an ATOMIC, non-recursive mkdir (EEXIST = another run got there first or the namespace is consumed) BEFORE the first journal
++  // write, state write or tool call. The existence check above is only an early refusal; this is the claim. A partially claimed namespace stays consumed (never deleted
++  // or reused). Only the PARENT is created recursively. cfg.claimMkdir lets a test play the competitor at exactly this point (never passed by the CLI).
++  const claimMkdir = cfg.claimMkdir ?? fs.mkdirSync
++  try { fs.mkdirSync(path.dirname(evDir), { recursive: true }) } catch { return refuse('could not create the parent of the evidence directory') }
++  try { claimMkdir(evDir) } catch (e) { return refuse(e?.code === 'EEXIST' ? 'evidence namespace already claimed (lost the race or consumed): nothing was run' : 'could not claim the evidence directory') }
++  try { fs.writeFileSync(path.join(evDir, 's1b-claim.json'), JSON.stringify({ task: S1B.taskId, profile, pid: process.pid, claimedAt: new Date().toISOString() }) + '\n', { flag: 'wx' }) } catch { return refuse('could not write the claim marker (the namespace stays consumed)') }
 +
 +  // ===== journal / state
 +  const journalFile = path.join(evDir, 's1b-journal.jsonl')
@@ -5820,14 +5850,33 @@
 +        state.cleanup.run = false; state.cleanup.branch = 'RULES_EVIDENCE_NOT_LINKED'
 +        stopStage('step5', 'the Rules evidence changed after step 1: no cleanup')
 +      }
++      // Every non-zero cleanup / verify-clean is judged from ITS OWN MODE_STOP (this invocation's events only, tied to the exit code), never from the exit code alone.
++      // Only a verified refusal (3) or a verified remainder (assertion verify-clean.*) is a known class; everything else - unknown transport outcome, credentials, budget,
++      // integrity, unexpected, a missing/stale/damaged/ambiguous journal - is a SAFE_STOP with NO inventory, NO verify-clean, NO provider read, NO retry (manual classification).
++      const classify = (mode, code, baseline) => {
++        const o = invocationOutcome(runDir, baseline, mode, code)
++        journal('INVOCATION_CLASSIFIED', { mode, exitCode: code, verified: o.verified, kind: o.kind, dispatch: o.dispatch ?? null, reasonCode: o.reasonCode ?? null })
++        return o
++      }
++      const unsafe = (branch, o) => { state.cleanup.branch = branch; state.cleanup.manualClassificationRequired = true; state.cleanup.unsafeStop = { verified: o.verified, kind: o.kind, dispatch: o.dispatch ?? null } }
++      const baseCleanup = journalBaseline(runDir)
 +      const cx = runTool('cleanup', 'smoke', [...smokeBase(), '--mode', 'cleanup', '--rules-status', 'verified-new', '--rules-evidence', rulesEv], 'cleanup')
 +      state.cleanup.exitCode = cx
 +      if (cx === 0) {
++        const baseVerify = journalBaseline(runDir)
 +        state.cleanup.verifyCleanExit = runTool('verify-clean', 'smoke', [...smokeBase(), '--mode', 'verify-clean'], 'verify-clean')
-+        if (state.cleanup.verifyCleanExit !== 0) { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); state.cleanup.branch = 'VERIFY_CLEAN_REMAINDER' }
-+        else state.cleanup.branch = 'CLEANUP_COMPLETE_VERIFIED'
-+      } else if (cx === 3) state.cleanup.branch = 'CLEANUP_REFUSED'
-+      else { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); state.cleanup.branch = cx === 4 ? 'CLEANUP_PARTIAL' : 'CLEANUP_STOPPED_BEFORE_DELETES' }
++        if (state.cleanup.verifyCleanExit === 0) state.cleanup.branch = 'CLEANUP_COMPLETE_VERIFIED'
++        else {
++          const o = classify('verify-clean', state.cleanup.verifyCleanExit, baseVerify)
++          if (verifiedRemainder(o)) { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); state.cleanup.branch = 'VERIFY_CLEAN_REMAINDER' }
++          else unsafe('VERIFY_CLEAN_UNSAFE_STOP', o)
++        }
++      } else {
++        const o = classify('cleanup', cx, baseCleanup)
++        if (verifiedRefusal(o, cx)) state.cleanup.branch = 'CLEANUP_REFUSED'
++        else if (verifiedRemainder(o)) { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); state.cleanup.branch = 'CLEANUP_REMAINDER_VERIFIED' }
++        else unsafe('CLEANUP_UNSAFE_STOP', o)
++      }
 +      journal('CLEANUP_RESULT', state.cleanup); save()
 +      if (state.cleanup.branch === 'CLEANUP_COMPLETE_VERIFIED') checkpoint('step5')
 +    }
@@ -6704,7 +6753,7 @@
 +} else refuse(`unknown tool ${tool}`)
 --- /dev/null
 +++ b/tests/s1b-mutation-checks.mjs
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,69 @@
 +// Mutation checks of the S1b gates: each mutant removes or weakens ONE gate in a COPY of the package; the negative controls of that copy must FAIL.
 +// The copy gets its runtime and rehearsal roots rewritten to a temporary directory, so no mutant can create or burn the real staging namespace.
 +//   node tests/s1b-mutation-checks.mjs
@@ -6728,6 +6777,14 @@
 +  ['an unreadable run journal is treated as an assertion failure', 'm1-s1b-flow.mjs', "j.unreadable ? { kind: 'journal-unreadable'", "j.unreadable ? { kind: 'assertion'"],
 +  ['readiness accepted although the tool exit is non-zero', 'm1-s1b-flow.mjs', 'const readyOk = rd === 0 && rr?.status', 'const readyOk = rr?.status'],
 +  ['forbidden staging environment accepted', 'm1-s1b-flow.mjs', "if (Object.entries(env).some(([k, v]) => v && FORBIDDEN_STAGING_ENV.test(k))) return refuse('forbidden environment for a staging execution')", ''],
++  ['CR1: inventory after any non-zero cleanup (exit code alone)', 'm1-s1b-flow.mjs', "else unsafe('CLEANUP_UNSAFE_STOP', o)", "else { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); unsafe('CLEANUP_UNSAFE_STOP', o) }"],
++  ['CR1: inventory after any non-zero verify-clean (exit code alone)', 'm1-s1b-flow.mjs', "else unsafe('VERIFY_CLEAN_UNSAFE_STOP', o)", "else { state.cleanup.inventoryExit = runTool('inventory', 'smoke', [...smokeBase(), '--mode', 'inventory'], 'inventory'); unsafe('VERIFY_CLEAN_UNSAFE_STOP', o) }"],
++  ['CR1: the journal exit code is not tied to the process exit code', 'm1-s1b-flow.mjs', "if (e.exitCode !== exitCode) return { verified: false, kind: 'journal-exit-mismatch' }", ''],
++  ['CR1: events of earlier invocations count as this invocation (no baseline)', 'm1-s1b-flow.mjs', 'const fresh = j.events.slice(baseline)', 'const fresh = j.events'],
++  ['CR1: every assertion is accepted as a verified remainder', 'm1-s1b-flow.mjs', "o.kind === 'assertion' && /^verify-clean\\.(documents-absent|auth-absent): /.test(o.reason)", "o.kind === 'assertion'"],
++  ['CR1: an unverifiable exit 3 is accepted as a refusal', 'm1-s1b-flow.mjs', "return exitCode === 3 && o?.verified === true && o.kind === 'cleanup-refused' && o.deletesMayHaveBeenSent === false", 'return exitCode === 3'],
++  ['CR2: the namespace claim is a recursive (non-exclusive) mkdir', 'm1-s1b-flow.mjs', 'try { claimMkdir(evDir) }', 'try { claimMkdir(evDir, { recursive: true }) }'],
++  ['CR2: the claim marker may overwrite an existing one', 'm1-s1b-flow.mjs', "+ '\\n', { flag: 'wx' })", "+ '\\n', { flag: 'w' })"],
 +  ['root Node version not checked', 'm1-s1b-flow.mjs', "if (!/^v24\\.16\\./.test(cfg.nodeVersion ?? process.version)) stopStage('step0', 'root Node is not the pinned v24.16')", ''],
 +  ['consumed/reserved namespaces accepted', 'm1-s1b-pins.mjs', "if (S1B.consumedEvidence.includes(n) || S1B.consumedRuns.includes(n)) problems.push(`consumed or reserved namespace ${n}`)", ''],
 +  ['production markers ignored', 'm1-s1b-pins.mjs', "for (const v of values) for (const m of S1B.productionMarkers) if (String(v).toLowerCase().includes(m)) problems.push('production marker in the input values')", ''],
@@ -6768,7 +6825,7 @@
 +process.exitCode = undetected.length ? 1 : 0
 --- /dev/null
 +++ b/tests/s1b-negative-controls.mjs
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,650 @@
 +// Deterministic negative controls and unit tests of the S1b smoke-only flow (no emulator, no network, synthetic data only).
 +// The flow runs with an INJECTED executor, git and ACL check: no tool process is started, so nothing here can reach a live system. Staging-profile cases are
 +// INIT-refusal cases only and their executor throws if it is ever called.
@@ -7098,13 +7155,139 @@
 +  const r = runFlow(cfg)
 +  return r.status === 'SAFE_STOP' && r.stop.step === 'step5' && r.state.cleanup.branch === 'RULES_EVIDENCE_NOT_LINKED' && !labels(cfg).includes('cleanup')
 +})
-+await t('cleanup branches: refused (3) -> STOP without verify-clean; partial (4) / stopped (2) -> inventory; remainder -> inventory', () => {
-+  const run = code => { const cfg = rehearsal(newUnit(), { handlers: { cleanup: code } }); const r = runFlow(cfg); return { r, l: labels(cfg) } }
-+  const a = run(3), b = run(4), c = run(2)
-+  const cfg = rehearsal(newUnit(), { handlers: { 'verify-clean': 2 } }); const d = runFlow(cfg)
-+  return a.r.stop.step === 'step5' && a.r.state.cleanup.branch === 'CLEANUP_REFUSED' && !a.l.includes('verify-clean') && !a.l.includes('inventory') &&
-+    b.r.state.cleanup.branch === 'CLEANUP_PARTIAL' && b.l.includes('inventory') && c.r.state.cleanup.branch === 'CLEANUP_STOPPED_BEFORE_DELETES' && c.l.includes('inventory') &&
-+    d.state.cleanup.branch === 'VERIFY_CLEAN_REMAINDER' && labels(cfg).includes('inventory')
++// ── CR1 (Task02 review V1): every non-zero cleanup / verify-clean is judged from its OWN journal events; the exit code alone never leads to inventory ──
++const appendRun = (cfg, lines) => { fs.mkdirSync(cfg.runDir, { recursive: true }); fs.appendFileSync(path.join(cfg.runDir, 'journal.jsonl'), lines.map(l => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n') }
++/** A tool invocation as the smoke tool journals it: MODE_START, then MODE_STOP carrying the exit code. */
++const invocation = (cfg, mode, stop, exitCode, extra = {}) => { appendRun(cfg, [{ at: new Date().toISOString(), event: 'MODE_START', mode }, { at: new Date().toISOString(), event: 'MODE_STOP', mode, kind: stop.kind, reason: stop.reason ?? 'x', ...(stop.dispatch ? { dispatch: stop.dispatch } : {}), ...(stop.reasonCode ? { reasonCode: stop.reasonCode } : {}), exitCode, deletesMayHaveBeenSent: stop.deletes === true, ...extra }]); return exitCode }
++const afterCleanup = ['inventory', 'verify-clean', 'final-functions', 'final-rules']
++function cleanupCase(handlerFor, cleanupHandlerName = 'cleanup') {
++  const unit = newUnit(); let cfg
++  cfg = rehearsal(unit, { handlers: { [cleanupHandlerName]: () => handlerFor(cfg) } })
++  const r = runFlow(cfg)
++  return { cfg, r, l: labels(cfg) }
++}
++await t('CR1: an unknown cleanup mutation outcome (transport, dispatch unknown, exit 4) is a SAFE_STOP: no inventory, no verify-clean, no further provider read', () => {
++  const { r, l } = cleanupCase(cfg => invocation(cfg, 'cleanup', { kind: 'transport', dispatch: 'unknown', reasonCode: 'connection-reset', deletes: true }, 4))
++  return r.status === 'SAFE_STOP' && r.stop.step === 'step5' && r.state.cleanup.branch === 'CLEANUP_UNSAFE_STOP' && r.state.cleanup.manualClassificationRequired === true && l.at(-1) === 'cleanup' && !afterCleanup.some(x => l.includes(x))
++})
++await t('CR1: credentials / budget / integrity / unexpected / guard stops of cleanup (exit 2 or 4) never lead to inventory', () => {
++  for (const kind of ['credentials', 'budget', 'integrity', 'unexpected', 'guard', 'manifest', 'transport']) for (const code of [2, 4]) {
++    const { r, l } = cleanupCase(cfg => invocation(cfg, 'cleanup', { kind, dispatch: kind === 'credentials' ? 'not-dispatched' : null, deletes: code === 4 }, code))
++    if (!(r.status === 'SAFE_STOP' && r.state.cleanup.branch === 'CLEANUP_UNSAFE_STOP' && l.at(-1) === 'cleanup' && !afterCleanup.some(x => l.includes(x)))) return `${kind}/${code}: ${l.join(',')}`
++  }
++  return true
++})
++await t('CR1: a non-zero verify-clean with an unknown transport outcome (or any non-assertion kind) ends the run: no inventory, no repeat', () => {
++  for (const [kind, dispatch] of [['transport', 'unknown'], ['credentials', 'not-dispatched'], ['budget', null], ['unexpected', null]]) {
++    const unit = newUnit(); let cfg
++    cfg = rehearsal(unit, { handlers: { 'verify-clean': () => invocation(cfg, 'verify-clean', { kind, dispatch }, 2) } })
++    const r = runFlow(cfg), l = labels(cfg)
++    if (!(r.status === 'SAFE_STOP' && r.state.cleanup.branch === 'VERIFY_CLEAN_UNSAFE_STOP' && l.at(-1) === 'verify-clean' && !l.includes('inventory') && l.filter(x => x === 'verify-clean').length === 1)) return `${kind}: ${l.join(',')}`
++  }
++  return true
++})
++await t('CR1: a missing, stale, damaged, ambiguous or exit-mismatching journal after a non-zero cleanup / verify-clean is untrusted: SAFE_STOP, no inventory', () => {
++  const stale = [{ event: 'MODE_START', mode: 'cleanup' }, { event: 'MODE_STOP', mode: 'cleanup', kind: 'assertion', reason: 'verify-clean.documents-absent: {}', exitCode: 4 }]
++  const cases = [
++    ['missing', cfg => 4],
++    ['stale (an old verified remainder from before this invocation)', cfg => 4, cfg => appendRun(cfg, stale)],
++    ['damaged line', cfg => { appendRun(cfg, ['{"event":"MODE_STOP","mo']); return 4 }],
++    ['ambiguous (two stops)', cfg => { invocation(cfg, 'cleanup', { kind: 'assertion', reason: 'verify-clean.documents-absent: {}' }, 4); invocation(cfg, 'cleanup', { kind: 'assertion', reason: 'verify-clean.documents-absent: {}' }, 4); return 4 }],
++    ['exit code mismatch', cfg => invocation(cfg, 'cleanup', { kind: 'assertion', reason: 'verify-clean.documents-absent: {}' }, 2) && 4],
++    ['stop without start', cfg => { appendRun(cfg, [{ event: 'MODE_STOP', mode: 'cleanup', kind: 'assertion', reason: 'verify-clean.documents-absent: {}', exitCode: 4 }]); return 4 }]
++  ]
++  for (const [name, handler, seed] of cases) {
++    const unit = newUnit(); let cfg
++    cfg = rehearsal(unit, { handlers: { cleanup: () => handler(cfg), ...(seed ? { 'smoke-ui-r3': () => { seed(cfg); return 0 } } : {}) } })
++    const r = runFlow(cfg), l = labels(cfg)
++    if (!(r.status === 'SAFE_STOP' && r.state.cleanup.branch === 'CLEANUP_UNSAFE_STOP' && r.state.cleanup.unsafeStop.verified === false && l.at(-1) === 'cleanup' && !afterCleanup.some(x => l.includes(x)))) return `${name}: ${l.join(',')} branch=${r.state?.cleanup?.branch}`
++  }
++  return true
++})
++await t('CR1: a non-zero cleanup whose pre-existing journal is damaged BEFORE the invocation is untrusted (baseline unreadable)', () => {
++  const unit = newUnit(); let cfg
++  cfg = rehearsal(unit, { handlers: { 'smoke-ui-r3': () => { appendRun(cfg, ['{"damaged']); return 0 }, cleanup: () => invocation(cfg, 'cleanup', { kind: 'assertion', reason: 'verify-clean.documents-absent: {}' }, 4) } })
++  const r = runFlow(cfg), l = labels(cfg)
++  return r.state.cleanup.branch === 'CLEANUP_UNSAFE_STOP' && !l.includes('inventory')
++})
++await t('CR1: the verified classes: a refusal by the gates (exit 3, no deletes) ends without inventory; an unverifiable exit 3 is NOT a refusal', () => {
++  const a = cleanupCase(cfg => invocation(cfg, 'cleanup', { kind: 'cleanup-refused', reason: 'cleanup: refused without deletes: G2 ...', deletes: false }, 3))
++  const b = cleanupCase(cfg => 3)
++  return a.r.state.cleanup.branch === 'CLEANUP_REFUSED' && a.r.state.cleanup.manualClassificationRequired !== true && a.l.at(-1) === 'cleanup' && !a.l.includes('inventory') &&
++    b.r.state.cleanup.branch === 'CLEANUP_UNSAFE_STOP' && !b.l.includes('inventory')
++})
++await t('CR1: the ONE permitted automatic inventory: a verified remainder (assertion verify-clean.*) after cleanup or verify-clean, run once, then STOP', () => {
++  const reasons = ['verify-clean.documents-absent: {"remaining":3}', 'verify-clean.auth-absent: {"byUid":1}']
++  for (const reason of reasons) {
++    const c = cleanupCase(cfg => invocation(cfg, 'cleanup', { kind: 'assertion', reason, deletes: true }, 4))
++    if (!(c.r.status === 'SAFE_STOP' && c.r.state.cleanup.branch === 'CLEANUP_REMAINDER_VERIFIED' && c.l.at(-1) === 'inventory' && c.l.filter(x => x === 'inventory').length === 1 && !c.l.includes('verify-clean'))) return `cleanup ${reason}: ${c.l.join(',')}`
++    const unit = newUnit(); let cfg
++    cfg = rehearsal(unit, { handlers: { 'verify-clean': () => invocation(cfg, 'verify-clean', { kind: 'assertion', reason }, 2) } })
++    const r = runFlow(cfg), l = labels(cfg)
++    if (!(r.state.cleanup.branch === 'VERIFY_CLEAN_REMAINDER' && l.at(-1) === 'inventory' && l.filter(x => x === 'inventory').length === 1)) return `verify-clean ${reason}: ${l.join(',')}`
++  }
++  // any other assertion (not a verify-clean remainder) is not a known class
++  const o = cleanupCase(cfg => invocation(cfg, 'cleanup', { kind: 'assertion', reason: 'cleanup.something-else: {}', deletes: true }, 4))
++  return o.r.state.cleanup.branch === 'CLEANUP_UNSAFE_STOP' && !o.l.includes('inventory')
++})
++await t('CR1: pure classifiers - invocationOutcome / verifiedRemainder / verifiedRefusal reject everything but the two verified classes', async () => {
++  const f = await imp('m1-s1b-flow.mjs')
++  const ok = { verified: true, kind: 'assertion', reason: 'verify-clean.documents-absent: {}' }
++  return f.verifiedRemainder(ok) && !f.verifiedRemainder({ ...ok, verified: false }) && !f.verifiedRemainder({ ...ok, kind: 'transport' }) && !f.verifiedRemainder({ ...ok, reason: 'verify-clean.other: {}' }) && !f.verifiedRemainder({ ...ok, reason: 'xverify-clean.documents-absent: ' }) && !f.verifiedRemainder(undefined) &&
++    f.verifiedRefusal({ verified: true, kind: 'cleanup-refused', deletesMayHaveBeenSent: false }, 3) && !f.verifiedRefusal({ verified: true, kind: 'cleanup-refused', deletesMayHaveBeenSent: false }, 4) && !f.verifiedRefusal({ verified: true, kind: 'cleanup-refused', deletesMayHaveBeenSent: true }, 3) && !f.verifiedRefusal({ verified: false, kind: 'cleanup-refused' }, 3) &&
++    f.journalBaseline(path.join(os.tmpdir(), 'no-such-run-dir')) === 0
++})
++await t('CR1: no code path starts the inventory from an exit code alone (source contract: every inventory call sits behind verifiedRemainder)', () => {
++  const src = fs.readFileSync(path.join(PKG, 'm1-s1b-flow.mjs'), 'utf8')
++  const calls = src.split('\n').filter(l => /runTool\('inventory'/.test(l))
++  return calls.length === 2 && calls.every(l => /verifiedRemainder\(o\)/.test(l))
++})
++
++// ── CR2 (Task02 review V1): the one-use evidence namespace is claimed ATOMICALLY before any journal write or tool call ──
++const treeHash = dir => { const out = []; const w = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) w(p); else out.push(`${path.relative(dir, p)}:${sha(fs.readFileSync(p))}`) } }; w(dir); return out.sort().join('|') }
++await t('CR2: a competitor that takes the namespace between the check and the claim wins: the loser is INIT_REFUSED with 0 tools and the competitor evidence is preserved byte for byte', () => {
++  const unit = newUnit(); let observedOptions = 'unset'
++  const cfg = rehearsal(unit, {
++    claimMkdir: (p, o) => { observedOptions = o; fs.mkdirSync(p, { recursive: true }); fs.writeFileSync(path.join(p, 's1b-journal.jsonl'), '{"event":"COMPETITOR_ALREADY_CLAIMED"}\n'); fs.writeFileSync(path.join(p, 's1b-state.json'), '{"owner":"competitor"}\n'); return fs.mkdirSync(p, o) }
++  })
++  const r = runFlow(cfg)
++  return r.status === 'INIT_REFUSED' && r.exitCode === 3 && /already claimed/.test(r.reason) && cfg.calls.length === 0 && observedOptions === undefined &&
++    fs.readFileSync(path.join(cfg.evDir, 's1b-journal.jsonl'), 'utf8') === '{"event":"COMPETITOR_ALREADY_CLAIMED"}\n' && fs.readFileSync(path.join(cfg.evDir, 's1b-state.json'), 'utf8') === '{"owner":"competitor"}\n' && !fs.existsSync(path.join(cfg.evDir, 's1b-claim.json'))
++})
++await t('CR2: the claim is a non-recursive mkdir of the namespace itself (the parent alone is created recursively), followed by an exclusive claim marker BEFORE the first journal event', () => {
++  const unit = newUnit(); const seen = []
++  const cfg = rehearsal(unit, { claimMkdir: (p, o) => { seen.push({ p, o }); return fs.mkdirSync(p, o) } })
++  const r = runFlow(cfg)
++  const marker = JSON.parse(fs.readFileSync(path.join(cfg.evDir, 's1b-claim.json'), 'utf8'))
++  const journalFirst = JSON.parse(fs.readFileSync(path.join(cfg.evDir, 's1b-journal.jsonl'), 'utf8').split('\n')[0])
++  return r.status === 'PASS' && seen.length === 1 && seen[0].p === cfg.evDir && seen[0].o === undefined && marker.pid === process.pid && marker.profile === 'rehearsal' && journalFirst.event === 'START' && Date.parse(marker.claimedAt) <= Date.parse(journalFirst.at)
++})
++await t('CR2: an existing (even empty / partial) namespace is consumed: refused, kept, never deleted or reused', () => {
++  const unit = newUnit(); const cfg = rehearsal(unit); fs.mkdirSync(cfg.evDir, { recursive: true })
++  const r = runFlow(cfg)
++  const again = runFlow(rehearsal(unit))
++  return r.status === 'INIT_REFUSED' && again.status === 'INIT_REFUSED' && fs.existsSync(cfg.evDir) && fs.readdirSync(cfg.evDir).length === 0 && cfg.calls.length === 0
++})
++await t('CR2: a claim that fails for another reason, or whose marker cannot be written, is refused with 0 tools and leaves the namespace consumed', () => {
++  const a = rehearsal(newUnit(), { claimMkdir: () => { throw Object.assign(new Error('boom'), { code: 'EACCES' }) } })
++  const ra = runFlow(a)
++  const b = rehearsal(newUnit(), { claimMkdir: (p) => { fs.mkdirSync(p); fs.writeFileSync(path.join(p, 's1b-claim.json'), 'taken') } })
++  const rb = runFlow(b)
++  return ra.status === 'INIT_REFUSED' && /could not claim/.test(ra.reason) && a.calls.length === 0 && rb.status === 'INIT_REFUSED' && /claim marker/.test(rb.reason) && b.calls.length === 0 && fs.existsSync(b.evDir) && fs.readFileSync(path.join(b.evDir, 's1b-claim.json'), 'utf8') === 'taken'
++})
++await t('CR2: two real processes race for the same namespace: exactly one PASS and one INIT_REFUSED, every tool runs once in total, the winner evidence is intact', async () => {
++  const unit = newUnit(); fs.mkdirSync(unit, { recursive: true })
++  const callsLog = path.join(unit, 'calls.log'); fs.writeFileSync(callsLog, '')
++  const evDir = path.join(unit, 'ev')
++  fs.writeFileSync(path.join(unit, 'scenario.json'), JSON.stringify({ gh: { kind: 'success' }, reads: {} }))
++  const { spawn } = await import('node:child_process')
++  const worker = () => new Promise(resolve => { let out = ''; const c = spawn(process.execPath, [path.join(PKG, 'tests', 's1b-race-worker.mjs'), unit, evDir, callsLog], { windowsHide: true }); c.stdout.on('data', d => { out += d }); c.on('exit', code => resolve({ code, out: out.trim() })) })
++  const [w1, w2] = await Promise.all([worker(), worker()])
++  const statuses = [w1.out, w2.out].sort()
++  const calls = fs.readFileSync(callsLog, 'utf8').split('\n').filter(Boolean)
++  const res = JSON.parse(fs.readFileSync(path.join(evDir, 's1b-result.json'), 'utf8'))
++  const journal = fs.readFileSync(path.join(evDir, 's1b-journal.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
++  return eq(statuses, ['INIT_REFUSED', 'PASS']) && calls.length === 20 && new Set(calls).size === 20 && res.status === 'PASS' && journal.filter(e => e.event === 'START').length === 1 && journal.filter(e => e.event === 'RESULT').length === 1 ? true : `statuses=${statuses} calls=${calls.length}`
 +})
 +await t('final read-only check failure is a SAFE_STOP at step 6', () => {
 +  const cfg = rehearsal(newUnit(), { handlers: { 'final-rules-check': 2 } }); const r = runFlow(cfg)
@@ -7293,3 +7476,30 @@
 +await t('the real staging namespace was never touched by these tests', () => startedClean && namespaceUntouched())
 +console.log(`S1B_NEGATIVE_CONTROLS ${fail ? 'FAIL' : 'PASS'} ${pass}/${pass + fail}${fail ? ` failed=${failures.join(' | ')}` : ''}`)
 +process.exitCode = fail ? 1 : 0
+--- /dev/null
++++ b/tests/s1b-race-worker.mjs
+@@ -0,0 +1,24 @@
++// Worker of the CR2 race test: runs the rehearsal flow for ONE shared evidence namespace with an injected executor that records every tool label in a shared log.
++// No tool process is started and nothing is sent anywhere. Prints the flow status (PASS | SAFE_STOP | INIT_REFUSED).
++//   node tests/s1b-race-worker.mjs <unit dir> <evidence dir> <calls log>
++import fs from 'node:fs'
++import path from 'node:path'
++import { fileURLToPath, pathToFileURL } from 'node:url'
++
++const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
++const { runFlow } = await import(pathToFileURL(path.join(PKG, 'm1-s1b-flow.mjs')).href)
++const { S1B } = await import(pathToFileURL(path.join(PKG, 'm1-s1b-pins.mjs')).href)
++const [unit, evDir, callsLog] = process.argv.slice(2)
++const readiness = { status: 'READY', allReadyInSameRound: true, functions: Object.fromEntries(S1B.m1Callables.map(n => [n, { ready: true, attempts: 1, lastVerdict: 'ready' }])) }
++const exec = (label, argv) => {
++  fs.appendFileSync(callsLog, `${label}\n`)
++  const arg = n => argv[argv.indexOf(n) + 1]
++  if (label === 'readiness') { fs.mkdirSync(arg('--out-dir'), { recursive: true }); fs.writeFileSync(path.join(arg('--out-dir'), 'readiness-result.json'), JSON.stringify(readiness)) }
++  if (label === 'rules-state') fs.writeFileSync(arg('--out'), `${JSON.stringify({ mode: 'verify-current-rules', project: S1B.project, sourceHead: S1B.head, canonicalSha256: S1B.rulesTarget, status: 'CURRENT_RULES_HASH_VERIFIED', finishedAt: new Date().toISOString() })}\n`)
++  return 0
++}
++const r = runFlow({
++  profile: 'rehearsal', pkg: PKG, repo: path.join(unit, 'repo'), evDir, runDir: path.join(evDir, 'run'), stagingDist: 'D:\\x\\s', uiDist: 'D:\\x\\u', scenario: path.join(unit, 'scenario.json'), env: {},
++  git: () => ({ head: S1B.head, status: '', functionsUnchanged: () => true }), aclCheck: () => true, exec
++})
++console.log(r.status)
