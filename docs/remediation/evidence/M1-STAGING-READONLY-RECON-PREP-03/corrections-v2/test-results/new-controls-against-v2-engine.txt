@@ -1,0 +1,5 @@
+FAIL deadline (between actions): the budget runs out DURING the ledger / checkpoint write after the frontend - exhausted by 1 ms or exactly 0 left: the cached-login read does not start (0 bootstrap),
+FAIL deadline (between actions): the budget runs out DURING the write after the cached-login read - the consumed journal is NOT read, no Auth request, STOP auth/deadline (and 1 ms of budget left reads
+FAIL deadline (between actions, staging profile): the auditor counterexample - the checkpoint after the frontend moves the clock to DL+1 - the cached login file is read 0 times (1 time with budget lef
+FAIL deadline (completion instant): verdict, finishedAtUtc, the final ledger events and the exit code come from ONE instant - for completion at DL-2 ... DL+2 (a clock that keeps ticking after the last
+RECON_NEGATIVE_CONTROLS FAIL 149/153 failed=deadline (between actions): the budget runs out DURING the ledger / checkpoint write after the frontend - exhausted by 1 ms or exactly 0 left: the cached-lo

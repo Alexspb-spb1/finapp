@@ -1,0 +1,282 @@
+{
+  "task": "M1-STAGING-READONLY-RECON-PREP-03",
+  "status": "PREPARED_NOT_AUTHORIZED",
+  "project": "finapp-staging",
+  "stageHost": "stage.aktivmetr.ru",
+  "baselineDate": "2026-10-07 (dated baseline, not current facts)",
+  "namespace": "m1-stg-readonly-recon-03",
+  "operationClasses": {
+    "credentialConfigRead": "read the cached Firebase CLI login (access token + expiry) from the owner profile, read-only, in memory; no refresh, no write, no print",
+    "functionsMetadataRead": "two GET requests: Cloud Functions v1 and v2 list metadata of finapp-staging (no archive download, no code export, no IAM)",
+    "rulesReleaseRead": "two GET requests: the live Firestore Rules release and its ruleset (canonical bytes and hash)",
+    "frontendPublicRead": "seventeen public HTTPS GET requests to https://stage.aktivmetr.ru/ (fixed artifact paths, no credentials, no browser, no SDK)",
+    "authExactLookup": "ONE POST accounts:lookup of the single synthetic subject of the old UNKNOWN create (no list, no search, no other account)"
+  },
+  "limits": {
+    "perRequestTimeoutMs": 10000,
+    "globalDeadlineMs": 120000,
+    "maxRequests": 22,
+    "maxTotalResponseBytes": 8388608,
+    "minTokenRemainingMs": 1500000,
+    "maxPermitMs": 7200000
+  },
+  "requests": [
+    {
+      "id": "functions-v1-list",
+      "class": "functionsMetadataRead",
+      "method": "GET",
+      "host": "cloudfunctions.googleapis.com",
+      "path": "/v1/projects/finapp-staging/locations/-/functions",
+      "query": {
+        "fields": "functions(name),nextPageToken,unreachable",
+        "pageSize": "100"
+      },
+      "maxRequests": 1,
+      "maxResponseBytes": 262144,
+      "auth": "bearer"
+    },
+    {
+      "id": "functions-v2-list",
+      "class": "functionsMetadataRead",
+      "method": "GET",
+      "host": "cloudfunctions.googleapis.com",
+      "path": "/v2/projects/finapp-staging/locations/-/functions",
+      "query": {
+        "fields": "functions(name,state,environment,buildConfig(runtime,entryPoint,build,source,sourceProvenance),serviceConfig(availableMemory,availableCpu,maxInstanceRequestConcurrency,minInstanceCount,maxInstanceCount,timeoutSeconds,revision)),nextPageToken,unreachable",
+        "pageSize": "100",
+        "filter": "environment=\"GEN_2\""
+      },
+      "maxRequests": 1,
+      "maxResponseBytes": 1048576,
+      "auth": "bearer"
+    },
+    {
+      "id": "rules-release",
+      "class": "rulesReleaseRead",
+      "method": "GET",
+      "host": "firebaserules.googleapis.com",
+      "path": "/v1/projects/finapp-staging/releases/cloud.firestore",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 65536,
+      "auth": "bearer"
+    },
+    {
+      "id": "rules-ruleset",
+      "class": "rulesReleaseRead",
+      "method": "GET",
+      "host": "firebaserules.googleapis.com",
+      "path": "^/v1/projects/finapp-staging/rulesets/[A-Za-z0-9-]{1,64}$",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 524288,
+      "auth": "bearer"
+    },
+    {
+      "id": "auth-exact-lookup",
+      "class": "authExactLookup",
+      "method": "POST",
+      "host": "identitytoolkit.googleapis.com",
+      "path": "/v1/projects/finapp-staging/accounts:lookup",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 65536,
+      "auth": "bearer"
+    },
+    {
+      "id": "frontend-root",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 396,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-finapp-index",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 396,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:404.html",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/404.html",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 396,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/AcceptInvite-Bd2496Cs.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/AcceptInvite-Bd2496Cs.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 8535,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/LegacyApp-C7aYC29o.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/LegacyApp-C7aYC29o.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 1349482,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/authStore-B7J0HkF9.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/authStore-B7J0HkF9.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 18125,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/firebase-ImtkxytP.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/firebase-ImtkxytP.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 357123,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/index-Dc4O5f6e.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/index-Dc4O5f6e.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 2284,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/invitationEntry-B2l6qOul.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/invitationEntry-B2l6qOul.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 102,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/inviteAcceptanceApi-BNtYpOCg.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/inviteAcceptanceApi-BNtYpOCg.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 67440,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/jsx-runtime-B6doAwFl.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/jsx-runtime-B6doAwFl.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 8535,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/react-dom-D9izJeWH.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/react-dom-D9izJeWH.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 3546,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/renderApp-BuGvFRWQ.js",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/renderApp-BuGvFRWQ.js",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 179342,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:assets/renderApp-CRnMx4Ps.css",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/assets/renderApp-CRnMx4Ps.css",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 62866,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:favicon.svg",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/favicon.svg",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 9522,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:icons.svg",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/icons.svg",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 5031,
+      "auth": "none"
+    },
+    {
+      "id": "frontend-file:index.html",
+      "class": "frontendPublicRead",
+      "method": "GET",
+      "host": "stage.aktivmetr.ru",
+      "path": "/finapp/index.html",
+      "query": {},
+      "maxRequests": 1,
+      "maxResponseBytes": 396,
+      "auth": "none"
+    }
+  ],
+  "bindings": {
+    "codeSumsSha256": "6fdb5009455c6c4377754d95495fb36c91775d8677dd1f977edb0eb5763c1622",
+    "requestAllowlistSha256": "e6db7fd42d3593ee4d4a59ceb369b5cbc41f2da9e4b8e9284c46455811244d10",
+    "frontendAllowlistSha256": "18eb80c1ac441ae6e1d27afc84e18b788a9e333b91754162d8f4dcbd843e6a43",
+    "consumedSubjectPinSha256": "3c513f36a1062934f08ad87abd7d64d014ff458131f0c16cca6064ca26f931fa",
+    "expectedStateSha256": "83f259870bfc121bf6dbff6f56eb5f1a54dce93e0b3839c01f1987870a561de7",
+    "distManifestSha256": "a24e3706004ad3214d6c7e7dfdc58f9240d468f7bd093749ae71398579911410"
+  }
+}

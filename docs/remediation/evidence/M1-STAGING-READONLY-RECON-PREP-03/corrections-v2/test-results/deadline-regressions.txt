@@ -1,0 +1,19 @@
+PASS deadline (start): a request may START only while budget is left - DL-1 ms starts, exactly DL and DL+1 are denied before any dispatch
+PASS deadline (signal): the request signal is the SMALLER of the per-request timeout and the budget left (10000 ms at the start, 500 ms with 500 ms left, 10000 ms with 20
+PASS deadline (headers): the auditor counterexample - started 119500 ms, answered 128500 ms (9 s, inside the 10 s request timeout) - is a STOP deadline, not a success; th
+PASS deadline (headers boundary): an answer exactly AT the deadline is accepted, one millisecond after it is a STOP
+PASS deadline (status): an error status or a redirect that ARRIVES after the deadline is a STOP deadline (never http-5xx / redirect decided after the budget), and the bod
+PASS deadline (body): a streamed body that crosses the deadline between chunks is cancelled and ends in a STOP deadline (no success, no later request)
+PASS deadline (last read): the FINAL read that reports the end of the body after the deadline is a STOP deadline, not the success of the last request
+PASS deadline (body boundary): a body that ends exactly AT the deadline is a success
+PASS deadline (abort): an abort while the budget bounds the request is `deadline`, an abort of the full per-request timeout stays `timeout` - for the headers and for the
+PASS deadline (intent): when the budget runs out while the INTENT is being written, the request is NOT dispatched (INTENT then RESULT deadline)
+PASS deadline (real signal on a loopback server): headers that never arrive and a body that stalls halfway both end as STOP deadline when the budget is small, long before
+PASS deadline (run): the LAST frontend request that completes after the global deadline ends the reading as STOP deadline (exit 2, no success, no result for that request)
+PASS deadline (run): non-request work that crosses the deadline (the cached-login read) is not a success either - STOP deadline at the end of the run; the same crossing b
+PASS deadline (run): a reading that finishes exactly at its deadline is still complete (no STOP)
+PASS deadline (between actions): the budget runs out DURING the ledger / checkpoint write after the frontend - exhausted by 1 ms or exactly 0 left: the cached-login read
+PASS deadline (between actions, positive): with 1 ms of budget left after the same write the reading continues and completes (bootstrap once, all 22 requests, exit 0)
+PASS deadline (between actions): the budget runs out DURING the write after the cached-login read - the consumed journal is NOT read, no Auth request, STOP auth/deadline
+PASS deadline (between actions, staging profile): the auditor counterexample - the checkpoint after the frontend moves the clock to DL+1 - the cached login file is read 0
+PASS deadline (completion instant): verdict, finishedAtUtc, the final ledger events and the exit code come from ONE instant - for completion at DL-2 ... DL+2 (a clock tha

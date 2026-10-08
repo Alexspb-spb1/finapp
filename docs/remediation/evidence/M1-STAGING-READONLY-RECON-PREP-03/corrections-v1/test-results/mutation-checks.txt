@@ -1,0 +1,57 @@
+BASELINE_OK no-op relocation (manifest regenerated): 148/148
+BASELINE_OK harmless edit (a comment) with a regenerated manifest: 148/148
+CANARY_OK a SYNTAX ERROR in the engine (the controls crash): ERROR
+CANARY_OK a real weakening judged against a control of ANOTHER gate: IRRELEVANT_FAILURE
+DETECTED allowlist ignores the path :: 49 failed, relevant: allowlist: paths, query sets, scheme, credentials in the URL, port and fragment must match exactly
+DETECTED allowlist ignores the HTTP method :: 2 failed, relevant: allowlist: wrong methods (PUT/PATCH/DELETE/POST on GET entries, GET on the lookup) are denied
+DETECTED allowlist ignores the host :: 1 failed, relevant: allowlist: foreign, production and look-alike hosts are denied (and the token endpoint too)
+DETECTED allowlist ignores extra / missing query parameters :: 1 failed, relevant: allowlist: paths, query sets, scheme, credentials in the URL, port and fragment must match exactly
+DETECTED allowlist accepts a non-synthetic Auth subject :: 1 failed, relevant: allowlist: the Auth lookup body must be exactly {"email":[<one synthetic subject>]} - owner / real addresses,
+DETECTED allowlist accepts plain http / userinfo / ports :: 1 failed, relevant: allowlist: paths, query sets, scheme, credentials in the URL, port and fragment must match exactly
+DETECTED no per-entry request budget :: 1 failed, relevant: client: budgets - one request per entry, a global cap, nothing is dispatched past them
+DETECTED no global request budget :: 1 failed, relevant: client: budgets - one request per entry, a global cap, nothing is dispatched past them
+DETECTED redirects are followed :: 1 failed, relevant: client: redirect=error and a per-request timeout signal are always passed; a response body larger than the ent
+DETECTED non-200 answers are accepted below 500 :: 5 failed, relevant: client: no retry - every failure ends the request once (401/403/404/429/500/418, network, timeout, redirect)
+DETECTED no response size cap :: 2 failed, relevant: client: redirect=error and a per-request timeout signal are always passed; a response body larger than the ent
+DETECTED no durable INTENT before dispatch :: 3 failed, relevant: client: the INTENT is durable in the ledger BEFORE the request is dispatched (checked from inside the fetch),
+DETECTED the bearer token is attached to every host (including the public frontend) :: 1 failed, relevant: client: the bearer token goes ONLY to the googleapis entries, together with the quota project; the stage host
+DETECTED no deadline check before a request starts :: 1 failed, relevant: deadline (start): a request may START only while budget is left - DL-1 ms starts, exactly DL and DL+1 are deni
+DETECTED a request may start exactly at the deadline :: 1 failed, relevant: deadline (start): a request may START only while budget is left - DL-1 ms starts, exactly DL and DL+1 are deni
+DETECTED no deadline check after the headers (late status / redirect decided after the budget) :: 2 failed, relevant: deadline (status): an error status or a redirect that ARRIVES after the deadline is a STOP deadline (never htt
+DETECTED no deadline check while the body is read :: 2 failed, relevant: deadline (body): a streamed body that crosses the deadline between chunks is cancelled and ends in a STOP dead
+DETECTED the end of the body is checked only after it was accepted :: 1 failed, relevant: deadline (last read): the FINAL read that reports the end of the body after the deadline is a STOP deadline, n
+DETECTED the request signal is not limited by the budget left :: 2 failed, relevant: deadline (signal): the request signal is the SMALLER of the per-request timeout and the budget left (10000 ms
+DETECTED an abort inside the budget is reported as an ordinary timeout :: 2 failed, relevant: deadline (abort): an abort while the budget bounds the request is `deadline`, an abort of the full per-request
+DETECTED a completion exactly at the deadline is already too late :: 3 failed, relevant: deadline (headers boundary): an answer exactly AT the deadline is accepted, one millisecond after it is a STOP
+DETECTED a request is dispatched even when the budget ran out while its INTENT was written :: 1 failed, relevant: deadline (intent): when the budget runs out while the INTENT is being written, the request is NOT dispatched (
+DETECTED the run itself may end after its deadline as a success :: 1 failed, relevant: deadline (run): non-request work that crosses the deadline (the cached-login read) is not a success either - S
+DETECTED functions pagination accepted :: 1 failed, relevant: stop: a next page of Functions (pagination is not allowed) -> STOP unexpected-shape (exit 2), no retry, nothin
+DETECTED Rules comparison always matches :: 3 failed, relevant: difference: wrong Rules (round-2 text live) -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+DETECTED frontend comparison always matches :: 2 failed, relevant: difference: a frontend file with other bytes of the same size -> DIFFERENCES_OBSERVED (exit 4), nothing declar
+DETECTED the subject journal hash is not checked :: 1 failed, relevant: subject: the journal bytes changed (input hash differs from the pin) -> STOP subject-source-mismatch before an
+DETECTED the subject hash is not checked (any derived address is looked up) :: 1 failed, relevant: subject: the pinned subject hash is another subject (an owner address instead of the synthetic one) -> STOP su
+DETECTED the evidence scan is skipped :: 1 failed, relevant: scanner: a token-looking value that reaches the evidence ends the reading with exit 2 and a scan-hit marker (f
+DETECTED the namespace claim is a recursive mkdir :: 2 failed, relevant: claim: a competitor taking the namespace between the check and the claim wins - the loser runs nothing (0 fetc
+DETECTED the claim marker may overwrite :: 1 failed, relevant: claim: another claim error or an already present marker leaves the namespace consumed and runs nothing
+DETECTED forbidden environment accepted :: 14 failed, relevant: INIT: forbidden environment (NODE_OPTIONS / FIREBASE_TOKEN / GOOGLE_APPLICATION_CREDENTIALS / proxy / emulator
+DETECTED consumed / reserved namespaces accepted :: 1 failed, relevant: namespace gate itself: every consumed / reserved evidence name is refused in EVERY profile (the rehearsal prof
+DETECTED production markers ignored :: 7 failed, relevant: INIT: a production marker in an environment value
+DETECTED execute does not compare the actual bytes with the manifest :: 27 failed, relevant: integrity: recon-bootstrap.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFU
+DETECTED the byte integrity is checked only AFTER the namespace claim :: 27 failed, relevant: integrity: recon-bootstrap.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFU
+DETECTED file hashes are not compared with the manifest :: 20 failed, relevant: integrity: recon-bootstrap.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFU
+DETECTED a missing listed file is ignored :: 1 failed, relevant: integrity: a listed helper is missing -> INIT_REFUSED, 0 requests, nothing claimed
+DETECTED unlisted files in the package directory are accepted :: 3 failed, relevant: integrity: an unlisted extra helper is added to the package -> INIT_REFUSED, 0 requests, nothing claimed
+DETECTED unlisted relative imports are accepted :: 1 failed, relevant: integrity (unit): relative imports must be listed, only node: builtins may be imported, comments and method ca
+DETECTED third-party imports are accepted :: 1 failed, relevant: integrity (unit): relative imports must be listed, only node: builtins may be imported, comments and method ca
+DETECTED required files are not enforced in the manifest :: 2 failed, relevant: integrity: the manifest lacks a required helper -> INIT_REFUSED, 0 requests, nothing claimed
+DETECTED plan / permit-draft do not check the integrity :: 1 failed, relevant: integrity (offline launcher): plan / permit-draft / selftest of a package with a changed helper are refused (e
+DETECTED selftest does not run the byte check :: 1 failed, relevant: integrity: the selftest runs the same check - a changed helper makes SELFTEST fail with its path, an unchanged
+DETECTED permit not bound to the package bytes :: 21 failed, relevant: INIT: a permit bound to other bytes (codeSums) is refused
+DETECTED permit acknowledgements not required :: 1 failed, relevant: permit validity matrix: wrong project / host / head / namespace / Rules pin / task, bad operations, missing ac
+DETECTED permit validity longer than 2 h accepted :: 1 failed, relevant: permit validity matrix: wrong project / host / head / namespace / Rules pin / task, bad operations, missing ac
+DETECTED permit validity window ignored :: 1 failed, relevant: permit validity matrix: wrong project / host / head / namespace / Rules pin / task, bad operations, missing ac
+DETECTED credential read decoupled from the Google branches :: 1 failed, relevant: permit validity matrix: wrong project / host / head / namespace / Rules pin / task, bad operations, missing ac
+DETECTED a nearly expired cached token is accepted :: 1 failed, relevant: bootstrap: missing / unreadable / no token / too old / wrong types end in closed codes without any path or con
+DETECTED a token of any shape is accepted :: 1 failed, relevant: bootstrap: missing / unreadable / no token / too old / wrong types end in closed codes without any path or con
+DETECTED one retry after a transport failure :: 6 failed, relevant: client: no retry - every failure ends the request once (401/403/404/429/500/418, network, timeout, redirect)
+RECON_MUTATION_CHECKS PASS detected=52/52 baselines=148/148

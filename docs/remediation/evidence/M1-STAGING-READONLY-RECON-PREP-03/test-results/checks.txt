@@ -1,0 +1,72 @@
+HEAD=796ffec065d520fb2478b191514df5e0be0d3829
+BASE=629c8318676b3879205ad2b1906cd9beff6d5f68 (accepted HEAD of PR #36)
+### git diff --check over the whole range BASE..HEAD
+cmd: git diff --check 629c8318676b3879205ad2b1906cd9beff6d5f68..HEAD
+exit=0
+### git diff --check (working tree)
+cmd: git diff --check
+exit=0
+### git diff --check (index)
+cmd: git diff --cached --check
+exit=0
+### the final candidate directory equals the committed source tree
+cmd: diff -rq D:\projects\finapp\.runtime\m1-recon-readonly-staging docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source
+exit=0
+### the verification copy equals the final candidate (code sums)
+cmd: diff D:\projects\finapp\.runtime\m1-recon-readonly-staging/CODE-SHA256SUMS.txt D:\projects\finapp\.runtime\m1-recon-verify1/CODE-SHA256SUMS.txt
+exit=0
+### code sums of the final candidate verify against the files
+cmd: bash -c cd "$1" && sha256sum -c --quiet CODE-SHA256SUMS.txt _ D:\projects\finapp\.runtime\m1-recon-readonly-staging
+exit=0
+### the generator rebuilds the source tree byte for byte (new temp directory)
+cmd: node -e import('./docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/tooling/build-recon-package.mjs').then(m=>{const o=require('path').join(require('os').tmpdir(),'recon-regen-'+process.pid);const r=m.buildPackage(o);console.log('rebuilt',r.sumsSha256)})
+rebuilt 6fdb5009455c6c4377754d95495fb36c91775d8677dd1f977edb0eb5763c1622
+exit=0
+### file table regenerates identically
+cmd: bash -c node docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/tooling/make-file-table.mjs && git diff --exit-code --stat -- docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/recon-files.txt
+RECON_FILE_TABLE reused=9 new=13
+exit=0
+### negative controls (package tests, verification copy)
+cmd: node D:\projects\finapp\.runtime\m1-recon-verify1/tests/recon-negative-controls.mjs
+PASS hygiene: no write-capable provider call, no firebase-tools / googleapis / child_process / browser / SDK import in the engine; the only POST is the exact lookup
+PASS real fetch semantics the engine relies on: redirect=error rejects (-> network-unknown), AbortSignal.timeout gives TimeoutError (-> timeout), and a streamed body can be cancelled at a cap
+PASS the real staging namespace was never created by these tests, and no owner credential file was involved
+RECON_NEGATIVE_CONTROLS PASS 99/99
+exit=0
+### mutation checks (package tests, verification copy)
+cmd: node D:\projects\finapp\.runtime\m1-recon-verify1/tests/recon-mutation-checks.mjs
+DETECTED a nearly expired cached token is accepted
+DETECTED a token of any shape is accepted
+RECON_MUTATION_CHECKS PASS detected=33/33
+exit=0
+### repository-level tooling tests
+cmd: node docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/tooling/recon-tooling-tests.mjs
+PASS the committed sanitized test evidence has no secret-pattern hit and no operating-system user name
+PASS the runbook exists and carries the separate owner decision block, the PREPARED_NOT_AUTHORIZED status, the bootstrap limitation and the operation table
+RECON_TOOLING_TESTS PASS 8/8 skipped=0
+exit=0
+### offline launcher: selftest
+cmd: node D:\projects\finapp\.runtime\m1-recon-readonly-staging/recon-offline.mjs selftest
+M1_RECON_STATUS=SELFTEST_PASS files=22 requestEntries=22
+M1_RECON_OFFLINE mode=selftest exit=0 fenceEvents=0 blocked=0 log=C:\Users\8523~1\AppData\Local\Temp\m1-recon-offline-r48vuJ\fence.jsonl
+exit=0
+### the previous candidates are unchanged (S1b v2)
+cmd: bash -c cd "$1" && sha256sum -c --quiet CODE-SHA256SUMS.txt _ D:\projects\finapp\.runtime\m1-s1b-staging-v2
+exit=0
+### fresh hashes
+6fdb5009455c6c4377754d95495fb36c91775d8677dd1f977edb0eb5763c1622 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/CODE-SHA256SUMS.txt
+e6db7fd42d3593ee4d4a59ceb369b5cbc41f2da9e4b8e9284c46455811244d10 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/request-allowlist.json
+18eb80c1ac441ae6e1d27afc84e18b788a9e333b91754162d8f4dcbd843e6a43 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/frontend-allowlist.json
+3c513f36a1062934f08ad87abd7d64d014ff458131f0c16cca6064ca26f931fa *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/consumed-subject-pin.json
+83f259870bfc121bf6dbff6f56eb5f1a54dce93e0b3839c01f1987870a561de7 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/expected-state-r3.json
+a24e3706004ad3214d6c7e7dfdc58f9240d468f7bd093749ae71398579911410 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/dist-staging-manifest.txt
+ca57b1112dea449fbe6aa2f4ab717ffb7b00f125aafb7a4284d9e77af5c9bafc *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/recon.mjs
+0f2eee84a83856a878ef37767ee8416f1a9856869c7a3e64bcd0351cb01d2a3a *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/recon-core.mjs
+b5cc650a7ef66404d30020df6be3e7a4da604a6220c9baec9233c419f4becb32 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/recon-pins.mjs
+21500de901e863448be9d00a668b54f6580a0fa0580c21ea9fb7aefa365bb838 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/recon-permit.mjs
+c9161c1bc07608995df5d7000183029dc677703b1be5de9307f0aa2f4fe47032 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/recon-bootstrap.mjs
+00e7033ce6a8cfa5cd97fa50148e72dac0147709abfbdfc131252f27c234312e *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/tests/recon-negative-controls.mjs
+bc584e2a3abde569834b66954016095a2d7a9221793a7c03237b7a41acf028a9 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/tests/recon-mutation-checks.mjs
+89f1d66c6115f9cfe5b51698092ced881b7214181786a5bb594b86129cf41596 *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/package-recon-source/offline-fence/loopback-only.cjs
+b1a6f0215fee462b66bd7b264f79bb958f4f89b9e6a5da1369a4bdaa4f877b3f *docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/recon-files.txt
+failed_checks=0

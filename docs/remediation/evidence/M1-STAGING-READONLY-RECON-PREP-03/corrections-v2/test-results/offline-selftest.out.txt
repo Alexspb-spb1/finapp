@@ -1,0 +1,1 @@
+M1_RECON_STATUS=SELFTEST_PASS files=24 requestEntries=22
