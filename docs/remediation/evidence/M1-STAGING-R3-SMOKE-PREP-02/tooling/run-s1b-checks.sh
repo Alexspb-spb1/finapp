@@ -23,7 +23,7 @@ run "git diff --check (index)" git diff --cached --check
 run "attribute: only the two patches are exempt from the whitespace check" bash -c "git check-attr whitespace -- $EV/r4-to-s1b.patch docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/r3-to-r4.patch $EV/tooling/build-s1b-package.mjs"
 run "the final candidate directory equals the committed source tree" diff -rq "$FINAL" "$EV/package-s1b-source"
 run "the verification copy equals the final candidate (code sums)" diff "$FINAL/CODE-SHA256SUMS.txt" "$VERIFY/CODE-SHA256SUMS.txt"
-run "code sums of the final candidate verify against the files" bash -c "cd $FINAL && sha256sum -c --quiet CODE-SHA256SUMS.txt"
+run "code sums of the final candidate verify against the files" bash -c 'cd "$1" && sha256sum -c --quiet CODE-SHA256SUMS.txt' _ "$FINAL"
 run "the generator rebuilds the source tree byte for byte (new temp directory)" node -e "import('./$EV/tooling/build-s1b-package.mjs').then(m=>{const o=require('path').join(require('os').tmpdir(),'s1b-regen-'+process.pid);const r=m.buildPackage(o);console.log('rebuilt',r.sumsSha256)})"
 run "diff against the accepted R4 snapshot regenerates identically (apply + byte compare)" bash "$EV/tooling/make-s1b-diff.sh" "$EV" docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/runner-r4-source
 run "regeneration changed nothing tracked" git diff --exit-code --stat -- "$EV"
