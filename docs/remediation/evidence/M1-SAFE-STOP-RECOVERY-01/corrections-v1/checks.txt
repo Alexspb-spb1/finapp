@@ -1,0 +1,73 @@
+HEAD=1a35b5853a9d3f258c50ec6aaf9487d7f5fa832f
+BASE=714d0f91c60a582ee87dc7da82d6249b3106329f
+### git diff --check over the whole range BASE..HEAD
+cmd: git diff --check 714d0f91c60a582ee87dc7da82d6249b3106329f..HEAD
+exit=0
+### git diff --check (working tree)
+cmd: git diff --check
+exit=0
+### git diff --check (index)
+cmd: git diff --cached --check
+exit=0
+### attribute: only the patch is exempt from the whitespace check
+cmd: bash -c git check-attr whitespace -- docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/r3-to-r4.patch docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/tooling/results-tools.mjs docs/remediation/runbooks/M1-COMPATIBILITY-ROLLOUT-20261007.md
+docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/r3-to-r4.patch: whitespace: unset
+docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/tooling/results-tools.mjs: whitespace: unspecified
+docs/remediation/runbooks/M1-COMPATIBILITY-ROLLOUT-20261007.md: whitespace: unspecified
+exit=0
+### snapshot + patch + hash lists regenerate identically (apply + byte compare)
+cmd: bash docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/tooling/make-snapshot.sh /d/projects/finapp/.runtime/m1-r3-staging /d/projects/finapp/.runtime/m1-r4-staging docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01
+CODE-SHA256SUMS.txt files=149
+PATCH_APPLY_BYTE_COMPARE_OK modified=11 new=7
+SNAPSHOT_BYTE_COMPARE_OK files=149
+exit=0
+### regeneration changed nothing tracked
+cmd: git diff --exit-code --stat -- docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01
+exit=0
+### snapshot hash list verifies (sha256sum -c --quiet prints failures only)
+cmd: bash -c cd docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/runner-r4-source && sha256sum -c --quiet CODE-SHA256SUMS.txt
+exit=0
+### runner source changed since the first pass (stat)
+cmd: git diff --stat 48b9b54269a7731da08e89fdb03f8fa4f6bdcd9b..HEAD -- docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/runner-r4-source docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/r3-to-r4.patch
+ .../M1-SAFE-STOP-RECOVERY-01/r3-to-r4.patch        | 142 ++++++++++++++++++++-
+ .../runner-r4-source/CODE-SHA256SUMS.txt           |   2 +-
+ .../runner-r4-source/tests/collect-results.mjs     | 126 +++++++++++++-----
+ 3 files changed, 233 insertions(+), 37 deletions(-)
+exit=0
+### tooling tests
+cmd: node docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/tooling/tooling-tests.mjs
+PASS driver CLI: a failing step gives a non-zero process exit code and no VERIFY_ALL_PASS
+PASS the historic summary of the earlier run is annotated as superseded and keeps its original contradictory lines
+TOOLING_TESTS PASS 26/26
+exit=0
+### offline fence tests
+cmd: node docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/offline-fence/offline-fence-tests.mjs
+PASS negative control: "log requirement removed (children no longer fail closed)" is detected by the self-test
+PASS firebase-tools finds no default account and no credential in the isolated environment
+OFFLINE_FENCE_TESTS PASS 17/17 skipped=0
+exit=0
+### rollout table-top check
+cmd: node docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/rollout/tabletop-check.mjs
+P6a [external] requires=6 establishes=merged
+P6b requires=1 establishes=tree_equal_main_head,pages_workflow_success,pages_serves_c2
+ROLLOUT_TABLETOP PASS steps=8 violations=0 runbook=checked
+exit=0
+### rollout table-top tests
+cmd: node docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/rollout/tabletop-tests.mjs
+PASS runbook rows that differ from the spec (P6b missing) are rejected
+PASS the runbook must carry the expected BASE and PR HEAD
+ROLLOUT_TABLETOP_TESTS PASS 19/19
+exit=0
+### fresh hashes
+dc00d8bbcc191e0cbcedc5adb7e20e93bcddde4623a7e6a104423b38fef6c4e3 *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/r3-to-r4.patch
+5f2650ac6c3c30fb4addcc8e053dd7ac6a286973444684c0d833521b3c5681fb *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/runner-r4-source/CODE-SHA256SUMS.txt
+54d361b6edb2f5a3600c4eb5852f23ef8436893ec000c0e37c6661a42cdca42b *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/runner-r4-source/tests/collect-results.mjs
+fae77249b258b55c8389e812667a6dc221862102359c31117d60f924afdae511 *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/candidate-r4-sha256.txt
+868897a514611b833a089e587c9c47d7175c949bb820926f4f49096fd0975bf3 *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/base-r3-sha256.txt
+6dc292abcfb6707cd1224d6588e57ca2289d9d71db06fc36a21a0e331e6ccc84 *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/tooling/results-tools.mjs
+5ce67a746d0a24cfcfdbe23a9da4e1f394d67c75ec0843566a7f9b1c72fe221f *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/tooling/finalize-results.mjs
+ccdec704c4b47fa82ebda535e88a04d72c4cab013502521ea5cf8dd5770b42f7 *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/tooling/verify-driver.mjs
+bce9739543aaabdc4a43c504271e54099798fa30faaa4d6af5cc3f80c85b2a59 *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/offline-fence/loopback-only.cjs
+db6e2fd910ae3b9a3615345ed58195f78e56a4d9fb7ed7331bbb4421f618da26 *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/offline-fence/isolated-env.mjs
+e8adbc0b2993fe15c447131cc8bffd4526eb791a1b17a84216b26736b8be560b *docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/rollout/rollout-steps.json
+failed_checks=0
