@@ -73,7 +73,7 @@ t('the superseded v1 candidate (when present on this machine) is unchanged: its 
   const bad = lines.filter(l => sha(path.join(V1, ...l.slice(66).split('/'))) !== l.slice(0, 64))
   return sha(path.join(V1, 'CODE-SHA256SUMS.txt')) === RECORDED && bad.length === 0 && lines.length === 22 && !fs.existsSync(path.join(V1, 'recon-integrity.mjs')) ? true : `v1 changed: ${bad.length}`
 })
-t('the v2 source tree is a superset of the v1 file set plus recon-integrity.mjs and tests/relocate.mjs; recon-core.mjs, recon.mjs and the tests changed, the reused S1b files did not', () => {
+t('the v2 source tree has exactly 25 files: the 23 files of v1 plus recon-integrity.mjs and tests/relocate.mjs (the S1b-reused files are covered by the byte-identity test above)', () => {
   const added = ['recon-integrity.mjs', 'tests/relocate.mjs']
   const files = new Set(walk(SOURCE))
   return added.every(f => files.has(f)) && files.size === 25 ? true : `files=${files.size}`

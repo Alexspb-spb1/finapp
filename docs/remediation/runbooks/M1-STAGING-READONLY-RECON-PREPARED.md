@@ -4,6 +4,10 @@
 на эти байты. Он **не входит в S1b**: S1b-исполнение (readiness POST, callable, мутации, cleanup, deploy, merge) — другое решение, другой пакет (`m1-s1b-staging-v2`), и это решение его не включает.
 Результат сверки — наблюдения «на момент чтения»; пакет не объявляет заранее ни «absent», ни «compatible», ни «accepted» — приёмку даёт только независимый аудитор.
 
+**Версии кандидата.** Действующий кандидат — **v2** (`D:\projects\finapp\.runtime\m1-recon-readonly-staging-v2`, исправления Review V1 CR1–CR3, хэши в §9). Первый кандидат `D:\projects\finapp\.runtime\m1-recon-readonly-staging`
+(`CODE-SHA256SUMS.txt` `6fdb5009…1622`) — **SUPERSEDED**: он оставлен нетронутым как доказательство, его запускать и под него выдавать допуск **нельзя** (execute v1 не сверял фактические байты файлов с манифестом:
+изменённый helper при прежнем манифесте и допуске выполнялся). Оба кандидата делят один одноразовый namespace `m1-stg-readonly-recon-03`, поэтому чтение может состояться не более одного раза, каким бы пакетом оно ни было начато.
+
 ## 1. Датированный baseline (аудит 2026-10-07; не текущие чтения)
 
 `finapp-staging`; Rules SHA-256 `c4fe4c097c333f71d971691a2c3be24d15434220bd5f9574fb761494874719fd` (round 3, updateTime 2026-10-07T08:06:12Z); 13 функций ACTIVE (`expected-state-r3.json`);
@@ -20,7 +24,9 @@
 | 22 | Auth (опционально) | **ровно один** `POST identitytoolkit.googleapis.com/v1/projects/finapp-staging/accounts:lookup`, тело `{"email":["<субъект>"]}` | контракт `lookupAuth` принятого transport; субъект выводится из private journal consumed run `r3-ab9fb2fe` (см. §5) | 1; ≤64 КиБ; без list/search |
 
 Не входят (и почему): GET project/billing/database metadata (номер проекта закреплён в expected builds), индексы, любые чтения данных Firestore, readiness POST и callable (это S1b), обмен/обновление токена,
-скачивание архивов кода и экспорт исходников Functions, любые IAM-операции, мутации. Общий бюджет: **22 запроса**, ≤8 МиБ суммарно, таймаут 10 с на запрос, дедлайн 120 с, без retry, `redirect=error`.
+скачивание архивов кода и экспорт исходников Functions, любые IAM-операции, мутации. Общий бюджет: **22 запроса**, ≤8 МиБ суммарно, таймаут 10 с на запрос, **жёсткий** дедлайн 120 с на всё чтение, без retry, `redirect=error`.
+Дедлайн ограничивает не только старт запроса: сигнал запроса = меньшее из 10 с и остатка бюджета (заголовки и потоковое тело), дедлайн проверяется после заголовков, после каждого чтения тела (включая признак конца), при записи INTENT и в конце чтения;
+запрос, завершившийся позже дедлайна, — STOP `deadline` (тело отменяется, дальнейших запросов нет), а не успех. Завершение ровно в момент дедлайна допустимо, на миллисекунду позже — STOP.
 Источник истины allowlist — `request-allowlist.json` + `frontend-allowlist.json` (оба закреплены в permit); движок сверяет **каждый** запрос с таблицей до отправки (метод, host, путь, точный набор query, форма тела).
 
 ## 3. Credential bootstrap (будущий разрешаемый шаг `credentialConfigRead`) и его ограничение
@@ -50,6 +56,11 @@ node recon-offline.mjs permit-draft
 node recon.mjs execute --permit <abs permit.json>
 ```
 
+**Порядок `execute`:** (1) побайтовая сверка пакета с манифестом `CODE-SHA256SUMS.txt` (`recon-integrity.mjs`: sha256 каждого перечисленного файла — код, helpers, pins, fence, тесты; отсутствующие и **неперечисленные** файлы в каталоге пакета;
+относительные импорты, не перечисленные в манифесте; сторонние зависимости вне `node:`; обязательные файлы в манифесте) — раньше всего, **до** проверки допуска, claim, чтения кэшированного входа и любого запроса; (2) структурные проверки pins (независимо от манифеста);
+(3) допуск (привязка к байтам, target, namespace, окно, операции, подтверждения); (4) одноразовый claim namespace; (5) bootstrap и запросы. Изменённый, отсутствующий или лишний файл ⇒ `INIT_REFUSED` (код 3, `reason=integrity: …` — только путь файла),
+ничего не заявлено, credentials не читались. Если после изменения пересчитать манифест, старый допуск недействителен (привязан к хэшу прежнего манифеста). Та же проверка выполняется в `selftest`, `plan` и `permit-draft` (их привязки имеют смысл только для неизменённых байтов).
+
 Evidence: `D:\projects\finapp\.runtime\m1-stg-readonly-recon-03\` (`recon-claim.json`, `recon-ledger.jsonl`, `recon-state.json`, `recon-result.json`). Коды выхода: **0** — все сравнения равны pins; **4** — чтение завершено, наблюдены различия
 (не STOP: результат записан как наблюдение); **2** — STOP (закрытый код, ничего больше не запрашивается, evidence сохранено); **3** — INIT_REFUSED (ничего не выполнялось, credentials не читались, namespace не занят).
 Закрытые коды STOP: `allowlist-denied`, `budget-exhausted`, `deadline`, `timeout`, `network-unknown`, `redirect`, `oversize`, `http-401/403/404/429/5xx/other`, `malformed-json`, `unexpected-shape`, `pin-mismatch`, `credential-*`, `subject-*`, `unexpected`.
@@ -77,7 +88,7 @@ Durable ledger: `INTENT` (fsync) записывается **до** отправ�
 ## 8. Решение владельца на эту сверку (шаблон — заполняется владельцем; документ ничего не разрешает; S1b в него НЕ входит)
 
 ```text
-Пакет:          m1-recon-readonly-staging, CODE-SHA256SUMS.txt sha256 = <из §9>
+Пакет:          m1-recon-readonly-staging-v2 (НЕ v1), CODE-SHA256SUMS.txt sha256 = <из §9>
 Target:         finapp-staging; host https://stage.aktivmetr.ru/; head 714d0f91c60a582ee87dc7da82d6249b3106329f; Rules R3 c4fe4c09…19fd (только как pin для сравнения)
 Namespace:      m1-stg-readonly-recon-03 (одноразовый)
 Привязки:       request-allowlist.json / frontend-allowlist.json / consumed-subject-pin.json / expected-state-r3.json / dist-staging-manifest.txt — sha256 из §9
@@ -89,16 +100,21 @@ Namespace:      m1-stg-readonly-recon-03 (одноразовый)
 Не разрешено:   S1b, readiness POST, callable, мутации Auth/Firestore, cleanup, export, deploy, merge, production, любые другие чтения
 ```
 
-## 9. Хэши immutable-кандидата (`D:\projects\finapp\.runtime\m1-recon-readonly-staging`)
+## 9. Хэши immutable-кандидата v2 (`D:\projects\finapp\.runtime\m1-recon-readonly-staging-v2`)
 
 | Файл | SHA-256 |
 |---|---|
-| `CODE-SHA256SUMS.txt` | `6fdb5009455c6c4377754d95495fb36c91775d8677dd1f977edb0eb5763c1622` |
+| `CODE-SHA256SUMS.txt` | `05eaa3e644924322cf4cddc40bc870a7fdebe3d1c184bd013d0f4c1d9a47038b` |
+| `recon.mjs` | `4bf2fb00c4144ed887f8ede2f4d6d808daeb7520372eba4e3e001e80123b8e0d` |
+| `recon-core.mjs` | `28dc926dea6357f91e1cc827569b2293df4e783d77493a24f382832f4a863507` |
+| `recon-integrity.mjs` | `d1170198b56765695fe617bcc718c59fe364460b32a52f6188d73af5a6128cee` |
 | `request-allowlist.json` | `e6db7fd42d3593ee4d4a59ceb369b5cbc41f2da9e4b8e9284c46455811244d10` |
 | `frontend-allowlist.json` | `18eb80c1ac441ae6e1d27afc84e18b788a9e333b91754162d8f4dcbd843e6a43` |
 | `consumed-subject-pin.json` | `3c513f36a1062934f08ad87abd7d64d014ff458131f0c16cca6064ca26f931fa` |
 | `expected-state-r3.json` | `83f259870bfc121bf6dbff6f56eb5f1a54dce93e0b3839c01f1987870a561de7` |
 | `dist-staging-manifest.txt` | `a24e3706004ad3214d6c7e7dfdc58f9240d468f7bd093749ae71398579911410` |
+
+Данные-pins (`request-allowlist.json`, `frontend-allowlist.json`, `consumed-subject-pin.json`, `expected-state-r3.json`, `dist-staging-manifest.txt`) побайтно те же, что у v1; изменился код (манифест v1 `6fdb5009…1622` — SUPERSEDED, пакет v1 не менялся).
 
 ## 10. Остаточные ограничения
 
@@ -106,3 +122,7 @@ Namespace:      m1-stg-readonly-recon-03 (одноразовый)
 - Fence — Node-уровня; запуск `execute` идёт **без** fence (ему нужен выход в сеть) — защита там: allowlist до отправки, бюджеты, permit, claim.
 - Чтение конфига Firebase CLI раскрывает процессу refresh token (в памяти); корректность требует свежего входа владельца (§3).
 - Результат — наблюдения на момент чтения; сам по себе он не заменяет решение по S1b.
+- Сверка байтов происходит внутри уже запущенного процесса: модули загружены Node до проверки, а проверка читает файлы с диска. Локальный злоумышленник с правом записи в каталог пакета, меняющий файл между загрузкой модуля и проверкой (десятки миллисекунд)
+  и возвращающий его обратно, не обнаруживается; защита от этого — права на каталог пакета (запись только владельцу) и запуск из каталога, который не меняется после выдачи допуска.
+- Проверка проверяет байты файлов пакета, а не `node.exe` и не встроенные модули Node: версия Node (v24.x) — предусловие владельца, не часть манифеста.
+- Мутационная проверка (52 мутанта + 2 canary) доказывает, что **эти** тесты ловят ослабление **этих** гейтов; она не доказывает отсутствие других дефектов и не заменяет независимый аудит.

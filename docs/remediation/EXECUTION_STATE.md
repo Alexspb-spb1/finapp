@@ -595,3 +595,7 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   один exact synthetic-subject Auth lookup), allowlist до отправки, бюджеты, durable ledger, one-use permit с атомарным claim; bootstrap только читает кэшированный вход CLI (без refresh и записи).
 - Проверено локально: 99 негативных контролей, 33 мутации, repo-tooling 8, офлайн-режимы под изоляцией и fence (0 сетевых событий). Живое поведение не проверялось; S1b в решение не входит.
 - Отчёт: `docs/remediation/reports/M1-STAGING-READONLY-RECON-PREP-03.md`; runbook и решение владельца: `docs/remediation/runbooks/M1-STAGING-READONLY-RECON-PREPARED.md`.
+- TASK03 REVIEW V1 = CHANGES_REQUIRED (HEAD 42b0e125968e223837788aac59b0f1df337ebda8) -> Corrections V1 (CR1–CR3) в той же ветке и Draft PR #37: новый immutable-кандидат
+  `m1-recon-readonly-staging-v2` (`CODE-SHA256SUMS.txt` 05eaa3e6…038b; v1 `m1-recon-readonly-staging` SUPERSEDED и не менялся). CR1: `execute` сверяет фактические байты всех файлов пакета с манифестом
+  (`recon-integrity.mjs`) до допуска, claim, credentials и запросов; CR2: mutation harness с согласованными sums, no-op baseline, релевантными контролями и canary (52 мутанта, 148 контролей);
+  CR3: жёсткий общий дедлайн (сигнал = остаток бюджета, проверки после заголовков/тела/INTENT/конца чтения). Новых live-действий не было; PASS даёт только аудитор.

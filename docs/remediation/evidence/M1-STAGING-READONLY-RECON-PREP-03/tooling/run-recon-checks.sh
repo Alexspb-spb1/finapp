@@ -7,11 +7,12 @@ export LC_ALL=C.UTF-8
 BASE=629c8318676b3879205ad2b1906cd9beff6d5f68
 V1_SUMS_SHA=6fdb5009455c6c4377754d95495fb36c91775d8677dd1f977edb0eb5763c1622
 EV=docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03
-FINAL=$1; VERIFY=$2; V1=${3:-}; S1B=${4:-}
+FINAL=$1; VERIFY=$2; V1=${3:-}; S1B=${4:-}; OUTDIR=${5:-}
 FAILED=0
 run() { # name, command...
   local name=$1; shift
   local out; out=$("$@" 2>&1); local code=$?
+  if [ -n "${SAVE:-}" ]; then printf '%s\n' "$out" > "$SAVE"; fi
   echo "### $name"; echo "cmd: $*"
   [ -n "$out" ] && printf '%s\n' "$out" | tail -n "${TAIL:-3}" | cut -c1-260
   echo "exit=$code"
@@ -26,8 +27,8 @@ run "the verification copy equals the v2 candidate (code sums)" diff "$FINAL/COD
 run "code sums of the v2 candidate verify against the files" bash -c 'cd "$1" && sha256sum -c --quiet CODE-SHA256SUMS.txt' _ "$FINAL"
 run "the generator rebuilds the source tree byte for byte (new temp directory)" node -e "import('./$EV/tooling/build-recon-package.mjs').then(m=>{const o=require('path').join(require('os').tmpdir(),'recon-regen-'+process.pid);const r=m.buildPackage(o);console.log('rebuilt',r.sumsSha256)})"
 run "file table (v2) regenerates identically" bash -c "node $EV/tooling/make-file-table.mjs && git diff --exit-code --stat -- $EV/corrections-v1/recon-files-v2.txt"
-TAIL=4 run "negative controls (package tests, verification copy)" node "$VERIFY/tests/recon-negative-controls.mjs"
-TAIL=4 run "mutation checks with canaries (package tests, verification copy)" node "$VERIFY/tests/recon-mutation-checks.mjs"
+SAVE="${OUTDIR:+$OUTDIR/negative-controls.txt}" TAIL=4 run "negative controls (package tests, verification copy)" node "$VERIFY/tests/recon-negative-controls.mjs"
+SAVE="${OUTDIR:+$OUTDIR/mutation-checks.txt}" TAIL=4 run "mutation checks with canaries (package tests, verification copy)" node "$VERIFY/tests/recon-mutation-checks.mjs"
 run "repository-level tooling tests" node "$EV/tooling/recon-tooling-tests.mjs"
 run "offline launcher: selftest of the v2 candidate" node "$FINAL/recon-offline.mjs" selftest
 run "offline launcher: plan of the v2 candidate" bash -c 'node "$1/recon-offline.mjs" plan > /dev/null' _ "$FINAL"
