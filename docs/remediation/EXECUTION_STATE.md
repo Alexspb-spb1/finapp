@@ -572,3 +572,17 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   versioned tooling/driver с честным exit code (verification-run-summary.txt помечен как историческая запись), versioned loopback fence + изолированное окружение с негативными
   контролями и одним ограниченным fenced-повтором регрессии (JVM не fenced, Functions-эмулятор не запускался), `git diff --check` на всём BASE..HEAD, rollout proposal
   со stage-host, датированным baseline и P6a/P6b + offline table-top. Новых live-действий не было. Next: независимый аудит; следующий этап не начинать.
+
+## M1-STAGING-R3-SMOKE-PREP-02 (2026-10-08) — smoke-only пакет S1b для staging на Rules R3
+
+- Статус: READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT), только локальная работа. Ветка `remediation/M1-STAGING-R3-SMOKE-PREP-02-s1b` от принятого HEAD PR #35
+  `8dd6e86038a1aec435d64d9afb2e2448c4711c04` (PASS_LOCAL_BLOCK); PR #35, PR #28, main, hotfix, consumed пакеты/evidence и production v6 не менялись.
+- Пакет `m1-s1b-staging` (immutable, PREPARED_NOT_AUTHORIZED, не запускался): readiness → preflight R3 → seed → ui → api → ui-r3 → cleanup → verify-clean; без export/deploy/отката Rules;
+  permit привязан к байтам, бюджету и namespace; бюджет операций принудительно в transport; credential bootstrap — фиксированный reason; сетевой UNKNOWN → без retry/replay/cleanup.
+- Проверено локально: 72 негативных контроля, 21 мутация, rehearsal на своих Auth/Firestore/Functions эмуляторах под Node fence и изоляцией (6 сценариев + 3 принятых набора), fence-тесты 22.
+  JVM только наблюдался, Chromium вне fence, live-инструменты в rehearsal — заглушки. Первопричина прошлого сетевого сбоя не устранена.
+- Отчёт: `docs/remediation/reports/M1-STAGING-R3-SMOKE-PREP-02.md`; runbook и блок решения владельца: `docs/remediation/runbooks/M1-S1B-STAGING-SMOKE-PREPARED.md`.
+  Любые live-шаги — только после независимого PASS, новой разрешённой сверки состояния и отдельного допуска владельца на эти байты.
+- TASK02 REVIEW V1 = CHANGES_REQUIRED -> Corrections V1 (CR1, CR2) в той же ветке и Draft PR #36: новый immutable-кандидат `m1-s1b-staging-v2` (прежний `m1-s1b-staging` заменён);
+  каждый ненулевой cleanup/verify-clean классифицируется по своему MODE_STOP (inventory только после проверенного остатка), атомарный exclusive claim evidence namespace до любых tools.
+  Новых live-действий не было; PASS даёт только аудитор.

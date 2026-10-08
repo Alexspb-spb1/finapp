@@ -1,0 +1,63 @@
+{
+  "task": "M1-STAGING-R3-SMOKE-PREP-02",
+  "variant": "S1b",
+  "profile": "rehearsal",
+  "head": "714d0f91c60a582ee87dc7da82d6249b3106329f",
+  "startedAt": "2026-10-08T06:45:47.211Z",
+  "completed": [
+    "step0",
+    "step1",
+    "step2",
+    "step3",
+    "step5",
+    "step6"
+  ],
+  "stop": null,
+  "pins": {
+    "budgetSha256": "256692200a35e5ee8505ff8afd93f485f81a84752d5fc4ed2d7bd0f563135ebb",
+    "codeSumsSha256": "700ba158ba017ea6783ab1e7919d6812a692e513d596d6135b6d8b45fc40ef8a"
+  },
+  "rulesR3Verified": true,
+  "rulesEvidenceSha256": "05e08be7b95f296f599976ee4b31ee6de8498d7469fa750f33c894d17b7bf295",
+  "functionsVerified": true,
+  "readiness": {
+    "toolExit": 0,
+    "status": "READY",
+    "verified": true
+  },
+  "seedAttempted": true,
+  "smoke": {
+    "seed": {
+      "exit": 0
+    },
+    "ui": {
+      "exit": 0
+    },
+    "api": {
+      "exit": 0
+    },
+    "ui-r3": {
+      "exit": 0
+    }
+  },
+  "cleanup": {
+    "decision": "all-modes-passed",
+    "run": true,
+    "exitCode": 0,
+    "branch": "CLEANUP_COMPLETE_VERIFIED",
+    "verifyCleanExit": 0,
+    "inventoryExit": null
+  },
+  "final": {
+    "functionsExit": 0,
+    "functionsCheckExit": 0,
+    "rulesExit": 0,
+    "rulesCheckExit": 0
+  },
+  "clientAccess": {
+    "adminReadsAreClientAccess": false,
+    "uiPass": true,
+    "apiPass": true,
+    "uiR3Pass": true
+  }
+}

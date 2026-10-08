@@ -1,0 +1,16 @@
+{"at":"2026-10-08T07:27:45.637Z","event":"START","task":"M1-STAGING-R3-SMOKE-PREP-02","profile":"rehearsal","variant":"S1b","evidence":"functions-drift-1791444465503","budgetSha256":"256692200a35e5ee8505ff8afd93f485f81a84752d5fc4ed2d7bd0f563135ebb","operations":{"cleanup":true,"cleanupExactLookup":true,"cleanupAfterProvenNonDispatch":false}}
+{"at":"2026-10-08T07:27:45.638Z","event":"RUN","label":"code-sums"}
+{"at":"2026-10-08T07:27:45.721Z","event":"EXIT","label":"code-sums","exitCode":0}
+{"at":"2026-10-08T07:27:45.721Z","event":"RUN","label":"dist-manifest"}
+{"at":"2026-10-08T07:27:45.790Z","event":"EXIT","label":"dist-manifest","exitCode":0}
+{"at":"2026-10-08T07:27:45.814Z","event":"RUN","label":"local-rules-check"}
+{"at":"2026-10-08T07:27:45.893Z","event":"EXIT","label":"local-rules-check","exitCode":0}
+{"at":"2026-10-08T07:27:45.893Z","event":"RUN","label":"ci-check"}
+{"at":"2026-10-08T07:27:46.045Z","event":"EXIT","label":"ci-check","exitCode":0}
+{"at":"2026-10-08T07:27:46.045Z","event":"CHECKPOINT","name":"step0"}
+{"at":"2026-10-08T07:27:46.046Z","event":"RUN","label":"functions-state"}
+{"at":"2026-10-08T07:27:46.117Z","event":"EXIT","label":"functions-state","exitCode":0}
+{"at":"2026-10-08T07:27:46.117Z","event":"RUN","label":"functions-state-check"}
+{"at":"2026-10-08T07:27:46.180Z","event":"EXIT","label":"functions-state-check","exitCode":2}
+{"at":"2026-10-08T07:27:46.180Z","event":"STOP","step":"step1","reason":"functions state differs from the pinned state"}
+{"at":"2026-10-08T07:27:46.181Z","event":"RESULT","status":"SAFE_STOP"}

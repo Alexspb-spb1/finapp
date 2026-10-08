@@ -1,0 +1,106 @@
+{
+  "head": "a4071da8fee42825a1239b2af6d99d9987daef02",
+  "utc": "2026-10-08T07:23:49.938Z",
+  "networkCalls": 0,
+  "toolProcessesStarted": 0,
+  "cases": [
+    {
+      "label": "cleanup-unknown-partial",
+      "status": "SAFE_STOP",
+      "exit": 2,
+      "stop": {
+        "step": "step5",
+        "reason": "CLEANUP_UNSAFE_STOP"
+      },
+      "calls": [
+        "code-sums",
+        "dist-manifest",
+        "local-rules-check",
+        "ci-check",
+        "functions-state",
+        "functions-state-check",
+        "rules-state",
+        "rules-state-check",
+        "readiness",
+        "smoke-preflight",
+        "smoke-seed",
+        "smoke-ui",
+        "smoke-api",
+        "smoke-ui-r3",
+        "cleanup"
+      ],
+      "inventoryAfterUnknown": false,
+      "claimedByCompetitor": false,
+      "priorJournalPreserved": null
+    },
+    {
+      "label": "cleanup-credential-before-delete",
+      "status": "SAFE_STOP",
+      "exit": 2,
+      "stop": {
+        "step": "step5",
+        "reason": "CLEANUP_UNSAFE_STOP"
+      },
+      "calls": [
+        "code-sums",
+        "dist-manifest",
+        "local-rules-check",
+        "ci-check",
+        "functions-state",
+        "functions-state-check",
+        "rules-state",
+        "rules-state-check",
+        "readiness",
+        "smoke-preflight",
+        "smoke-seed",
+        "smoke-ui",
+        "smoke-api",
+        "smoke-ui-r3",
+        "cleanup"
+      ],
+      "inventoryAfterUnknown": false,
+      "claimedByCompetitor": false,
+      "priorJournalPreserved": null
+    },
+    {
+      "label": "verify-clean-unknown",
+      "status": "SAFE_STOP",
+      "exit": 2,
+      "stop": {
+        "step": "step5",
+        "reason": "VERIFY_CLEAN_UNSAFE_STOP"
+      },
+      "calls": [
+        "code-sums",
+        "dist-manifest",
+        "local-rules-check",
+        "ci-check",
+        "functions-state",
+        "functions-state-check",
+        "rules-state",
+        "rules-state-check",
+        "readiness",
+        "smoke-preflight",
+        "smoke-seed",
+        "smoke-ui",
+        "smoke-api",
+        "smoke-ui-r3",
+        "cleanup",
+        "verify-clean"
+      ],
+      "inventoryAfterUnknown": false,
+      "claimedByCompetitor": false,
+      "priorJournalPreserved": null
+    },
+    {
+      "label": "namespace-race",
+      "status": "INIT_REFUSED",
+      "exit": 3,
+      "stop": null,
+      "calls": [],
+      "inventoryAfterUnknown": false,
+      "claimedByCompetitor": true,
+      "priorJournalPreserved": true
+    }
+  ]
+}

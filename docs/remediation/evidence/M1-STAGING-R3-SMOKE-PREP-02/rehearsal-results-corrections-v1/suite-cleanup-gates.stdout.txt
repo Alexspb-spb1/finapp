@@ -1,0 +1,21 @@
+PASS T8 Rules failure + rollback exit 0 + baseline evidence after failure -> cleanup allowed {"exit":0,"refused":false,"deletesSent":true,"documentsStillPresent":false}
+PASS T9 Rules failure + rollback deploy exit 1 -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G5 rollback deploy exit is not 0 — rollback not confirmed"]}
+PASS T10 Rules failure + evidence still shows reviewed Rules -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G5 evidence does not verify pre-release (round-2) Rules — rollback not confirmed"]}
+PASS T11 Rules failure + no rollback evidence -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G5 evidence file missing — rollback not confirmed"]}
+PASS T12 Rules failure + evidence older than the failure -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G5 rollback evidence predates the Rules failure"]}
+PASS T13 Rules failure + status verified-new -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G5 Rules failure recorded; cleanup requires a confirmed rollback"]}
+PASS T14 Rules failure + status unconfirmed -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G5 Rules state unconfirmed"]}
+PASS T15 synthetic data exists + status untouched -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G5 synthetic data exists, so Rules were deployed; status untouched is not acceptable"]}
+PASS T3a repeated seed is an integrity STOP {"kind":"integrity"}
+PASS T3b integrity STOP -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G2 STOP in seed of kind integrity"]}
+PASS T4 tampered manifest -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G1 manifest hash differs from last journaled write"]}
+PASS T5 foreign owner -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G4 company A: owner/name/id mismatch"]}
+PASS T6 killed mid-api -> refused {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G2 mode api never finished"]}
+PASS T16 no failures + verified reviewed Rules -> cleanup allowed {"exit":0,"refused":false,"deletesSent":true,"documentsStillPresent":false}
+PASS T17 foreign ACE on run dir -> seed STOP before Auth creation {"exit":2,"authCreateLogged":false,"usersFound":0}
+PASS T18 STOP after deletes sent -> exit 4; inventory records remainder read-only {"cleanupExit":4,"stopKind":"transport","inventoryExit":0,"remainingDocuments":0,"authAccountsRemaining":3}
+PASS T19a api killed after MODE_START -> inspector exits 2 with classification indeterminate {"exit":2,"classification":"indeterminate","problems":["mode api has no terminal event"]}
+PASS T19b indeterminate api + rollback deploy exit 1 -> cleanup refused, recovery manifest, no deletes {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G2 mode api never finished","G5 rollback deploy exit is not 0 — rollback not confirmed"]}
+PASS T20a damaged journal line -> inspector exits 2, journal not readable {"exit":2,"classification":"indeterminate","problems":["journal line 21 is not valid JSON"]}
+PASS T20b damaged journal -> cleanup gate cannot complete: refused, recovery manifest, no deletes {"exit":3,"refused":true,"deletesSent":false,"documentsStillPresent":true,"failures":["G0 cleanup gate could not complete: manifest: journal line 21 unreadable"]}
+GATE_TESTS PASS 20/20

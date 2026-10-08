@@ -1,0 +1,14 @@
+PASS s1 seed: the first Auth create fails in the connect phase -> exit 2, kind transport-not-dispatched (the old runner: kind transport)
+PASS s1 seed: intent-before-dispatch is kept (AUTH_CREATE_MAY_BE_SENT precedes the failure) and the proven non-dispatch is journaled for the same key before MODE_STOP
+PASS s1 seed: no second create (no retry): only one create intent, no company/commit intents, 0 acknowledged creates, 0 operator commits
+PASS s1 RECOVERY: cleanup after a proven pre-dispatch stop completes (exit 0, zero deletes) and verify-clean passes - the OLD runner refuses (exit 3, G2/G3)
+PASS s2 seed: a failure AFTER the request reached the provider (account created, answer lost) is NOT pre-dispatch: kind transport, dispatch unknown, no NOT_DISPATCHED event
+PASS s2 FAIL-CLOSED: cleanup REFUSES (exit 3, no deletes) - the possibly created account has no recorded uid; it is still there afterwards
+PASS s3 BACKSTOP: even if a stop WAS wrongly classified as pre-dispatch, cleanup looks the exact synthetic subject up and REFUSES (G4) while the account exists - no deletes
+PASS s4 an abort timeout (outcome unknown) keeps the old behaviour: kind transport, dispatch unknown, cleanup REFUSES (exit 3)
+PASS s5 the proof event is missing from the journal -> cleanup REFUSES (G3): a stop kind alone does not resolve a possibly sent creation
+PASS s6 the proof event carries a reason code outside the connect-phase set -> cleanup REFUSES (G3)
+PASS s7 the seed MODE_STOP is a plain transport stop (outcome unknown) even though a proof event exists -> cleanup REFUSES (G2)
+PASS s8 a transport-not-dispatched stop whose dispatch field is not "not-dispatched" -> cleanup REFUSES (G2: without proof)
+PASS s9 the proof event is not the event directly after the intent (something lies between them) -> cleanup REFUSES (G3)
+SEED_STOP_RECOVERY_EMULATOR PASS 13/13

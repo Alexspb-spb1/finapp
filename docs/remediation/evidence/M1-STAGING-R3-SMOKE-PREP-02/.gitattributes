@@ -1,0 +1,2 @@
+# r4-to-s1b.patch is an applyable unified diff (context lines start with a space; some patched lines end in whitespace): keep its bytes and exempt ONLY this file from the whitespace check.
+r4-to-s1b.patch -text -whitespace

@@ -1,0 +1,17 @@
+{
+  "format": "finapp-m1-s1b-operation-budget-v1",
+  "project": "finapp-staging",
+  "head": "714d0f91c60a582ee87dc7da82d6249b3106329f",
+  "note": "Per-mode caps on OPERATOR requests (Auth REST, Firestore REST, callables, sign-in) enforced by the transport before dispatch. Calibration policy: cap = ceil(observed * 1.25) + 2, where observed = the request count of the successful R3 flow on the own emulators (rehearsal scenario 'success'); inventory shares the read set of verify-clean; ui makes at most 3 audit listings and 2 document reads (cap 12); ui-r3 makes no operator request (cap 0). Browser-side client requests of ui/ui-r3 are not counted here: they pass the UI route policy allowlist. Hard ceilings: 3 Auth users created, 3 deleted.",
+  "observedOnEmulator": { "preflight": 2, "seed": 13, "api": 85, "cleanup": 64, "verify-clean": 21 },
+  "modes": {
+    "preflight": { "maxRequests": 5, "maxAuthCreates": 0, "maxAuthDeletes": 0, "maxOperatorCommits": 0 },
+    "seed": { "maxRequests": 19, "maxAuthCreates": 3, "maxAuthDeletes": 0, "maxOperatorCommits": 1 },
+    "ui": { "maxRequests": 12, "maxAuthCreates": 0, "maxAuthDeletes": 0, "maxOperatorCommits": 0 },
+    "api": { "maxRequests": 109, "maxAuthCreates": 0, "maxAuthDeletes": 0, "maxOperatorCommits": 0 },
+    "ui-r3": { "maxRequests": 0, "maxAuthCreates": 0, "maxAuthDeletes": 0, "maxOperatorCommits": 0 },
+    "cleanup": { "maxRequests": 82, "maxAuthCreates": 0, "maxAuthDeletes": 3, "maxOperatorCommits": 1 },
+    "verify-clean": { "maxRequests": 29, "maxAuthCreates": 0, "maxAuthDeletes": 0, "maxOperatorCommits": 0 },
+    "inventory": { "maxRequests": 29, "maxAuthCreates": 0, "maxAuthDeletes": 0, "maxOperatorCommits": 0 }
+  }
+}

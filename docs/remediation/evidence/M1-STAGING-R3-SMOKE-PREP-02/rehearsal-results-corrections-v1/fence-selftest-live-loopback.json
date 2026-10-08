@@ -1,0 +1,23 @@
+{
+  "mode": "live-loopback",
+  "total": 4,
+  "failed": 0,
+  "results": [
+    {
+      "name": "fetch to a real loopback server works under the fence",
+      "ok": true
+    },
+    {
+      "name": "http.get to localhost works under the fence",
+      "ok": true
+    },
+    {
+      "name": "net.connect to a real loopback server works under the fence",
+      "ok": true
+    },
+    {
+      "name": "an external connect is still blocked in the live mode",
+      "ok": true
+    }
+  ]
+}
