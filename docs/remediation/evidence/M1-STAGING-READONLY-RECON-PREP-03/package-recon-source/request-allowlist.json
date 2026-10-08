@@ -1,0 +1,48 @@
+{
+  "format": "finapp-m1-recon-request-allowlist-v1",
+  "project": "finapp-staging",
+  "note": "The COMPLETE list of provider requests the read-only reconciliation may ever dispatch (Google APIs). The public frontend GETs are derived from frontend-allowlist.json (host, fixed paths, exact bytes). Every request is matched against this table BEFORE dispatch (method, host, exact path or pattern, exact query set, body shape); anything else is denied and nothing is sent. No retry, redirect=error, no pagination, no other method. The token endpoint (oauth2/v3/token) is deliberately NOT in the table: the package never refreshes a token.",
+  "limits": { "perRequestTimeoutMs": 10000, "globalDeadlineMs": 120000, "maxRequests": 22, "maxTotalResponseBytes": 8388608 },
+  "entries": [
+    {
+      "id": "functions-v1-list", "branch": "functions", "class": "functionsMetadataRead", "method": "GET", "host": "cloudfunctions.googleapis.com",
+      "path": "/v1/projects/finapp-staging/locations/-/functions",
+      "query": { "fields": "functions(name),nextPageToken,unreachable", "pageSize": "100" },
+      "body": null, "maxRequests": 1, "maxResponseBytes": 262144, "auth": "bearer",
+      "why": "detect any unexpected 1st-gen function (the pinned state has none); names only"
+    },
+    {
+      "id": "functions-v2-list", "branch": "functions", "class": "functionsMetadataRead", "method": "GET", "host": "cloudfunctions.googleapis.com",
+      "path": "/v2/projects/finapp-staging/locations/-/functions",
+      "query": {
+        "fields": "functions(name,state,environment,buildConfig(runtime,entryPoint,build,source,sourceProvenance),serviceConfig(availableMemory,availableCpu,maxInstanceRequestConcurrency,minInstanceCount,maxInstanceCount,timeoutSeconds,revision)),nextPageToken,unreachable",
+        "pageSize": "100", "filter": "environment=\"GEN_2\""
+      },
+      "body": null, "maxRequests": 1, "maxResponseBytes": 1048576, "auth": "bearer",
+      "why": "the 13 pinned functions: state, runtime, caps, revision, build, source fingerprint. The field mask excludes environment variables, secrets, service accounts and URIs"
+    },
+    {
+      "id": "rules-release", "branch": "rules", "class": "rulesReleaseRead", "method": "GET", "host": "firebaserules.googleapis.com",
+      "path": "/v1/projects/finapp-staging/releases/cloud.firestore", "query": {},
+      "body": null, "maxRequests": 1, "maxResponseBytes": 65536, "auth": "bearer",
+      "why": "which ruleset is live"
+    },
+    {
+      "id": "rules-ruleset", "branch": "rules", "class": "rulesReleaseRead", "method": "GET", "host": "firebaserules.googleapis.com",
+      "pathPattern": "^/v1/projects/finapp-staging/rulesets/[A-Za-z0-9-]{1,64}$", "query": {},
+      "body": null, "maxRequests": 1, "maxResponseBytes": 524288, "auth": "bearer",
+      "why": "the live Rules text for the canonical hash; the ruleset id comes from the release response and must match the pattern"
+    },
+    {
+      "id": "auth-exact-lookup", "branch": "auth", "class": "authExactLookup", "method": "POST", "host": "identitytoolkit.googleapis.com",
+      "path": "/v1/projects/finapp-staging/accounts:lookup", "query": {},
+      "body": "auth-lookup", "maxRequests": 1, "maxResponseBytes": 65536, "auth": "bearer",
+      "why": "ONE read of the single synthetic subject of the old UNKNOWN create; the body is exactly {\"email\":[<subject>]}; no list, no search"
+    }
+  ],
+  "frontend": {
+    "class": "frontendPublicRead", "method": "GET", "auth": "none", "maxRequestsPerPath": 1,
+    "paths": "/ and /finapp/ and /finapp/<path> for each of the 15 files of frontend-allowlist.json; maxResponseBytes of each = its pinned size",
+    "why": "public artifact bytes and the Firebase project marker of the staging frontend; no credentials are ever sent to this host"
+  }
+}

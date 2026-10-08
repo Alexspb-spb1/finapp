@@ -1,0 +1,16 @@
+{
+  "format": "finapp-m1-recon-consumed-subject-pin-v1",
+  "run": "r3-ab9fb2fe",
+  "runId": "7cbe0a6e",
+  "subjectKey": "admin",
+  "source": {
+    "file": "m1-staging-run-714d0f91-v5/journal.jsonl",
+    "note": "private run directory under the runtime root; read-only; the journal holds no secrets",
+    "sha256": "c89aa5e8e3eafee00cade32b0f52d654535a093883d60a96eb84b4e21a37e3e2",
+    "bytes": 2396,
+    "events": 14
+  },
+  "subjectSha256": "2320f20e671ff6697404cfcc7bbd7befeee7f55b783e5190ad5aac6e1c439373",
+  "derivation": "m1-<runId>-admin@example.invalid from the single PREFLIGHT_OK runId and the single AUTH_CREATE_MAY_BE_SENT key=admin (the old UNKNOWN create); never printed, never stored",
+  "meaning": "a future lookup says only ABSENT_NOW or PRESENT_NOW at the time of reading; it is not proof that the old request was or was not processed"
+}
