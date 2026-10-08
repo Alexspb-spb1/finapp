@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "status": "PROPOSAL_PREPARED_NOT_AUTHORIZED",
+  "note": "Machine-readable form of the production steps in docs/remediation/runbooks/M1-COMPATIBILITY-ROLLOUT-20261007.md section 4. Nothing here executes or authorizes a step; tabletop-check.mjs only replays order and preconditions offline.",
+  "asOf": "2026-10-07",
+  "stageHost": {
+    "url": "https://stage.aktivmetr.ru/",
+    "lastAuditorCheck": "2026-10-07",
+    "lastAuditorResult": "public HTTPS served 15 files matching artifact 714d0f91",
+    "checkedInThisBlock": false
+  },
+  "baseline": {
+    "mainSha": "6d713fe77164b5d7f096a85509d73b43bd9dad13",
+    "prHeadSha": "714d0f91c60a582ee87dc7da82d6249b3106329f",
+    "facts": [
+      "main_is_expected_base",
+      "pr_head_is_expected",
+      "rules_r3_live",
+      "functions_prod_two",
+      "vds_is_c1_hotfix"
+    ]
+  },
+  "inputs": {
+    "s1_accepted_same_bytes": "auditor accepted the staging smoke (S1) on the same bytes",
+    "required_checks_success_on_head": "required checks of the exact PR HEAD are success (re-read immediately before the merge)",
+    "owner_account_available": "owner can sign in with a real account for the read-only check"
+  },
+  "approvals": ["preflight", "export", "functions_deploy", "vds_publish", "merge"],
+  "facts": {
+    "preflight_ok": { "phase": "pre-merge" },
+    "backup_fresh": { "phase": "pre-merge" },
+    "stage_pass_same_bytes": { "phase": "pre-merge" },
+    "functions_set_a_live": { "phase": "pre-merge" },
+    "vds_is_c2": { "phase": "pre-merge" },
+    "owner_read_check_ok": { "phase": "pre-merge" },
+    "merged": { "phase": "merge" },
+    "tree_equal_main_head": { "phase": "post-merge" },
+    "pages_workflow_success": { "phase": "post-merge" },
+    "pages_serves_c2": { "phase": "post-merge" }
+  },
+  "steps": [
+    {
+      "id": "P0", "title": "Preflight (read-only)", "external": false, "approval": "preflight",
+      "requires": ["main_is_expected_base", "pr_head_is_expected", "rules_r3_live", "functions_prod_two", "vds_is_c1_hotfix"],
+      "establishes": ["preflight_ok"], "changes": [], "rollback": null
+    },
+    {
+      "id": "P1", "title": "Fresh Firestore export", "external": true, "approval": "export",
+      "requires": ["preflight_ok"], "establishes": ["backup_fresh"], "changes": ["backup"],
+      "rollback": { "text": "the export is a reference copy; import is not part of the rollback", "restores": [] }
+    },
+    {
+      "id": "P2", "title": "Gate: staging smoke on the same bytes", "external": false, "approval": null,
+      "requires": ["preflight_ok", "s1_accepted_same_bytes"], "establishes": ["stage_pass_same_bytes"], "changes": [], "rollback": null
+    },
+    {
+      "id": "P3", "title": "Deploy Functions by allowlist", "external": true, "approval": "functions_deploy",
+      "requires": ["backup_fresh", "stage_pass_same_bytes"], "establishes": ["functions_set_a_live"], "changes": ["functions"],
+      "rollback": { "text": "C1 does not call the new callables; deleting functions is a separate destructive approval", "restores": ["vds_is_c1_hotfix"] }
+    },
+    {
+      "id": "P4", "title": "Publish C2 to the VDS", "external": true, "approval": "vds_publish",
+      "requires": ["functions_set_a_live"], "establishes": ["vds_is_c2"], "changes": ["vds"],
+      "rollback": { "text": "rollback.sh switches the symlink back to the C1 hotfix release (compatible with Rules R3)", "restores": ["vds_is_c1_hotfix"] }
+    },
+    {
+      "id": "P5", "title": "Owner read-only check", "external": false, "approval": null,
+      "requires": ["vds_is_c2", "functions_set_a_live", "owner_account_available"], "establishes": ["owner_read_check_ok"], "changes": [], "rollback": null
+    },
+    {
+      "id": "P6a", "title": "Merge PR #28 into main (before-merge preconditions)", "external": true, "approval": "merge",
+      "requires": [
+        "functions_set_a_live", "vds_is_c2", "owner_read_check_ok",
+        "main_is_expected_base", "pr_head_is_expected", "required_checks_success_on_head"
+      ],
+      "establishes": ["merged"], "changes": ["main", "pages"],
+      "rollback": { "text": "revert PR (Pages); separate approval; the VDS keeps serving C2/C1", "restores": [] }
+    },
+    {
+      "id": "P6b", "title": "Post-merge verification (read-only)", "external": false, "approval": null,
+      "requires": ["merged"], "establishes": ["tree_equal_main_head", "pages_workflow_success", "pages_serves_c2"], "changes": [], "rollback": null
+    }
+  ]
+}

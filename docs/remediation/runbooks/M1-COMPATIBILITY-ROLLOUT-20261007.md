@@ -6,12 +6,16 @@
 и исходники PR #28. Новых обращений к Firebase/VDS в этом блоке не было; значения ниже помечены источником:
 **[A]** — зафиксировано аудитом/артефактами, **[S]** — следует из исходников/тестов этого репозитория, **[?]** — не проверено.
 
-## 1. Фактическое состояние (на 2026-10-07)
+## 1. Датированный baseline (аудит 2026-10-07; это не живое состояние)
+
+Все значения ниже — снимок аудита 2026-10-07 **[A]**; в этом блоке live-системы не опрашивались. Перед любым шагом состояние нужно перечитать (P0): таблица
+не заменяет preflight. Staging-host на VDS: **`https://stage.aktivmetr.ru/`** (известен владельцу; последняя проверка аудитора — 2026-10-07: публичный HTTPS отдавал
+15 файлов, совпавших с артефактом `714d0f91`; в этом блоке адрес не запрашивался). Production-host на VDS: `app.aktivmetr.ru`.
 
 | Слой | Production (`finapp-prod-10a83`) | Staging (`finapp-staging`) |
 |---|---|---|
 | GitHub | `main` = `6d713fe77164b5d7f096a85509d73b43bd9dad13` **[A]** | PR #28 OPEN, HEAD `714d0f91c60a582ee87dc7da82d6249b3106329f`, не слит **[A]** |
-| Frontend на VDS (`app.aktivmetr.ru` / stage-root) | login hotfix `6c51d5ca…` от `main`, release `/srv/aktivmetr-app/releases/6c51d5c-login-20261007` **[A]** | артефакт `714d0f91` (15 файлов совпали с `m1-dist-staging-714d0f91`) **[A]** |
+| Frontend на VDS | `app.aktivmetr.ru`: login hotfix `6c51d5ca…` от `main`, release `/srv/aktivmetr-app/releases/6c51d5c-login-20261007` **[A]** | `https://stage.aktivmetr.ru/`: артефакт `714d0f91` (15 файлов совпали с `m1-dist-staging-714d0f91`, проверка 2026-10-07) **[A]** |
 | Frontend на GitHub Pages | сборка `main` (клиент `6d713fe`, читает `users` list) **[A]/[S]** | — |
 | Firestore Rules | canonical round 3, SHA-256 `c4fe4c09…19fd`, release.updateTime 2026-10-03T19:42:58Z **[A]** | тот же SHA-256, updateTime 2026-10-07T08:06:12Z (выкачены run `r3-ab9fb2fe`) **[A]** |
 | Cloud Functions | `createCompany`, `authzProbe` (ACTIVE, nodejs22, us-central1); **нет** `listCompanyMembers` и остальных member/invitation **[A]** | 13 функций ACTIVE (5 M1 callable + `createCompany` + `authzProbe` + 6 invitation) **[A]** |
@@ -71,7 +75,7 @@ Staging сейчас = C2 (VDS stage root) + R3 + 13 функций, то ест
 
 Отправная точка: **R3 live + C1 на VDS + 2 функции.** Цель: C2 на VDS + Set A функций, роли/roster работают. Rules не меняются.
 
-Allowlist Functions (точный, из `m1p-deploy.deployArgs`): 
+Allowlist Functions (точный, из `m1p-deploy.deployArgs`):
 `firebase deploy --project finapp-prod-10a83 --only functions:authzProbe,functions:changeMemberRole,functions:createCompany,functions:disableMember,functions:listCompanyMembers,functions:removeMember,functions:restoreMember --non-interactive`.
 Invitation-функции (`inviteMember`, `listInvitations`, `cancelInvite`, `resendInvite`, `previewInvite`, `acceptInvite`, `getCompanyAccess`) **не** входят и не деплоятся.
 Вариант A′ (для решения аудитора): только 5 новых callable (без перевыкатки `createCompany`/`authzProbe`, у которых при перевыкатке меняются лимиты: 256 MiB, CPU 1, concurrency 1, max 1) — минимальное воздействие на работающие функции; прежнее решение владельца — 7 функций (Set A).
@@ -88,9 +92,11 @@ Invitation-функции (`inviteMember`, `listInvitations`, `cancelInvite`, `r
 | P3 | Deploy Functions по allowlist выше | P1, P2; допуск C | список функций: ровно allowlist, ACTIVE/GEN_2/nodejs22/us-central1, caps; неаутентифицированный POST к 5 callable → слой приложения (401 `UNAUTHENTICATED`), invitation-функции → 404 | C1 не вызывает новые callable → оставить как есть; удаление функций — только отдельный допуск (destructive) |
 | P4 | Публикация C2 на VDS: новый каталог `releases/<sha8>-m1-<date>`, checkpoint + `rollback.sh` (по образцу `login-fix-20261007`), атомарное переключение symlink, nginx не меняется | P3; допуск D на конкретный артефакт | 15+ файлов по HTTPS = манифест; root и `/finapp/` index; в bundle нет `finapp-staging`, есть production project id; старые hashed assets сохранены для открытых вкладок | `bash /srv/aktivmetr-app/checkpoints/<…>/rollback.sh` → hotfix C1 (совместим с R3); Rules не откатываются |
 | P5 | Проверка владельцем настоящим аккаунтом, **только чтение**: вход, выбор компании, Users открывается и показывает состав (`listCompanyMembers`); без смены ролей | P4 | консоль браузера без `authStore`/`companyStore` ошибок; нет «Нет доступа» у владельца | rollback.sh |
-| P6 | Merge PR #28 в `main` (запускает GitHub Pages — внешний шаг) | P3–P5; `m1p-tree-check`-эквивалент: tree `origin/main` = tree проверенного HEAD, remote main = fetched main | Pages отдаёт C2 с маркером «Нет доступа к компании»; Functions уже развёрнуты (иначе Pages-клиент увидит только ошибки roster) | revert PR (Pages) — отдельный допуск; VDS уже C2/C1 |
+| P6a | **До merge:** Merge PR #28 в `main` (запускает GitHub Pages — внешний шаг) | P3–P5; перечитанные в P0 и заново перед merge: `main` = ожидаемый BASE `6d713fe77164b5d7f096a85509d73b43bd9dad13` (иначе остановка и пересмотр), HEAD PR #28 = ожидаемый (`714d0f91…` либо согласованный итоговый), обязательные checks этого HEAD — success, merge защищён ожидаемым HEAD; **отдельный допуск на merge** (допуск на P3–P5 его не включает) | `gh pr view`/API read-only: base/head SHA совпали до merge; затем факт merge (mergeCommit) | revert PR (Pages) — отдельный допуск; VDS уже C2/C1 |
+| P6b | **После merge:** сверка результата (только чтение) | P6a выполнен | tree `origin/main` = tree проверенного HEAD (`m1p-tree-check`-эквивалент; до merge `main` ещё старый, поэтому равенство — **постусловие**, не предусловие); workflow Pages завершён success; Pages отдаёт C2 с маркером «Нет доступа к компании»; Functions уже развёрнуты (иначе Pages-клиент увидит только ошибки roster) | при расхождении — остановка, revert PR только по отдельному допуску |
 
-Порядок «P3 до P6» обязателен: после merge Pages сразу публикует C2 против production, а Functions автоматически не выкатываются.
+Порядок «P3 до P6a» обязателен: после merge Pages сразу публикует C2 против production, а Functions автоматически не выкатываются. Машиночитаемая форма порядка и
+предусловий — `docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/rollout/rollout-steps.json`; offline table-top проверка — `rollout/tabletop-check.mjs` (запускается без сети, ничего не выполняет).
 
 ## 5. Обязательные проверки релиза
 
@@ -113,5 +119,5 @@ Invitation-функции (`inviteMember`, `listInvitations`, `cancelInvite`, `r
 
 ## 7. Что нужно разрешить отдельно (ничего из этого не выполнялось и не разрешено)
 
-1. Staging S1 (a или b) и, для (a), откат staging Rules. 2. Production P0–P6 по шагам. 3. Публикация hotfix-ветки в GitHub (обычный push/Draft PR) либо
+1. Staging S1 (a или b) и, для (a), откат staging Rules. 2. Production P0–P6b по шагам (P6a merge — отдельным допуском). 3. Публикация hotfix-ветки в GitHub (обычный push/Draft PR) либо
 решение о замещении hotfix полным C2. 4. Любые live-чтения сверх уже выполненных аудитом.
