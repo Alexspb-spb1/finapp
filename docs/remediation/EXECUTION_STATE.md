@@ -568,3 +568,7 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   `docs/remediation/runbooks/M1-COMPATIBILITY-ROLLOUT-20261007.md`.
 - Production: Rules canonical уже live (окна Rules нет), VDS = login hotfix, развёрнуты только createCompany/authzProbe;
   пакет v6 для production не запускать (guard `m1p-pins.mjs`). Любые live-шаги — только по отдельному допуску на актуальные bytes.
+- REVIEW V1 = CHANGES_REQUIRED (2026-10-07/08) -> Corrections V1 (CR1-CR4) в той же ветке и Draft PR: коллектор evidence санитизирует credential-ключи структурно,
+  versioned tooling/driver с честным exit code (verification-run-summary.txt помечен как историческая запись), versioned loopback fence + изолированное окружение с негативными
+  контролями и одним ограниченным fenced-повтором регрессии (JVM не fenced, Functions-эмулятор не запускался), `git diff --check` на всём BASE..HEAD, rollout proposal
+  со stage-host, датированным baseline и P6a/P6b + offline table-top. Новых live-действий не было. Next: независимый аудит; следующий этап не начинать.

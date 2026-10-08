@@ -1,13 +1,13 @@
 # M1-SAFE-STOP-RECOVERY-01 — SAFE_STOP staging-run: причина остановки, regression, recovery-путь, совместимость
 
 ## Итоговый статус
-READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью локальный: новых live-запусков, provider-вызовов, cleanup, merge и deploy не было.
+READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT) после **Corrections V1** (ответ на REVIEW V1 = CHANGES_REQUIRED, замечания CR1–CR4 — раздел ниже). Блок полностью локальный: новых live-запусков, provider-вызовов, cleanup, merge и deploy не было.
 Статус не закрывает SEC-007/010/011 и не означает готовность релиза к production. Результат CI на точном финальном HEAD указан в сообщении передачи и в комментарии Draft PR, а не здесь: правка отчёта меняла бы проверяемый HEAD (CI на pull_request для base не `main` автоматически не запускается — запуск вручную через `workflow_dispatch` на ветке, без секретов и deploy-шагов).
 
 ## Branch / commit
 - worktree: `D:/projects/finapp/m1-safe-stop-recovery-01`; ветка `remediation/M1-SAFE-STOP-RECOVERY-01-runner-recovery`
 - base (exact PR #28 HEAD): `714d0f91c60a582ee87dc7da82d6249b3106329f`; `D:/projects/finapp/pr28-fix` на момент сверки на том же HEAD, `git status --short` пуст (0 строк), не изменялся
-- коммиты: `096be8c` (исходники runner, patch, evidence), `ed2738d` (compatibility/rollout proposal), `11a4675` (дополнение к нему), затем коммит отчёта и checkpoint; финальный HEAD = коммит, содержащий этот файл; его SHA и URL Draft PR — в сообщении-передаче и в описании PR (SHA коммита не может быть записан внутри самого коммита)
+- коммиты первого прохода: `096be8c` (исходники runner, patch, evidence), `ed2738d` (compatibility/rollout proposal), `11a4675` (дополнение к нему), затем отчёт и checkpoint (HEAD первого прохода `48b9b54269a7731da08e89fdb03f8fa4f6bdcd9b`); коммиты Corrections V1 — отдельные scoped-коммиты поверх него (список — в сообщении-передаче и `git log 48b9b54..HEAD`); финальный HEAD = коммит, содержащий этот файл; его SHA и URL Draft PR — в сообщении-передаче и в описании PR (SHA коммита не может быть записан внутри самого коммита)
 - Draft PR: base = `remediation/SEC-007-member-management-functions` (HEAD PR #28, чтобы diff содержал только этот блок)
 - cwd при работе: worktree выше; Node v24.16.0, npm 11.13.0
 
@@ -74,7 +74,9 @@ READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью лока
 Задание: установить причину остановки по артефактам, воспроизвести offline, исправить подтверждённый дефект runner/adapter/sanitizer, подготовить проверяемую версию и обновить описание совместимости.
 
 ## Затронутые файлы
-- `docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/` — `runner-r4-source/` (151 файл), `r3-to-r4.patch`, `base-r3-sha256.txt`, `candidate-r4-sha256.txt`, `before-after/*`, `verification-run-summary.txt`
+- `docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/` — `runner-r4-source/` (151 файл), `r3-to-r4.patch`, `base-r3-sha256.txt`, `candidate-r4-sha256.txt`, `before-after/*`, `verification-run-summary.txt` (историческая, помечена), `.gitattributes`;
+  Corrections V1: `tooling/` (results-tools, finalize-results, verify-driver, make-snapshot.sh, tooling-tests, run-all-r4.legacy.sh), `offline-fence/` (loopback-only.cjs, recorder-stub.cjs, fence-selftest.cjs, isolated-env.mjs, emulator-session.mjs, network-sample.mjs, run-fenced-integration.mjs, offline-fence-tests.mjs),
+  `rollout/` (rollout-steps.json, tabletop-check.mjs, tabletop-tests.mjs), `corrections-v1/` (санитизированные результаты)
 - `docs/remediation/runbooks/M1-COMPATIBILITY-ROLLOUT-20261007.md` — матрица совместимости и rollout/rollback proposal
 - `docs/remediation/reports/M1-SAFE-STOP-RECOVERY-01.md` — этот отчёт; `docs/remediation/EXECUTION_STATE.md` — запись checkpoint
 - Код приложения (`src/`, `functions/`, `firestore.rules`) **не менялся**.
@@ -101,7 +103,7 @@ READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью лока
 | `tests/ps51-parse-check.ps1` | PASS (4 файла) | PowerShell 5.1.19041 |
 | `node tests/node-helper-tests.mjs` | PASS 202/202 | |
 | `node tests/export-poll-tests.mjs` | PASS 47/47 | |
-| `ps51-orchestrator-tests.ps1 -Set helpers / stub / emulator` | PASS 44/44; 763/763; 52/52 | emulator-набор — на живых эмуляторах (auth+firestore+functions, demo-проект) |
+| `ps51-orchestrator-tests.ps1 -Set helpers / stub / emulator` | PASS 44/44; 763/763; 52/52 | emulator-набор — на живых эмуляторах (auth+firestore+functions, demo-проект). Этот полный прогон шёл **без** изоляции credentials и без сетевого аудита (Functions-эмулятор залогировал ADC-предупреждение): zero egress для него не доказывается и ретроспективно не заявляется — см. CR2 |
 | `node emulator-cleanup-gate-tests.mjs` | PASS 20/20 | существующие ворота G0–G5 не ослаблены |
 | `node tests/direct-emulator-smoke.mjs` | PASS (chain exit 0) | readiness→preflight→seed→ui→api→ui-r3→cleanup→verify-clean на эмуляторе |
 | `node tests/mutation-checks.mjs` / `-extra` / `-export` | PASS 28/28; 1/1; 20/20 | прежние наборы мутаций на кандидате |
@@ -114,9 +116,10 @@ READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью лока
 | `npm run test:rules` (Rules emulator, hash-pinned Rules PR #28) | PASS 153/153 (2 файла) | в том числе `users` list: `assertFails`; интеграция authStore↔Rules |
 | `npm run build` | PASS | |
 | `npm run test:run` | NOT AVAILABLE | скрипта нет в `package.json` (есть `test:unit`); `npm run test:e2e` — **NOT AVAILABLE**, скрипта нет |
-| `git diff --check` | PASS | |
+| `git diff --check` (рабочее дерево) | PASS, exit 0 | **первый проход проверял только рабочее дерево, а не диапазон** — REVIEW V1 (CR3) воспроизвёл `git diff --check 714d0f91..48b9b54` = exit 2; исправление и проверка диапазона — в разделе Corrections V1 (CR3) |
+| `git diff --check 714d0f91c60a582ee87dc7da82d6249b3106329f..HEAD` | см. Corrections V1 (CR3) | проверяется на всём диапазоне BASE..HEAD, не на рабочем дереве |
 
-Полные команды и exit codes прогона кандидата — `verification-run-summary.txt` (`run-all-r4.sh`). `npm ci` не запускался: `node_modules` — junction на `node_modules` идентичного checkout PR #28 (тот же HEAD, `package-lock.json`), без сетевой установки.
+Полные команды и exit codes исходного прогона кандидата — `verification-run-summary.txt` (**историческая запись**, помечена как superseded: она содержит одновременно `secretPatternHits=1` и `RUN_ALL_R4_DONE`; драйвер `run-all-r4.legacy.sh` не отслеживал exit codes — см. CR1). Прогоны, перечисленные выше как PASS, не отзываются; общий вердикт того прогона — не PASS. `npm ci` не запускался: `node_modules` — junction на `node_modules` идентичного checkout PR #28 (тот же HEAD, `package-lock.json`), без сетевой установки.
 
 ### Фактический вывод существенных тестов (сокращённо)
 ```text
@@ -129,13 +132,60 @@ R4      s5..s9 (proof missing / wrong code / plain-transport kind / dispatch!=no
 real Node fetch (loopback): closed port -> connection-refused, not-dispatched; server read the request then reset -> dispatch unknown (server saw 1 request); hang -> abort-timeout, unknown
 ```
 
+## Corrections V1 (REVIEW V1 = CHANGES_REQUIRED, CR1–CR4)
+
+Только локальные изменения в той же ветке и Draft PR; live Firebase/VDS/provider-вызовов, staging replay, cleanup/export, production, deploy и merge не было. Все новые файлы — в
+`docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/` (`tooling/`, `offline-fence/`, `rollout/`, `corrections-v1/`). Исходный runner (кроме коллектора результатов) не менялся.
+
+### CR1 — целостность evidence и итоговый exit code
+- **Источник находки.** Ключ `password` (значение — плейсхолдер `<omitted>`, 3 вхождения) в `fixtureSnapshot` recovery-manifest сценария `rules-failure-round2-rollback-fails`; runner сам пишет плейсхолдер в приватный manifest
+  (`m1-smoke.mjs:466`, не менялся), прежний коллектор копировал файл как есть, а сканер (правильно) ловил ключ. Реальный секрет не обнаружен; значения не печатались, сырой fixture не загружался.
+- **Исправление в коде сбора** (`runner-r4-source/tests/collect-results.mjs`, часть снимка пакета), а не правка одного файла: `--base` обязателен (жёсткого пути больше нет), `--out` только внутри `<pkg>/results`; каждый `.json/.jsonl` парсится, ключи с именами
+  credentials (`password`, `secret`, `apiKey`, `id/access/refresh_token`, `authorization`, …) **удаляются структурно** вместе со значением; непарсируемый `.json` прерывает сбор (fail closed); непарсируемая строка `.jsonl`
+  (журналы `smoke-api-corrupt*` портятся намеренно) сохраняется дословно, только если не содержит секретных паттернов, иначе заменяется маркером. Исходные rehearsal-файлы не меняются; файлы без credentials копируются байт-в-байт.
+  Regex/allowlist сканера **не ослаблялись** (тест фиксирует исходный набор и совпадение паттерна коллектора с паттернами сканера).
+- **Версионируемые инструменты** (вместо неотслеживаемых скриптов из `.runtime`): `tooling/results-tools.mjs` (scan/redact/sums/verify, привязка к одному каталогу `m1-r[4-9]-*`, отказ для consumed `m1-r3-staging`, отчёт только file+kind),
+  `tooling/finalize-results.mjs` (collect → redact → scan → hash → verify → code-sums; первый сбой даёт ненулевой код и маркер `RESULTS_FINALIZE_FAILED`, успех — только `RESULTS_FINALIZED`),
+  `tooling/verify-driver.mjs` (все шаги, exit code решает; ожидаемая PASS-строка и полнота `x/y` обязательны; `VERIFY_ALL_PASS` только при полном успехе), `tooling/make-snapshot.sh` (воспроизводимая сборка снимка/patch/хэшей с проверкой apply+byte compare).
+  `redact-results.mjs` (жёстко привязан к `m1-r3-staging/results` и поэтому ничего не редактировал для R4) заменён; `run-all-r4.sh` сохранён как `tooling/run-all-r4.legacy.sh` с пометкой «не использовать». Старые consumed results не редактировались (тест хэшей).
+- **Побочная находка.** В двух JSON-результатах первого прогона R4 были пути с именем пользователя Windows (старый redact его не трогал); новый инструмент редактирует имя в целевых results и **проверяет** отсутствие (`userNameHits`).
+- **Исторический вывод первого прогона** (`verification-run-summary.txt`) оставлен без изменений, но помечен как superseded: он содержит `secretPatternHits=1` вместе с `RUN_ALL_R4_DONE`; общий вердикт того прогона — не PASS.
+- **Тесты** `tooling/tooling-tests.mjs` — 26/26 (синтетические данные): структура с password-ключами не попадает в публикуемую копию; контроль «без санитайзера» ловится сканом; fixture не копируется; источник не меняется; abort на непарсируемом `.json`; маркер/withhold строк `.jsonl`;
+  отказ при неверном/consumed target, старый каталог не меняется; sums/verify; `finalize` и CLI — hit даёт exit 2 и отсутствие success-маркера; драйвер: PASS-текст при ненулевом exit — FAIL, неполный `x/y` — FAIL, один упавший шаг среди прошедших — `VERIFY_ALL_FAILED` и ненулевой exit процесса.
+- **Актуальный scan** (`corrections-v1/results-finalize.txt`): `collected cases=113 files=2727 sanitizedFiles=1 droppedCredentialKeys=password:3`, `secretPatternHits=0 userNameHits=0`, `results files=2754`, `M1_SUMS_VERIFIED files=149`, `RESULTS_FINALIZED`, exit 0.
+
+### CR2 — доказуемый offline-прогон (ограниченный)
+- **Что признано.** Исходный полный прогон не имел изоляции credentials и сетевого аудита; ADC-предупреждение Functions-эмулятора остаётся фактом. Zero egress для него **не заявляется** (и ретроспективно не доказывается).
+- **Новый контроль** (`offline-fence/`): `isolated-env.mjs` — default-deny allowlist переменных окружения; `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`, `HOME`, `XDG_*`, `CLOUDSDK_CONFIG`, `TEMP` указывают на пустые каталоги под рабочим корнем; `GOOGLE_*`, `FIREBASE_TOKEN`, `GH*`, `AWS_*`, прокси,
+  чужой `NODE_OPTIONS` отбрасываются; проект `demo-finapp`. `loopback-only.cjs` — preload для каждого Node-процесса (`NODE_OPTIONS`): блокирует всё, кроме loopback, в `net.Socket.connect` (net/tls/http/https/undici), `dns.lookup`, `dns.resolve*`/`reverse` (+promises), `fetch`, `dgram`;
+  без `M1_FENCE_LOG` дочерний процесс не стартует (fail closed). Не менялись системные настройки, Execution Policy, firewall, файлы credentials владельца.
+- **Контроль проверяется тестом** (`offline-fence/offline-fence-tests.mjs` — 17/17): окружение (ни одна credential-переменная не выживает; `firebase-tools` в изолированной среде не находит default account и аккаунтов — 0); self-test fence в режиме recorder (31 проверка: внешние попытки по всем API блокируются и не доходят до сетевого слоя,
+  дочерний Node-процесс наследует fence, лог без URL/query) и live-loopback (4); **8 негативных контролей** — мутанты fence (каждый guard удалён по очереди) обнаруживаются self-test'ом, при этом ни один не может отправить трафик (recorder-заглушка).
+- **Существенный сценарий повторён однократно** (`offline-fence/run-fenced-integration.mjs`): эмуляторы Auth+Firestore (`demo-finapp`, Rules SHA-256 `c4fe4c09…19fd`) в изолированной среде, регрессия `seed-stop-recovery-emulator.mjs` — **PASS 13/13, exit 0** (119 с). Санитизированный результат — `corrections-v1/network-result.json`:
+  fence — 157 событий в 23 Node-процессах: 156 loopback/local, **1 заблокировано** (старт Firebase CLI → `firebase-public.firebaseio.com`; запрос теста/runner'а не к провайдеру), разрешённых внешних — 0; JVM (наблюдение, не enforcement) — 38 выборок TCP, 186 установленных loopback-соединений, **0 внешних**;
+  `credentialEnvNamesPresent: []`; остановлено только дерево собственного процесса (2 процесса), порты освобождены. Provider-запросов и мутаций нет (в тесте нет вызовов к проектам; fence блокирует любые).
+- **Использован независимый результат аудитора** (addendum 2026-10-08: HEAD `48b9b54`, PASS 13/13, fence Node-API, 157 loopback/6 blocked, Java не fenced, Functions не запускался): его покрытие совпадает с описанным здесь, поэтому количество прохождений unchanged-регрессии не повторялось в других сочетаниях; восполнен существенный недоказанный участок — версионируемый и проверяемый тестом контроль.
+- **Что НЕ заявляется:** JVM эмуляторов не fenced (только выборочное наблюдение TCP; UDP и промежутки между выборками не покрыты); Functions-эмулятор в этом повторе не запускался; не-Node процессы и native add-ons вне fence; результат не распространяется на другие прогоны.
+
+### CR3 — проверка diff на всём диапазоне
+- Воспроизведено: `git diff --check 714d0f91..48b9b54` → exit 2 (12 строк контекста в `r3-to-r4.patch` — одиночный пробел как маркер контекстной строки unified patch — и trailing space в строке 74 runbook). Первый проход проверял только рабочее дерево и ошибочно заявил PASS.
+- Исправлено: пробел в runbook удалён; в `evidence/…/.gitattributes` добавлено **единственное** узкое правило `r3-to-r4.patch -whitespace` (с комментарием); все остальные файлы диапазона и CI проверяются. Байты patch не менялись правилом: `patch -p1 --binary` на копии R3 + регенерация code sums даёт R4 побайтно
+  (`PATCH_APPLY_BYTE_COMPARE_OK modified=11 new=7`), снимок совпадает с пакетом (`SNAPSHOT_BYTE_COMPARE_OK files=149`) — `tooling/make-snapshot.sh`.
+- Проверка диапазона: `git diff --check 714d0f91c60a582ee87dc7da82d6249b3106329f..HEAD` — результат и exit code приложены в сообщении-передаче для точного финального HEAD (`corrections-v1/checks.txt` — вывод `tooling/run-correction-checks.sh` на HEAD с этим отчётом, до коммита самого файла `checks.txt`; на точном финальном HEAD проверка повторена).
+
+### CR4 — выполнимый rollout proposal
+- Staging-host `https://stage.aktivmetr.ru/` указан с датой последней проверки аудитора (2026-10-07: 15 файлов совпали с `714d0f91`); новых live-запросов нет; утверждение «адрес не указан» удалено. VDS/Firebase-состояние оформлено как **датированный baseline** (не живое состояние), перечитывается в P0.
+- P6 разделён: **P6a** (до merge) — ожидаемый BASE `main` = `6d713fe7…`, ожидаемый HEAD PR, обязательные checks этого HEAD, merge с защитой ожидаемого HEAD, **отдельный допуск на merge**; **P6b** (после merge) — сверка tree `origin/main` с проверенным HEAD, workflow Pages, клиент C2. Равенство tree теперь постусловие.
+- Offline table-top: `rollout/rollout-steps.json` (шаги, предусловия, допуски, rollback) + `rollout/tabletop-check.mjs` (воспроизведение порядка и предусловий, сверка с таблицей runbook) → `ROLLOUT_TABLETOP PASS steps=8 violations=0`; `rollout/tabletop-tests.mjs` — 19/19 (перестановка P3/P4, tree-равенство как предусловие P6a, отсутствие BASE/checks/допуска merge, общий допуск, шаг меняет Rules или возвращает legacy-клиент, rollback P4 не возвращает C1 hotfix, нет stage-host/даты, устаревшая фраза в runbook).
+- VDS hotfix C1 остаётся совместимым rollback (`rollback.sh`); legacy-клиент и Rules не возвращаются без отдельного допуска; новый live-run не запускался.
+
 ## Security review
 - Fail-closed сохранён: pre-dispatch признаётся только по замкнутому списку кодов с проверкой `syscall`; неизвестная форма ошибки, reset, таймауты, собственный abort — `unknown`, cleanup отказывает.
 - Две независимые защиты от ошибочной классификации: G3 требует журнал-доказательство, смежное с intent и с кодом из набора; G4 при cleanup повторно ищет точный синтетический субъект и отказывает при найденном аккаунте вне manifest (сценарий s3).
 - Журнал и result не содержат URL, host, e-mail, токенов, текста исходной ошибки; тест санитайзера включает «ядовитое» сообщение.
 - Allowlist транспорта, ACL приватного run-каталога, no-retry, intent-before-dispatch, fsync/journal не менялись; Rules/Functions/код приложения не менялись; права Firestore не расширялись.
 - Тестовые fault-injection preload'ы работают только с эмулятором (`--require` одного процесса) и в пакет исполнения не подключаются.
-- Остаточный риск: целостность журнала (его правит процесс одного пользователя) — вне scope; рабочая станция имеет ADC (предупреждение Functions-эмулятора), эмуляторные тесты сетевых вызовов к проектам не делают, но это не проверено сетевым аудитом в этом блоке.
+- Остаточный риск: целостность журнала (его правит процесс одного пользователя) — вне scope; рабочая станция имеет ADC (предупреждение Functions-эмулятора). Первый проход не имел сетевого аудита и утверждение «эмуляторные тесты сетевых вызовов к проектам не делают» не доказывал; Corrections V1 (CR2) добавляет изолированный и fenced повтор существенной регрессии с ограниченным, явно описанным покрытием.
 
 ## Данные и миграция
 Нет. Эмуляторные данные синтетические (`demo-finapp`), очищались между сценариями. Production/staging данные не читались и не менялись.
@@ -151,7 +201,8 @@ real Node fetch (loopback): closed port -> connection-refused, not-dispatched; s
 - Классификатор проверен на реальных формах fetch-ошибок loopback (refused, reset, abort) и на **синтетических** формах undici/Node для connect-timeout, DNS, AggregateError, TLS; реальный connect-timeout до Google не воспроизводился.
 - Повторный запуск штатного orchestrator на staging невозможен как есть: шаг 1 требует live Rules round 2, а на staging уже round 3 (`state-rules-target` → STOP); шаги 4–5 экспортируют и деплоят Rules. Нужен smoke-only вариант либо допуск на откат staging Rules (см. runbook §3).
 - Production-пакет v6 не готов: `m1p-pins.mjs` справедливо отказывает, пока Rules round 3 live; нужен новый пакет без Rules-окна (runbook §4).
-- Адрес staging-host на VDS в исходных данных не указан (адрес не придуман).
+- Staging-host на VDS — `https://stage.aktivmetr.ru/` (известен владельцу; последняя проверка аудитора 2026-10-07: публичный HTTPS отдавал 15 файлов, совпавших с артефактом `714d0f91`). В этом блоке адрес не запрашивался; в первом проходе он был ошибочно записан как «не указан» (исправлено, CR4).
+- Корректировки Corrections V1 не устраняют ограничения offline-контроля: JVM эмуляторов не fenced (только наблюдение), Functions-эмулятор в fenced-повторе не запускался, не-Node процессы вне fence (см. CR2).
 
 ## Дополнительные находки вне scope
 1. Hotfix-ветка `fix/production-login-roster-20261007` не опубликована в GitHub (push отказывал); решение — публикация либо замещение полным клиентом (вне блока).
