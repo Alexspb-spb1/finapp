@@ -24,11 +24,11 @@ t('the generator reproduces the committed source byte for byte (rebuilt code sum
   const same = walk(SOURCE).every(f => sha(path.join(SOURCE, f)) === sha(path.join(out, f)))
   let refused = false
   try { buildPackage(out) } catch (e) { refused = /OUT_EXISTS/.test(e.message) }
-  return same && refused && r.listed === walk(SOURCE).length - 2 ? true : `same=${same} refused=${refused} listed=${r.listed}`
+  return same && refused && r.listed === walk(SOURCE).length - 1 ? true : `same=${same} refused=${refused} listed=${r.listed}`
 })
 t('every file of the committed code sums exists with the listed hash', () => {
   const lines = fs.readFileSync(path.join(SOURCE, 'CODE-SHA256SUMS.txt'), 'utf8').split('\n').filter(Boolean)
-  return lines.every(l => sha(path.join(SOURCE, ...l.slice(66).split('/'))) === l.slice(0, 64)) && lines.length === walk(SOURCE).filter(f => f !== 'CODE-SHA256SUMS.txt').length - 1 ? true : 'sums differ'
+  return lines.every(l => sha(path.join(SOURCE, ...l.slice(66).split('/'))) === l.slice(0, 64)) && lines.length === walk(SOURCE).filter(f => f !== 'CODE-SHA256SUMS.txt').length ? true : 'sums differ'
 })
 t('module identity: the files shared with the accepted R4 snapshot are byte-identical except exactly m1-core.mjs and m1-transport.mjs', () => {
   const r4 = new Set(walk(R4).filter(f => f !== 'CODE-SHA256SUMS.txt'))

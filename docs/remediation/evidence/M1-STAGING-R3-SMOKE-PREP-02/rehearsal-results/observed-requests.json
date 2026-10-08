@@ -1,0 +1,53 @@
+{
+  "success": {
+    "api": {
+      "status": "PASS",
+      "requests": 85,
+      "authCreates": 0,
+      "authDeletes": 0,
+      "operatorCommits": 0
+    },
+    "cleanup": {
+      "status": "PASS",
+      "requests": 64,
+      "authCreates": 0,
+      "authDeletes": 3,
+      "operatorCommits": 1
+    },
+    "preflight": {
+      "status": "PASS",
+      "requests": 2,
+      "authCreates": 0,
+      "authDeletes": 0,
+      "operatorCommits": 0
+    },
+    "seed": {
+      "status": "PASS",
+      "requests": 13,
+      "authCreates": 3,
+      "authDeletes": 0,
+      "operatorCommits": 1
+    },
+    "ui": {
+      "status": "PASS",
+      "requests": null,
+      "authCreates": null,
+      "authDeletes": null,
+      "operatorCommits": null
+    },
+    "ui-r3": {
+      "status": "PASS",
+      "requests": null,
+      "authCreates": null,
+      "authDeletes": null,
+      "operatorCommits": null
+    },
+    "verify-clean": {
+      "status": "PASS",
+      "requests": 21,
+      "authCreates": 0,
+      "authDeletes": 0,
+      "operatorCommits": 0
+    }
+  }
+}

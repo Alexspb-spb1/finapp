@@ -1,0 +1,33 @@
+{
+  "status": "SAFE_STOP",
+  "task": "M1-STAGING-R3-SMOKE-PREP-02",
+  "variant": "S1b",
+  "profile": "rehearsal",
+  "head": "714d0f91c60a582ee87dc7da82d6249b3106329f",
+  "stop": {
+    "step": "step4",
+    "reason": "smoke seed stopped (kind transport, dispatch unknown); cleanup: manual-classification-required"
+  },
+  "completed": [
+    "step0",
+    "step1",
+    "step2",
+    "step3"
+  ],
+  "clientAccess": {
+    "adminReadsAreClientAccess": false,
+    "uiPass": false,
+    "apiPass": false,
+    "uiR3Pass": false
+  },
+  "cleanup": {
+    "decision": "manual-classification-required",
+    "run": false,
+    "exitCode": null,
+    "branch": null,
+    "verifyCleanExit": null,
+    "inventoryExit": null
+  },
+  "final": null,
+  "finishedAt": "2026-10-08T06:47:38.438Z"
+}

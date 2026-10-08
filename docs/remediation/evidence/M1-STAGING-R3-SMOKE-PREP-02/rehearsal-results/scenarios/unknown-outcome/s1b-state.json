@@ -1,0 +1,54 @@
+{
+  "task": "M1-STAGING-R3-SMOKE-PREP-02",
+  "variant": "S1b",
+  "profile": "rehearsal",
+  "head": "714d0f91c60a582ee87dc7da82d6249b3106329f",
+  "startedAt": "2026-10-08T06:47:27.163Z",
+  "completed": [
+    "step0",
+    "step1",
+    "step2",
+    "step3"
+  ],
+  "stop": {
+    "step": "step4",
+    "reason": "smoke seed stopped (kind transport, dispatch unknown); cleanup: manual-classification-required"
+  },
+  "pins": {
+    "budgetSha256": "256692200a35e5ee8505ff8afd93f485f81a84752d5fc4ed2d7bd0f563135ebb",
+    "codeSumsSha256": "700ba158ba017ea6783ab1e7919d6812a692e513d596d6135b6d8b45fc40ef8a"
+  },
+  "rulesR3Verified": true,
+  "rulesEvidenceSha256": "967e5047ad80596607a49e3617fe3f86e8f8f12d7b796ea3cb2f7c988783fe88",
+  "functionsVerified": true,
+  "readiness": {
+    "toolExit": 0,
+    "status": "READY",
+    "verified": true
+  },
+  "seedAttempted": true,
+  "smoke": {
+    "seed": {
+      "exit": 2,
+      "stopKind": "transport",
+      "dispatch": "unknown",
+      "reasonCode": "connection-reset",
+      "rulesProbeFailure": false
+    }
+  },
+  "cleanup": {
+    "decision": "manual-classification-required",
+    "run": false,
+    "exitCode": null,
+    "branch": null,
+    "verifyCleanExit": null,
+    "inventoryExit": null
+  },
+  "final": null,
+  "clientAccess": {
+    "adminReadsAreClientAccess": false,
+    "uiPass": false,
+    "apiPass": false,
+    "uiR3Pass": false
+  }
+}
