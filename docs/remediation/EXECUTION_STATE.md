@@ -599,3 +599,6 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   `m1-recon-readonly-staging-v2` (`CODE-SHA256SUMS.txt` 05eaa3e6…038b; v1 `m1-recon-readonly-staging` SUPERSEDED и не менялся). CR1: `execute` сверяет фактические байты всех файлов пакета с манифестом
   (`recon-integrity.mjs`) до допуска, claim, credentials и запросов; CR2: mutation harness с согласованными sums, no-op baseline, релевантными контролями и canary (52 мутанта, 148 контролей);
   CR3: жёсткий общий дедлайн (сигнал = остаток бюджета, проверки после заголовков/тела/INTENT/конца чтения). Новых live-действий не было; PASS даёт только аудитор.
+- TASK03 REVIEW V2 = CHANGES_REQUIRED (HEAD 6c2ebc9abdf5e406fd94a9161b2db234375c9b77; CR1 и CR2 закрыты аудитором, остаётся CR3) -> Corrections V2 в той же ветке и Draft PR #37: новый immutable-кандидат
+  `m1-recon-readonly-staging-v3` (`CODE-SHA256SUMS.txt` e460a9b3…92c6; v1 и v2 SUPERSEDED и не менялись). CR3: общий deadline-guard перед каждым следующим разрешённым действием (ветки, чтение кэшированного входа,
+  чтение consumed journal) после записей ledger/checkpoint; единый момент завершения для вердикта, finishedAt, итоговых событий ledger и кода выхода. 153 контроля, 60 мутантов. Новых live-действий не было; PASS даёт только аудитор.

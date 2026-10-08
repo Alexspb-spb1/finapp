@@ -15,6 +15,17 @@ READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью лока
 | CR2 | harness считал DETECTED любой `status != 0`; no-op relocation со старыми sums давал 97/99, diagnostic 32/33, survivor эквивалентен | у каждой копии согласованные корни (соседний каталог) и **пересчитанный после правки** манифест; два зелёных baseline (relocation, безвредная правка) обязательны; DETECTED только если упал **релевантный** контроль (`expect` на каждый мутант), crash/syntax/timeout — ERROR; canary: syntax-error → ERROR, чужой контроль → IRRELEVANT_FAILURE | baselines 148/148; 52 мутанта, у каждого указан и подтверждён релевантный упавший контроль; survivor «consumed/reserved namespaces accepted» (эквивалентный для staging-профиля из-за закреплённого имени) заменён контролем, который достигает гейта в rehearsal-профиле (`namespace gate itself`); 19 новых мутантов CR1/CR3 |
 | CR3 | дедлайн 120 с проверялся только перед отправкой: старт 119500 мс, завершение 128500 мс → `RESULT ok` | сигнал запроса = min(10 с, остаток бюджета); проверка после заголовков, после каждого чтения тела (включая признак конца), при записи INTENT и в конце чтения; `deadline` вместо `timeout` при abort внутри бюджета; позднее завершение — STOP `deadline`, тело отменяется, дальнейших запросов нет | точный контрпример аудитора (119500 → 128500 = STOP, `elapsedMs` 9000); граница DL-1 / DL / DL+1 для старта и для завершения; поздний 503/302; тело пересекает дедлайн между чанками и на признаке конца; бюджет закончился во время INTENT (не отправляется); сигнал 10000/500/10000 мс; abort → `deadline`/`timeout`; run-level (последний frontend-запрос, bootstrap, ровно в дедлайн); один loopback-контроль на реальном сигнале (заголовки и тело, бюджет 400 мс) |
 
+## Corrections V2 (TASK03 REVIEW V2 = CHANGES_REQUIRED на `6c2ebc9abdf5e406fd94a9161b2db234375c9b77`; CR1 и CR2 закрыты аудитором, остаётся CR3; тот же worktree, ветка и Draft PR #37)
+Действующий кандидат теперь **v3** (`D:\projects\finapp\.runtime\m1-recon-readonly-staging-v3`, `CODE-SHA256SUMS.txt` `e460a9b3cc022e531144fd8097ed88e98972342844444950961218623edc92c6`, 25 файлов, 24 в манифесте; отличие от v2 — только `recon-core.mjs` `11c9642c…500f` и тесты).
+Кандидаты v1 и v2 **SUPERSEDED**, не менялись, evidence v1 (`test-results/`, `recon-files.txt`) и v2 (`corrections-v1/`) сохранено; evidence v3 — `corrections-v2/`. Числа 148/52 относились к v2; числа v3 — 153 контроля, 60 мутантов.
+
+| Дефект v2 (контрпримеры аудитора, `auditor-recon-20261008-02`) | Исправление v3 | Регрессия (детерминированная, без sleep и live) |
+|---|---|---|
+| Запись checkpoint после frontend переводит часы на 120001 мс, а раннер всё равно читает кэшированный вход (1 чтение), и только следующий Functions-запрос получает `deadline`; перед чтением private journal guard отсутствовал | общий guard `gate()` перед **каждым** следующим разрешённым действием: перед каждой веткой (в том числе перед чтением journal в ветке Auth) и перед чтением кэшированного входа, после предшествующих записей ledger/checkpoint; остаток ≤ 0 ⇒ ни чтения файла, ни запроса, только локальная запись STOP (`credential`/`<ветка>`, `deadline`) | часы переводятся изнутри реальных записей ledger (BRANCH_DONE, CREDENTIAL_CONFIG_READ) и checkpoint (обёртки `fs.writeSync`/`fs.writeFileSync`); на остатке −1 мс и ровно 0: 0 вызовов bootstrap, 0 чтений кэшированного входа (staging-профиль: файл читается 0 раз), 0 чтений journal, 0 запросов после; на остатке +1 мс — позитивный контроль (читает один раз и завершается) |
+| Последняя проверка видит 120000 мс, а `finishedAtUtc` берёт следующий тик (120001 мс); результат и exit — ALL_MATCH/0 | **единый момент завершения** `completedAt` (один отсчёт часов после последнего действия и его checkpoint): от него вердикт (≤ DL успех, > DL STOP `run`/`deadline`), `finishedAtUtc`, время событий `STOP run` и `RESULT` в ledger и код выхода | часы, продолжающие тикать после последнего checkpoint, завершение на DL−2…DL+2: успех ⇔ elapsed ≤ DL, `finishedAt`/ledger/статус/exit согласованы; контрпример аудитора (завершение ровно DL при тикающих часах) = успех с `finishedAt` = DL |
+
+Контроли проверены против движка v2 (в остальном текущая согласованная копия): падают ровно 4 новых регрессии (между действиями ×3, момент завершения), позитивный контроль проходит. 8 новых мутантов (guard перед bootstrap убран / после чтения / убран перед веткой и journal / допускает остаток 0; `finishedAt`, `RESULT` и `STOP` берут собственный отсчёт часов; завершение ровно в DL = STOP) + обновлённый мутант «run может закончиться после дедлайна»; у всех подтверждён релевантный упавший контроль; baselines 153/153, canary 2/2.
+
 Ограничения, найденные при исправлении: см. «Известные ограничения» (сверка байтов выполняется внутри уже запущенного процесса — TOCTOU между загрузкой модулей и проверкой; проверяются байты файлов пакета, не `node.exe`).
 
 ## Branch / commit
@@ -42,24 +53,25 @@ READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью лока
 TASK 03: самостоятельный reviewable пакет будущей bounded read-only сверки с exact bytes, командами, allowlist/бюджетами, офлайн-режимами, одноразовым permit и блоком решения владельца — без выполнения чтений.
 
 ## Затронутые файлы
-`docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/` (`package-recon-source/` — теперь v2, `tooling/`, `recon-files.txt` и `test-results/` — v1, не менялись, `corrections-v1/` — evidence v2), `docs/remediation/runbooks/M1-STAGING-READONLY-RECON-PREPARED.md`, этот отчёт, `docs/remediation/EXECUTION_STATE.md`.
-Corrections V1 меняют только пакет сверки (`recon-core.mjs`, `recon.mjs`, новый `recon-integrity.mjs`, тесты, `tests/relocate.mjs`) и его tooling; принятые пакеты/ветки/evidence (Task01/Task02, S1b v1/v2, consumed run, утренний отчёт) не менялись.
+`docs/remediation/evidence/M1-STAGING-READONLY-RECON-PREP-03/` (`package-recon-source/` — теперь v3, `tooling/`, `recon-files.txt` и `test-results/` — v1 и `corrections-v1/` — v2, не менялись, `corrections-v2/` — evidence v3), `docs/remediation/runbooks/M1-STAGING-READONLY-RECON-PREPARED.md`, этот отчёт, `docs/remediation/EXECUTION_STATE.md`.
+Corrections V1 меняли только пакет сверки (`recon-core.mjs`, `recon.mjs`, новый `recon-integrity.mjs`, тесты, `tests/relocate.mjs`) и его tooling, Corrections V2 — только `recon-core.mjs`, тесты и tooling; принятые пакеты/ветки/evidence (Task01/Task02, S1b v1/v2, consumed run, утренний отчёт) не менялись.
 Код приложения, принятые ветки/PR, S1b-кандидаты, consumed пакеты/evidence, private run-каталоги — не менялись (private journal прочитан один раз для хэшей).
 
 ## Immutable-кандидат
-**v2 (действующий):** `D:\projects\finapp\.runtime\m1-recon-readonly-staging-v2` (создан генератором один раз, не запускался, равен `package-recon-source`; 25 файлов, 24 в манифесте); проверка и тесты — на копии с теми же байтами `m1-recon-verify2`.
-**v1 (SUPERSEDED, не менялся):** `D:\projects\finapp\.runtime\m1-recon-readonly-staging`, `CODE-SHA256SUMS.txt` `6fdb5009455c6c4377754d95495fb36c91775d8677dd1f977edb0eb5763c1622` (23 файла, 22 в манифесте); выпускать допуск на v1 нельзя. Оба делят один одноразовый namespace `m1-stg-readonly-recon-03`.
+**v3 (действующий):** `D:\projects\finapp\.runtime\m1-recon-readonly-staging-v3` (создан генератором один раз, не запускался, равен `package-recon-source`; 25 файлов, 24 в манифесте); проверка и тесты — на копии с теми же байтами `m1-recon-verify3`.
+**v2 (SUPERSEDED, не менялся):** `D:\projects\finapp\.runtime\m1-recon-readonly-staging-v2`, `CODE-SHA256SUMS.txt` `05eaa3e644924322cf4cddc40bc870a7fdebe3d1c184bd013d0f4c1d9a47038b`; допуск на v2 выдавать нельзя.
+**v1 (SUPERSEDED, не менялся):** `D:\projects\finapp\.runtime\m1-recon-readonly-staging`, `CODE-SHA256SUMS.txt` `6fdb5009455c6c4377754d95495fb36c91775d8677dd1f977edb0eb5763c1622` (23 файла, 22 в манифесте); выпускать допуск на v1 нельзя. Все три кандидата делят один одноразовый namespace `m1-stg-readonly-recon-03`.
 
-| Файл v2 | SHA-256 |
+| Файл v3 | SHA-256 |
 |---|---|
-| `CODE-SHA256SUMS.txt` | `05eaa3e644924322cf4cddc40bc870a7fdebe3d1c184bd013d0f4c1d9a47038b` |
-| `recon.mjs` / `recon-core.mjs` / `recon-integrity.mjs` | `4bf2fb00c414…e0d` / `28dc926dea63…507` / `d1170198b567…cee` |
+| `CODE-SHA256SUMS.txt` | `e460a9b3cc022e531144fd8097ed88e98972342844444950961218623edc92c6` |
+| `recon.mjs` / `recon-core.mjs` / `recon-integrity.mjs` | `4bf2fb00c414…e0d` / `11c9642cc881…50f` / `d1170198b567…cee` |
 | `request-allowlist.json` | `e6db7fd42d3593ee4d4a59ceb369b5cbc41f2da9e4b8e9284c46455811244d10` |
 | `frontend-allowlist.json` | `18eb80c1ac441ae6e1d27afc84e18b788a9e333b91754162d8f4dcbd843e6a43` |
 | `consumed-subject-pin.json` | `3c513f36a1062934f08ad87abd7d64d014ff458131f0c16cca6064ca26f931fa` |
 | `expected-state-r3.json` / `dist-staging-manifest.txt` | `83f259870bfc…de7` / `a24e37060042…410` (повторяют S1b) |
 
-Данные-pins побайтно те же, что у v1. Остальные хэши — `corrections-v1/test-results/checks.txt` («fresh hashes»), построчная таблица v2 — `corrections-v1/recon-files-v2.txt` (v1: `recon-files.txt`).
+Данные-pins побайтно те же, что у v1 и v2. Остальные хэши — `corrections-v2/test-results/checks.txt` («fresh hashes»), построчная таблица v3 — `corrections-v2/recon-files-v3.txt` (v2: `corrections-v1/recon-files-v2.txt`, v1: `recon-files.txt`).
 
 ## Таблица будущих операций и допусков
 Полная таблица (запрос → обоснование → лимиты) — runbook §2; блок решения владельца — §8. Кратко:
@@ -79,7 +91,8 @@ Corrections V1 меняют только пакет сверки (`recon-core.mj
 - [x] все prepare/plan/selftest/test-режимы credential-isolated и default-deny; owner CLI profile и live-адаптеры недоступны; credential bootstrap описан отдельно, ограничение штатного механизма названо и не обойдено
 - [x] future execute — byte/target/namespace/time/operation-bound one-use permit, атомарный claim до credential/provider вызовов, неполный шаблон не permit
 - [x] per-request allowlist (метод/host/путь/query/тело), бюджеты (запросы, страницы, байты, таймаут, дедлайн), no retry, redirect=error, закрытые коды; исчерпание/неизвестный вывод/неверные pins → STOP; ledger intent/result, checkpoint, scanner, итоговый exit; token-запросы учтены отдельно
-- [x] детерминированные тесты и мутации, 0 provider calls — v2: **148 контролей**, **52 мутанта** (каждый с релевантным упавшим контролем) + 2 canary harness, 2 зелёных baseline; v1-числа 99/33 не используются как подтверждение
+- [x] детерминированные тесты и мутации, 0 provider calls — v3: **153 контроля**, **60 мутантов** (каждый с релевантным упавшим контролем) + 2 canary harness, 2 зелёных baseline; числа v1 (99/33) и v2 (148/52) не используются как подтверждение v3
+- [x] Review V2: CR3 (общий deadline-guard перед каждым следующим действием, включая bootstrap и чтение journal, после записей ledger/checkpoint; единый момент завершения для вердикта, `finishedAt`, ledger и exit)
 - [x] Review V1: CR1 (байты пакета сверяются с манифестом до claim/credentials/fetch), CR2 (harness: согласованные sums, no-op baseline, релевантные контроли, ошибка harness ≠ detection, survivor заменён), CR3 (жёсткий общий дедлайн)
 - [x] immutable candidate PREPARED_NOT_AUTHORIZED, versioned source/generator/manifest, санитизированное test evidence, точные команды, отдельный блок решения владельца (S1b не входит), датированный baseline не выдан за свежие факты
 - [ ] CI на точном финальном HEAD — в сообщении передачи и комментарии PR
@@ -89,11 +102,11 @@ Corrections V1 меняют только пакет сверки (`recon-core.mj
 
 | Команда | Результат | Примечание |
 |---|---|---|
-| `git diff --check 629c831..HEAD` | см. `corrections-v1/test-results/checks.txt` (exit 0) | весь диапазон |
-| генератор `build-recon-package.mjs` → `diff -rq` | PASS | кандидат v2 и копия побайтно равны исходникам; sums совпали |
-| `tests/recon-negative-controls.mjs` (копия кандидата v2) | **PASS 148/148** | прежние 99 (allowlist, клиент, полное чтение, различия, STOP-коды, subject, bootstrap, INIT, permit, claim/race, scanner, offline guard, hygiene) + 49 новых: жёсткий дедлайн (CR3), побайтная целостность (CR1), контроль гейта consumed-имён |
-| `tests/recon-mutation-checks.mjs` | **PASS detected=52/52**, baselines 148/148, 2 canary OK | копия на мутанта с согласованным манифестом; DETECTED только при релевантном упавшем контроле |
-| `tooling/recon-tooling-tests.mjs` | PASS 10/10 | генератор, идентичность повторно использованных файлов, отсутствие live-кода, pins vs локальные доказательства, scan evidence, v1 не менялся, состав v2, runbook |
+| `git diff --check 629c831..HEAD` | см. `corrections-v2/test-results/checks.txt` (exit 0) | весь диапазон |
+| генератор `build-recon-package.mjs` → `diff -rq` | PASS | кандидат v3 и копия побайтно равны исходникам; sums совпали |
+| `tests/recon-negative-controls.mjs` (копия кандидата v3) | **PASS 153/153** | прежние 148 (v2) = 99 (v1) (allowlist, клиент, полное чтение, различия, STOP-коды, subject, bootstrap, INIT, permit, claim/race, scanner, offline guard, hygiene) + 49 (v2: дедлайн запроса, побайтная целостность, гейт consumed-имён) + 5 новых (v3: дедлайн между действиями ×3 + позитивный, момент завершения) |
+| `tests/recon-mutation-checks.mjs` | **PASS detected=60/60**, baselines 153/153, 2 canary OK | копия на мутанта с согласованным манифестом; DETECTED только при релевантном упавшем контроле |
+| `tooling/recon-tooling-tests.mjs` | PASS 11/11 | генератор, идентичность повторно использованных файлов, отсутствие live-кода, pins vs локальные доказательства, scan evidence, v1 и v2 не менялись, состав v3, runbook |
 | `recon-offline.mjs selftest / plan / permit-draft` | exit 0, `fenceEvents=0 blocked=0` | изолированное окружение, credentials родителя не наследуются; selftest теперь = полная сверка байтов (24 файла) |
 | эмуляторы / UI / S1b-матрицы | не запускались | неизменённая S1b-матрица не повторялась; пакет эмуляторов не использует |
 
@@ -120,7 +133,8 @@ claim race (two real processes): exactly one reading; loser: 0 fetch, 0 bootstra
 ## Известные ограничения
 - **Ограничения bootstrap/сети:** (1) штатный refresh firebase-tools пишет в конфиг владельца и имеет недоказанные дополнительные вызовы — пакет его не использует, поэтому требует свежего входа владельца (≥25 мин запаса) и иначе останавливается; (2) `execute` идёт без fence (ему нужен выход в сеть) — защита allowlist/бюджетами/permit; fence покрывает только офлайн-режимы и только Node-API; (3) VPN/маршрутизация не контролируются — зафиксируются владельцем информационно; (4) реальные ответы Google не наблюдались: формы взяты из локальных контрактов; семантика `fetch` (redirect=error, timeout, отмена потока) проверена на loopback.
 - **Сверка байтов (v2):** выполняется внутри уже запущенного процесса — модули загружены до проверки, проверка читает диск; подмена файла между загрузкой и проверкой с возвратом назад не обнаруживается (защита — права на каталог пакета). Проверяются байты файлов пакета, не `node.exe` и не встроенные модули Node (версия Node — предусловие владельца).
-- **Мутационная проверка (v2)** доказывает, что тесты ловят ослабление перечисленных гейтов; 52 мутанта — не исчерпывающий набор. Один loopback-контроль дедлайна использует реальные таймеры (≈0,4 с на случай), остальные дедлайн-контроли детерминированы.
+- **Дедлайн (v3):** проверки стоят до следующего действия и в момент завершения; сам вызов ОС (чтение небольшого файла, запись) не прерывается — действие, начатое при остатке > 0, может закончиться позже дедлайна и тогда не даёт успеха (STOP `deadline` по единому моменту завершения), новое действие после этого не начинается. Часы процесса — `Date.now()` (не монотонные).
+- **Мутационная проверка (v3)** доказывает, что тесты ловят ослабление перечисленных гейтов; 60 мутантов — не исчерпывающий набор. Один loopback-контроль дедлайна использует реальные таймеры (≈0,4 с на случай), остальные дедлайн-контроли детерминированы.
 - Результат сверки — наблюдения «на момент чтения»; `ABSENT_NOW` не доказывает non-dispatch; пакет не объявляет заранее ни absent, ни compatible, ни accepted.
 - Auth lookup зависит от существования private journal consumed run на машине исполнения; при расхождении хэша — STOP до запроса.
 - Требуется независимый review; PASS даст только аудитор.
