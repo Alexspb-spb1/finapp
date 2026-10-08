@@ -2,11 +2,11 @@ PASS deadline (start): a request may START only while budget is left - DL-1 ms s
 PASS deadline (signal): the request signal is the SMALLER of the per-request timeout and the budget left (10000 ms at the start, 500 ms with 500 ms le
 PASS deadline (headers): the auditor counterexample - started 119500 ms, answered 128500 ms (9 s, inside the 10 s request timeout) - is a STOP deadlin
 PASS deadline (headers boundary): an answer exactly AT the deadline is accepted, one millisecond after it is a STOP
-PASS deadline (status): an error status or a redirect that ARRIVES after the deadline is a STOP deadline (never http-5xx / redirect decided after the 
+PASS deadline (status): an error status or a redirect that ARRIVES after the deadline is a STOP deadline (never http-5xx / redirect decided after the
 PASS deadline (body): a streamed body that crosses the deadline between chunks is cancelled and ends in a STOP deadline (no success, no later request)
 PASS deadline (last read): the FINAL read that reports the end of the body after the deadline is a STOP deadline, not the success of the last request
 PASS deadline (body boundary): a body that ends exactly AT the deadline is a success
-PASS deadline (abort): an abort while the budget bounds the request is `deadline`, an abort of the full per-request timeout stays `timeout` - for the 
+PASS deadline (abort): an abort while the budget bounds the request is `deadline`, an abort of the full per-request timeout stays `timeout` - for the
 PASS deadline (intent): when the budget runs out while the INTENT is being written, the request is NOT dispatched (INTENT then RESULT deadline)
 PASS deadline (real signal on a loopback server): headers that never arrive and a body that stalls halfway both end as STOP deadline when the budget i
 PASS deadline (run): the LAST frontend request that completes after the global deadline ends the reading as STOP deadline (exit 2, no success, no resu
@@ -21,10 +21,10 @@ PASS integrity: recon-permit.mjs changed after the permit was bound (manifest an
 PASS integrity: recon-pins.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no cre
 PASS integrity: recon-integrity.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, n
 PASS integrity: m1-state-lib.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no c
-PASS integrity: recon-offline.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no 
+PASS integrity: recon-offline.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no
 PASS integrity: offline-fence/loopback-only.cjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothin
 PASS integrity: offline-fence/isolated-env.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing
-PASS integrity: offline-fence/FENCE-PINS.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing 
+PASS integrity: offline-fence/FENCE-PINS.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing
 PASS integrity: request-allowlist.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed
 PASS integrity: frontend-allowlist.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claime
 PASS integrity: consumed-subject-pin.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing clai
@@ -40,10 +40,10 @@ PASS integrity: the manifest is malformed -> INIT_REFUSED, 0 requests, nothing c
 PASS integrity: the manifest is missing -> INIT_REFUSED, 0 requests, nothing claimed
 PASS integrity: the manifest lacks a required helper -> INIT_REFUSED, 0 requests, nothing claimed
 PASS integrity: the manifest lists a file twice -> INIT_REFUSED, 0 requests, nothing claimed
-PASS integrity: an OLD permit is invalid for changed code - refreshing the manifest after a change is refused by the permit binding (codeSums), still 
+PASS integrity: an OLD permit is invalid for changed code - refreshing the manifest after a change is refused by the permit binding (codeSums), still
 PASS integrity: the structural pin checks stay independent of the manifest - tampered pin DATA with a refreshed manifest and a matching permit is stil
 PASS integrity: the selftest runs the same check - a changed helper makes SELFTEST fail with its path, an unchanged copy passes
 PASS integrity (unit): relative imports must be listed, only node: builtins may be imported, comments and method calls such as Buffer.from('x') are no
-PASS integrity (CLI path, fenced): `recon.mjs execute` with a valid permit refuses a changed helper with exit 3 and reason integrity - the fence sees 
+PASS integrity (CLI path, fenced): `recon.mjs execute` with a valid permit refuses a changed helper with exit 3 and reason integrity - the fence sees
 PASS integrity (offline launcher): plan / permit-draft / selftest of a package with a changed helper are refused (exit 3 / selftest fail) with 0 netwo
 PASS namespace gate itself: every consumed / reserved evidence name is refused in EVERY profile (the rehearsal profile reaches the gate without the pi

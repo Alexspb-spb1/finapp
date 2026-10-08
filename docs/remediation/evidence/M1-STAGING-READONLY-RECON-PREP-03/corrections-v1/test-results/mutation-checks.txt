@@ -6,21 +6,21 @@ DETECTED allowlist ignores the path :: 49 failed, relevant: allowlist: paths, qu
 DETECTED allowlist ignores the HTTP method :: 2 failed, relevant: allowlist: wrong methods (PUT/PATCH/DELETE/POST on GET entries, GET on the lookup) are denied
 DETECTED allowlist ignores the host :: 1 failed, relevant: allowlist: foreign, production and look-alike hosts are denied (and the token endpoint too)
 DETECTED allowlist ignores extra / missing query parameters :: 1 failed, relevant: allowlist: paths, query sets, scheme, credentials in the URL, port and fragment must match exactly
-DETECTED allowlist accepts a non-synthetic Auth subject :: 1 failed, relevant: allowlist: the Auth lookup body must be exactly {"email":[<one synthetic subject>]} - owner / real addresses, 
+DETECTED allowlist accepts a non-synthetic Auth subject :: 1 failed, relevant: allowlist: the Auth lookup body must be exactly {"email":[<one synthetic subject>]} - owner / real addresses,
 DETECTED allowlist accepts plain http / userinfo / ports :: 1 failed, relevant: allowlist: paths, query sets, scheme, credentials in the URL, port and fragment must match exactly
 DETECTED no per-entry request budget :: 1 failed, relevant: client: budgets - one request per entry, a global cap, nothing is dispatched past them
 DETECTED no global request budget :: 1 failed, relevant: client: budgets - one request per entry, a global cap, nothing is dispatched past them
 DETECTED redirects are followed :: 1 failed, relevant: client: redirect=error and a per-request timeout signal are always passed; a response body larger than the ent
 DETECTED non-200 answers are accepted below 500 :: 5 failed, relevant: client: no retry - every failure ends the request once (401/403/404/429/500/418, network, timeout, redirect)
 DETECTED no response size cap :: 2 failed, relevant: client: redirect=error and a per-request timeout signal are always passed; a response body larger than the ent
-DETECTED no durable INTENT before dispatch :: 3 failed, relevant: client: the INTENT is durable in the ledger BEFORE the request is dispatched (checked from inside the fetch), 
-DETECTED the bearer token is attached to every host (including the public frontend) :: 1 failed, relevant: client: the bearer token goes ONLY to the googleapis entries, together with the quota project; the stage host 
+DETECTED no durable INTENT before dispatch :: 3 failed, relevant: client: the INTENT is durable in the ledger BEFORE the request is dispatched (checked from inside the fetch),
+DETECTED the bearer token is attached to every host (including the public frontend) :: 1 failed, relevant: client: the bearer token goes ONLY to the googleapis entries, together with the quota project; the stage host
 DETECTED no deadline check before a request starts :: 1 failed, relevant: deadline (start): a request may START only while budget is left - DL-1 ms starts, exactly DL and DL+1 are deni
 DETECTED a request may start exactly at the deadline :: 1 failed, relevant: deadline (start): a request may START only while budget is left - DL-1 ms starts, exactly DL and DL+1 are deni
 DETECTED no deadline check after the headers (late status / redirect decided after the budget) :: 2 failed, relevant: deadline (status): an error status or a redirect that ARRIVES after the deadline is a STOP deadline (never htt
 DETECTED no deadline check while the body is read :: 2 failed, relevant: deadline (body): a streamed body that crosses the deadline between chunks is cancelled and ends in a STOP dead
 DETECTED the end of the body is checked only after it was accepted :: 1 failed, relevant: deadline (last read): the FINAL read that reports the end of the body after the deadline is a STOP deadline, n
-DETECTED the request signal is not limited by the budget left :: 2 failed, relevant: deadline (signal): the request signal is the SMALLER of the per-request timeout and the budget left (10000 ms 
+DETECTED the request signal is not limited by the budget left :: 2 failed, relevant: deadline (signal): the request signal is the SMALLER of the per-request timeout and the budget left (10000 ms
 DETECTED an abort inside the budget is reported as an ordinary timeout :: 2 failed, relevant: deadline (abort): an abort while the budget bounds the request is `deadline`, an abort of the full per-request
 DETECTED a completion exactly at the deadline is already too late :: 3 failed, relevant: deadline (headers boundary): an answer exactly AT the deadline is accepted, one millisecond after it is a STOP
 DETECTED a request is dispatched even when the budget ran out while its INTENT was written :: 1 failed, relevant: deadline (intent): when the budget runs out while the INTENT is being written, the request is NOT dispatched (

@@ -12,7 +12,8 @@ FAILED=0
 run() { # name, command...
   local name=$1; shift
   local out; out=$("$@" 2>&1); local code=$?
-  if [ -n "${SAVE:-}" ]; then printf '%s\n' "$out" > "$SAVE"; fi
+  # recorded outputs get their trailing whitespace stripped (the long control titles are cut mid-sentence), so that `git diff --check` stays clean
+  if [ -n "${SAVE:-}" ]; then printf '%s\n' "$out" | sed 's/[[:space:]]*$//' > "$SAVE"; fi
   echo "### $name"; echo "cmd: $*"
   [ -n "$out" ] && printf '%s\n' "$out" | tail -n "${TAIL:-3}" | cut -c1-260
   echo "exit=$code"
