@@ -1,0 +1,85 @@
+HEAD=3ec78419288082399002ec851ced7b8ae326b729
+BASE=8dd6e86038a1aec435d64d9afb2e2448c4711c04 (HEAD of the accepted PR #35)
+### git diff --check over the whole range BASE..HEAD
+cmd: git diff --check 8dd6e86038a1aec435d64d9afb2e2448c4711c04..HEAD
+exit=0
+### git diff --check (working tree)
+cmd: git diff --check
+exit=0
+### git diff --check (index)
+cmd: git diff --cached --check
+exit=0
+### attribute: only the two patches are exempt from the whitespace check
+cmd: bash -c git check-attr whitespace -- docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/r4-to-s1b.patch docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/r3-to-r4.patch docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/tooling/build-s1b-package.mjs
+docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/r4-to-s1b.patch: whitespace: unset
+docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/r3-to-r4.patch: whitespace: unset
+docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/tooling/build-s1b-package.mjs: whitespace: unspecified
+exit=0
+### the final candidate directory equals the committed source tree
+cmd: diff -rq D:\projects\finapp\.runtime\m1-s1b-staging docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source
+exit=0
+### the verification copy equals the final candidate (code sums)
+cmd: diff D:\projects\finapp\.runtime\m1-s1b-staging/CODE-SHA256SUMS.txt D:\projects\finapp\.runtime\m1-s1b-verify2/CODE-SHA256SUMS.txt
+exit=0
+### code sums of the final candidate verify against the files
+cmd: bash -c cd "$1" && sha256sum -c --quiet CODE-SHA256SUMS.txt _ D:\projects\finapp\.runtime\m1-s1b-staging
+exit=0
+### the generator rebuilds the source tree byte for byte (new temp directory)
+cmd: node -e import('./docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/tooling/build-s1b-package.mjs').then(m=>{const o=require('path').join(require('os').tmpdir(),'s1b-regen-'+process.pid);const r=m.buildPackage(o);console.log('rebuilt',r.sumsSha256)})
+rebuilt 700ba158ba017ea6783ab1e7919d6812a692e513d596d6135b6d8b45fc40ef8a
+exit=0
+### diff against the accepted R4 snapshot regenerates identically (apply + byte compare)
+cmd: bash docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/tooling/make-s1b-diff.sh docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02 docs/remediation/evidence/M1-SAFE-STOP-RECOVERY-01/runner-r4-source
+S1B_PATCH_APPLY_BYTE_COMPARE_OK identical=34 modified=2 new=14 removed=113
+exit=0
+### regeneration changed nothing tracked
+cmd: git diff --exit-code --stat -- docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02
+exit=0
+### negative controls (package tests, verification copy)
+cmd: node D:\projects\finapp\.runtime\m1-s1b-verify2/tests/s1b-negative-controls.mjs
+PASS hygiene: the package has NO export, deploy, Rules-rollback or Functions-deploy code or file (S1b variant)
+PASS hygiene: the flow passes only the verified-new Rules status to cleanup and never a rollback argument
+PASS hygiene: the operation classes of the permit and the steps of the plan cover each other (nothing live without a class)
+PASS hygiene: the package fence files are byte-identical to the accepted ones of M1-SAFE-STOP-RECOVERY-01 (checked by the repo tooling; here: a pinned hash)
+PASS the real staging namespace was never touched by these tests
+S1B_NEGATIVE_CONTROLS PASS 72/72
+exit=0
+### mutation checks (package tests, verification copy)
+cmd: node D:\projects\finapp\.runtime\m1-s1b-verify2/tests/s1b-mutation-checks.mjs
+DETECTED Auth create budget ignored
+DETECTED staging transport without a budget accepted
+S1B_MUTATION_CHECKS PASS detected=21/21
+exit=0
+### S1b fence tests against the package copy of the fence
+cmd: env M1_RELEASE_CLONE=D:\projects\finapp\m1-release-714d0f91 node docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/tooling/s1b-fence-tests.mjs
+PASS delta: the package fence differs from the accepted fence only by the documented wildcard-lookup lines
+PASS delta: the recorder self-test includes the two delta cases
+S1B_FENCE_TESTS PASS 22/22 skipped=0
+exit=0
+### repository-level S1b tooling tests
+cmd: node docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/tooling/s1b-tooling-tests.mjs
+PASS the committed sanitized rehearsal evidence has no secret-pattern hit and no operating-system user name
+PASS the permit template and the runbook exist and the runbook carries the owner decision block and the PREPARED_NOT_AUTHORIZED status
+S1B_TOOLING_TESTS PASS 8/8
+exit=0
+### offline launcher: selftest
+cmd: node D:\projects\finapp\.runtime\m1-s1b-staging/m1-s1b-offline.mjs selftest
+M1_S1B_STATUS=SELFTEST_PASS files=51 budgetSha256=256692200a35e5ee8505ff8afd93f485f81a84752d5fc4ed2d7bd0f563135ebb
+M1_S1B_OFFLINE mode=selftest exit=0 fenceEvents=0 blocked=0 log=C:\Users\8523~1\AppData\Local\Temp\m1-s1b-offline-TJdr7l\fence.jsonl
+exit=0
+### fresh hashes
+7b8fb8df07c0dfb52002e0191c465cbd00759599db1c31c79cae81efccbb096a *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/r4-to-s1b.patch
+da728c7fd87f53c57e1b36a92b17a553d087b329bdd4f5b5a959721b3cdc6101 *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/s1b-vs-r4-files.txt
+700ba158ba017ea6783ab1e7919d6812a692e513d596d6135b6d8b45fc40ef8a *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/CODE-SHA256SUMS.txt
+256692200a35e5ee8505ff8afd93f485f81a84752d5fc4ed2d7bd0f563135ebb *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/operation-budget.json
+83f259870bfc121bf6dbff6f56eb5f1a54dce93e0b3839c01f1987870a561de7 *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/expected-state-r3.json
+a24e3706004ad3214d6c7e7dfdc58f9240d468f7bd093749ae71398579911410 *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/dist-staging-manifest.txt
+e9fabafd4ed9c7497cfd5dabffc204b8082c6467350af6ab740905150cade0a9 *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/m1-s1b.mjs
+04fae1fc739226137cddb28b116e7dcdcb1a8ec8d3c05df19a968c0cb8bd856c *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/m1-s1b-flow.mjs
+031377559725ef14f894313bf497f8eb35ea9b03c981147627ab29e53d5dbc80 *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/m1-s1b-pins.mjs
+d809c7dcebf74d3efe4d6444caaec13eb977f52cb0e787280d64e18cb9a85a2f *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/m1-s1b-permit.mjs
+27a1c7a5a14fcdf8176ddc52b4823a5fa24678495fb820c84f3f136eac719224 *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/m1-transport.mjs
+e780fdc8bebd2d75bf4c43afb9d85e236cc1aaa4a61b813d58b1770024b7c5b8 *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/m1-core.mjs
+89f1d66c6115f9cfe5b51698092ced881b7214181786a5bb594b86129cf41596 *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/offline-fence/loopback-only.cjs
+9ee3c5e28c444374dbbe1f36a83badc6cf0453bf6ddedad935f4b9287c067cea *docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/package-s1b-source/offline-fence/FENCE-PINS.json
+failed_checks=0
