@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # M1-STAGING-R3-SMOKE-PREP-02: the cheap local checks with their REAL exit codes (no pipe hides a status). Run from the repository (worktree) root:
-#   bash run-s1b-checks.sh <final package dir> <verification copy dir> > rehearsal-results/checks.txt
+#   bash run-s1b-checks.sh <final package dir> <verification copy dir> > rehearsal-results-corrections-v1/checks.txt
+# Optional 3rd argument: the previous candidate directory (must stay unchanged).
 # The emulator rehearsal (tooling/run-s1b-rehearsal.mjs) is run separately; its sanitized output is committed under rehearsal-results/.
 set -u
 export LC_ALL=C.UTF-8
 BASE=8dd6e86038a1aec435d64d9afb2e2448c4711c04
 EV=docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02
-FINAL=$1; VERIFY=$2
+FINAL=$1; VERIFY=$2; OLD=${3:-}
 FAILED=0
 run() { # name, command...
   local name=$1; shift
@@ -31,8 +32,9 @@ TAIL=6 run "negative controls (package tests, verification copy)" node "$VERIFY/
 TAIL=3 run "mutation checks (package tests, verification copy)" node "$VERIFY/tests/s1b-mutation-checks.mjs"
 run "S1b fence tests against the package copy of the fence" env M1_RELEASE_CLONE='D:\projects\finapp\m1-release-714d0f91' node "$EV/tooling/s1b-fence-tests.mjs"
 run "repository-level S1b tooling tests" node "$EV/tooling/s1b-tooling-tests.mjs"
+[ -n "$OLD" ] && run "the previous (superseded) candidate is unchanged" bash -c 'cd "$1" && sha256sum -c --quiet CODE-SHA256SUMS.txt' _ "$OLD"
 run "offline launcher: selftest" node "$FINAL/m1-s1b-offline.mjs" selftest
 echo "### fresh hashes"
-for f in $EV/r4-to-s1b.patch $EV/s1b-vs-r4-files.txt $EV/package-s1b-source/CODE-SHA256SUMS.txt $EV/package-s1b-source/operation-budget.json $EV/package-s1b-source/expected-state-r3.json $EV/package-s1b-source/dist-staging-manifest.txt $EV/package-s1b-source/m1-s1b.mjs $EV/package-s1b-source/m1-s1b-flow.mjs $EV/package-s1b-source/m1-s1b-pins.mjs $EV/package-s1b-source/m1-s1b-permit.mjs $EV/package-s1b-source/m1-transport.mjs $EV/package-s1b-source/m1-core.mjs $EV/package-s1b-source/offline-fence/loopback-only.cjs $EV/package-s1b-source/offline-fence/FENCE-PINS.json; do sha256sum -b "$f"; done
+for f in $EV/r4-to-s1b.patch $EV/s1b-vs-r4-files.txt $EV/package-s1b-source/CODE-SHA256SUMS.txt $EV/package-s1b-source/operation-budget.json $EV/package-s1b-source/expected-state-r3.json $EV/package-s1b-source/dist-staging-manifest.txt $EV/package-s1b-source/m1-s1b.mjs $EV/package-s1b-source/m1-s1b-flow.mjs $EV/package-s1b-source/tests/s1b-negative-controls.mjs $EV/package-s1b-source/tests/s1b-mutation-checks.mjs $EV/package-s1b-source/tests/s1b-race-worker.mjs $EV/package-s1b-source/m1-s1b-pins.mjs $EV/package-s1b-source/m1-s1b-permit.mjs $EV/package-s1b-source/m1-transport.mjs $EV/package-s1b-source/m1-core.mjs $EV/package-s1b-source/offline-fence/loopback-only.cjs $EV/package-s1b-source/offline-fence/FENCE-PINS.json; do sha256sum -b "$f"; done
 echo "failed_checks=$FAILED"
 [ "$FAILED" -eq 0 ]

@@ -19,14 +19,14 @@ target, namespace и перечисленные ниже операции.
 
 ## 2. Что в пакете и чего в нём нет
 
-Пакет `m1-s1b-staging` (локальный namespace, immutable; исходники и patch к принятому R4 — `docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/`):
+Пакет `m1-s1b-staging-v2` (локальный namespace, immutable; заменяет `m1-s1b-staging` после Corrections V1 — прежний кандидат сохранён без изменений и **не** должен использоваться; исходники и patch к принятому R4 — `docs/remediation/evidence/M1-STAGING-R3-SMOKE-PREP-02/`):
 
 | Есть | Нет (удалено из принятого R4-пакета) |
 |---|---|
 | `m1-s1b.mjs` (plan / selftest / rehearse / execute / permit-draft), `m1-s1b-flow.mjs`, `m1-s1b-pins.mjs`, `m1-s1b-permit.mjs`, `operation-budget.json` | PowerShell-оркестратор и его guard «Rules = round 2» (не отключался: просто не входит в пакет) |
 | smoke-инструменты принятой реализации: `m1-smoke.mjs`, UI-smoke, readiness, state-check, run-inspect, ci-check, functions-check (байт-в-байт как в R4) | Firestore export, `firebase deploy` обёртка, подготовка и выкатка отката Rules, deploy/rollback ветки |
 | `m1-core.mjs` (+ id прошлого run в consumed), `m1-transport.mjs` (credential bootstrap, бюджет) — единственные изменённые файлы | Production-пакет v6 (не менялся и не запускается), любые production-цели |
-| fence (`offline-fence/`), 72 негативных контроля и 21 мутация | Retry, replay, автоматическое восстановление после неизвестного исхода |
+| fence (`offline-fence/`), 85 негативных контролей и 29 мутаций | Retry, replay, автоматическое восстановление после неизвестного исхода |
 
 ## 3. Последовательность и таблица будущих операций
 
@@ -42,7 +42,7 @@ target, namespace и перечисленные ниже операции.
 | 4b | ui | реальный Chromium к локально отдаваемому dist; ≤5 операторских чтений; браузерные запросы под allowlist route policy | `firestoreAndCallables` | ≤12 операторских |
 | 4c | api | callable M1 (роль/отключение/восстановление/удаление/roster), Rules-пробы R1–R7 клиентскими токенами | `firestoreAndCallables` | ≤109, 0 commits |
 | 4d | ui-r3 | браузерный сценарий lost-company/no-access; операторских запросов нет | `firestoreAndCallables` | 0 |
-| 5 | cleanup (G1–G5, **точный lookup G4**) и verify-clean; inventory — только после неполного cleanup | Firestore GET/list/runQuery, `accounts:lookup`; удаление ≤25 документов (1 commit) и ≤3 Auth users | `cleanup` **и** `cleanupExactLookup` (только вместе) | cleanup ≤82 (≤3 delete, ≤1 commit); verify-clean ≤29; inventory ≤29 |
+| 5 | cleanup (G1–G5, **точный lookup G4**) и verify-clean; inventory — **только** после проверенного остатка (assertion `verify-clean.*` в журнале этого вызова), один раз | Firestore GET/list/runQuery, `accounts:lookup`; удаление ≤25 документов (1 commit) и ≤3 Auth users | `cleanup` **и** `cleanupExactLookup` (только вместе) | cleanup ≤82 (≤3 delete, ≤1 commit); verify-clean ≤29; inventory ≤29 |
 | 6 | финальные read-only: те же Functions и Rules R3 | как шаг 1 | `stagingStateReads` | read-only |
 
 `cleanupAfterProvenNonDispatch` (по умолчанию выключен) — отдельное явное разрешение на cleanup после **доказанного** pre-dispatch сбоя; без него любой STOP после seed требует ручного решения.
@@ -92,12 +92,16 @@ node m1-s1b.mjs execute --permit <abs permit.json> --web-config <abs .env.stagin
 | `assertion` / `ui-flow` | cleanup через gates G1–G5 с **привязанным** Rules-evidence (тот же файл, что в шаге 1, побайтно), если разрешено `cleanup`+`cleanupExactLookup`; затем STOP | второй запуск режима |
 | провал Rules-пробы (`R1…R9`) | STOP | cleanup (отката Rules в S1b нет; решение за владельцем) |
 | доказанный pre-dispatch сбой | cleanup только при `cleanupAfterProvenNonDispatch=true` | иначе ручное решение |
+| **любой ненулевой cleanup / verify-clean** | исход читается из MODE_STOP **этого вызова** (события после baseline, привязка к коду выхода); при не проверенном/неоднозначном исходе — STOP `CLEANUP_UNSAFE_STOP` / `VERIFY_CLEAN_UNSAFE_STOP`, нужна ручная классификация | **inventory, verify-clean, любые чтения провайдера, retry, replay** — при неизвестном сетевом исходе (в т.ч. cleanup exit 4), credentials / budget / integrity / unexpected / guard, отсутствующем, устаревшем, повреждённом или неоднозначном журнале, несовпадении кода выхода |
+| проверенный отказ gates cleanup (exit 3, без удалений, recovery manifest) | STOP `CLEANUP_REFUSED` | inventory, verify-clean |
+| проверенный остаток (assertion `verify-clean.documents-absent` / `auth-absent` после удалений) | **один** read-only `inventory` (класс `cleanupExactLookup`), затем STOP | повтор cleanup / verify-clean |
+| повторный или параллельный запуск того же evidence namespace | атомарный exclusive mkdir + claim marker `s1b-claim.json` до первого journal/tool; проигравший — INIT_REFUSED, 0 инструментов | запись в чужие evidence, повторное использование каталога (частично занятый namespace считается consumed) |
 | ошибка получения operator credentials | STOP, фиксированный reason `operator credential bootstrap failed` + код из закрытого набора | текст/стек ошибки, токены |
 
 ## 8. Решение владельца (шаблон — заполняется владельцем; этот документ ничего не разрешает)
 
 ```text
-Пакет:          m1-s1b-staging, CODE-SHA256SUMS.txt sha256 = <из блока 9>
+Пакет:          m1-s1b-staging-v2, CODE-SHA256SUMS.txt sha256 = <из блока 9>
 Target:         finapp-staging (production исключён); head 714d0f91c60a582ee87dc7da82d6249b3106329f; Rules R3 c4fe4c09…19fd
 Namespace:      m1-stg-s1b-714d0f91 / m1-staging-run-714d0f91-s1b
 Сверка состояния (новая, разрешённая): время UTC ____ ; ссылка ____ (не старше 24 ч)
@@ -114,7 +118,8 @@ Namespace:      m1-stg-s1b-714d0f91 / m1-staging-run-714d0f91-s1b
 
 | Файл | SHA-256 |
 |---|---|
-| `CODE-SHA256SUMS.txt` | `700ba158ba017ea6783ab1e7919d6812a692e513d596d6135b6d8b45fc40ef8a` |
+| `CODE-SHA256SUMS.txt` (кандидат `m1-s1b-staging-v2`) | `3ad94b6ba32d4a3905b898263c543ea211c29666e5e7ab8bd2d844324dd63b81` |
+| `CODE-SHA256SUMS.txt` прежнего кандидата `m1-s1b-staging` (заменён, не использовать) | `700ba158ba017ea6783ab1e7919d6812a692e513d596d6135b6d8b45fc40ef8a` |
 | `operation-budget.json` | `256692200a35e5ee8505ff8afd93f485f81a84752d5fc4ed2d7bd0f563135ebb` |
 | `expected-state-r3.json` | `83f259870bfc121bf6dbff6f56eb5f1a54dce93e0b3839c01f1987870a561de7` |
 | `dist-staging-manifest.txt` | `a24e3706004ad3214d6c7e7dfdc58f9240d468f7bd093749ae71398579911410` |

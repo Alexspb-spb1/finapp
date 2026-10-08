@@ -1,0 +1,300 @@
+{
+  "schema": 1,
+  "task": "M1-STAGING-R3-SMOKE-PREP-02",
+  "target": "demo-finapp",
+  "startedUtc": "2026-10-08T07:24:49.805Z",
+  "credentialProfile": "isolated",
+  "selftests": {
+    "recorder": {
+      "exit": 0,
+      "total": 34,
+      "failed": 0
+    },
+    "live-loopback": {
+      "exit": 0,
+      "total": 4,
+      "failed": 0
+    }
+  },
+  "scenarios": [
+    {
+      "name": "success",
+      "pass": true,
+      "seconds": 106,
+      "evidenceDir": "success-1791444356886",
+      "detail": {
+        "exit": 0,
+        "status": "PASS",
+        "completed": [
+          "step0",
+          "step1",
+          "step2",
+          "step3",
+          "step5",
+          "step6"
+        ],
+        "cleanup": "CLEANUP_COMPLETE_VERIFIED",
+        "authUsersLeft": 0,
+        "withinBudget": true,
+        "modes": {
+          "api": {
+            "status": "PASS",
+            "requests": 85,
+            "authCreates": 0,
+            "authDeletes": 0,
+            "operatorCommits": 0
+          },
+          "cleanup": {
+            "status": "PASS",
+            "requests": 64,
+            "authCreates": 0,
+            "authDeletes": 3,
+            "operatorCommits": 1
+          },
+          "preflight": {
+            "status": "PASS",
+            "requests": 2,
+            "authCreates": 0,
+            "authDeletes": 0,
+            "operatorCommits": 0
+          },
+          "seed": {
+            "status": "PASS",
+            "requests": 13,
+            "authCreates": 3,
+            "authDeletes": 0,
+            "operatorCommits": 1
+          },
+          "ui": {
+            "status": "PASS",
+            "requests": null,
+            "authCreates": null,
+            "authDeletes": null,
+            "operatorCommits": null
+          },
+          "ui-r3": {
+            "status": "PASS",
+            "requests": null,
+            "authCreates": null,
+            "authDeletes": null,
+            "operatorCommits": null
+          },
+          "verify-clean": {
+            "status": "PASS",
+            "requests": 21,
+            "authCreates": 0,
+            "authDeletes": 0,
+            "operatorCommits": 0
+          }
+        },
+        "order": [
+          "code-sums",
+          "dist-manifest",
+          "local-rules-check",
+          "ci-check",
+          "functions-state",
+          "functions-state-check",
+          "rules-state",
+          "rules-state-check",
+          "readiness",
+          "smoke-preflight",
+          "smoke-seed",
+          "smoke-ui",
+          "smoke-api",
+          "smoke-ui-r3",
+          "cleanup",
+          "verify-clean",
+          "final-functions",
+          "final-functions-check",
+          "final-rules",
+          "final-rules-check"
+        ]
+      }
+    },
+    {
+      "name": "rules-r2",
+      "pass": true,
+      "seconds": 3,
+      "evidenceDir": "rules-r2-1791444461663",
+      "detail": {
+        "exit": 2,
+        "stop": {
+          "step": "step1",
+          "reason": "live Rules are not the round-3 target (rules-r2-live)"
+        },
+        "labels": [
+          "code-sums",
+          "dist-manifest",
+          "local-rules-check",
+          "ci-check",
+          "functions-state",
+          "functions-state-check",
+          "rules-state"
+        ]
+      }
+    },
+    {
+      "name": "rules-unknown",
+      "pass": true,
+      "seconds": 1,
+      "evidenceDir": "rules-unknown-1791444464702",
+      "detail": {
+        "exit": 2,
+        "stop": {
+          "step": "step1",
+          "reason": "live Rules are not the round-3 target (rules-not-r3)"
+        }
+      }
+    },
+    {
+      "name": "functions-drift",
+      "pass": true,
+      "seconds": 1,
+      "evidenceDir": "functions-drift-1791444465503",
+      "detail": {
+        "exit": 2,
+        "stop": {
+          "step": "step1",
+          "reason": "functions state differs from the pinned state"
+        }
+      }
+    },
+    {
+      "name": "unknown-outcome",
+      "pass": true,
+      "seconds": 14,
+      "evidenceDir": "unknown-outcome-1791444466194",
+      "detail": {
+        "exit": 2,
+        "stop": {
+          "step": "step4",
+          "reason": "smoke seed stopped (kind transport, dispatch unknown); cleanup: manual-classification-required"
+        },
+        "decision": "manual-classification-required",
+        "authUsersRemaining": 1,
+        "labels": [
+          "code-sums",
+          "dist-manifest",
+          "local-rules-check",
+          "ci-check",
+          "functions-state",
+          "functions-state-check",
+          "rules-state",
+          "rules-state-check",
+          "readiness",
+          "smoke-preflight",
+          "smoke-seed"
+        ]
+      }
+    },
+    {
+      "name": "cleanup-unknown-real",
+      "pass": true,
+      "seconds": 72,
+      "evidenceDir": "cleanup-unknown-real-1791444480422",
+      "detail": {
+        "exit": 2,
+        "stop": {
+          "step": "step5",
+          "reason": "CLEANUP_UNSAFE_STOP"
+        },
+        "branch": "CLEANUP_UNSAFE_STOP",
+        "cleanupExit": 4,
+        "unsafeStop": {
+          "verified": true,
+          "kind": "transport",
+          "dispatch": "unknown"
+        },
+        "authUsersRemaining": 3,
+        "lastLabel": "cleanup"
+      }
+    },
+    {
+      "name": "budget-real-tool",
+      "pass": true,
+      "seconds": 1,
+      "evidenceDir": null,
+      "detail": {
+        "exit": 2,
+        "stopKind": "budget"
+      }
+    }
+  ],
+  "status": "REHEARSAL_PASS",
+  "emulatorsReady": true,
+  "credentialEnvNamesPresent": [],
+  "suites": [
+    {
+      "name": "transport-classification",
+      "exit": 0,
+      "pass": true,
+      "line": "TRANSPORT_CLASSIFICATION_TESTS PASS 27/27"
+    },
+    {
+      "name": "seed-stop-recovery",
+      "exit": 0,
+      "pass": true,
+      "line": "SEED_STOP_RECOVERY_EMULATOR PASS 13/13"
+    },
+    {
+      "name": "cleanup-gates",
+      "exit": 0,
+      "pass": true,
+      "line": "GATE_TESTS PASS 20/20"
+    }
+  ],
+  "jvm": {
+    "samples": 7,
+    "sampleErrors": 0,
+    "maxOwnedProcesses": 8,
+    "establishedLoopback": 211,
+    "establishedNonLoopback": 0,
+    "nonLoopbackAnyState": 0,
+    "nonLoopbackRemotes": [],
+    "coverage": "observed-not-enforced; TCP only; interval sampling"
+  },
+  "ownProcessCleanup": {
+    "stoppedProcesses": 8,
+    "portsFreeAfter": true,
+    "portsStillBusy": []
+  },
+  "fence": {
+    "guardedApis": [
+      "net.Socket.connect (net/tls/http/https/undici)",
+      "dns.lookup + dns.resolve*/reverse (+promises)",
+      "fetch",
+      "dgram send/connect"
+    ],
+    "events": 9315,
+    "loopbackOrLocal": 9309,
+    "blocked": 6,
+    "allowedNonLoopback": 0,
+    "blockedDestinations": [
+      "firebase-public.firebaseio.com",
+      "169.254.169.254",
+      "metadata.google.internal.",
+      "registry.npmjs.org"
+    ],
+    "processesObserved": 106,
+    "scriptsObserved": [
+      "firebase.js",
+      "npm-cli.js",
+      "m1-readiness.mjs",
+      "m1-smoke.mjs",
+      "functionsEmulatorRuntime",
+      "m1-ui-smoke.mjs",
+      "m1-ui-smoke-r3.mjs",
+      "transport-classification-tests.mjs",
+      "seed-stop-recovery-emulator.mjs",
+      "emulator-cleanup-gate-tests.mjs"
+    ]
+  },
+  "limits": [
+    "Java (Auth/Firestore emulator JVM) is not fenced: only sampled (observed, not enforced); sampling is TCP, interval-based",
+    "The Functions emulator workers are Node processes started by the emulator with the inherited environment: they are fenced only if the fence log shows them (see fence.scriptsObserved); this is observed, not guaranteed",
+    "The browser used by the UI modes (Chromium) is a non-Node process: it is outside the Node fence; its page requests pass the UI route policy allowlist, browser-internal traffic is not observed",
+    "Non-Node child processes and native add-ons are not fenced",
+    "Not a retroactive proof for earlier runs; says nothing about live staging behaviour or about the root cause of the old network failure"
+  ],
+  "finishedUtc": "2026-10-08T07:35:21.952Z"
+}

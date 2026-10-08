@@ -1,0 +1,143 @@
+{
+  "mode": "recorder",
+  "total": 34,
+  "failed": 0,
+  "results": [
+    {
+      "name": "net.connect to 192.0.2.1 is blocked",
+      "ok": true
+    },
+    {
+      "name": "net.connect to example.invalid is blocked",
+      "ok": true
+    },
+    {
+      "name": "net.connect to 203.0.113.7 is blocked",
+      "ok": true
+    },
+    {
+      "name": "net.connect to ::ffff:192.0.2.1 is blocked",
+      "ok": true
+    },
+    {
+      "name": "net.connect to [2001:db8::1] is blocked",
+      "ok": true
+    },
+    {
+      "name": "net.connect to 0.0.0.0 is blocked",
+      "ok": true
+    },
+    {
+      "name": "net.connect(port, host) form is blocked",
+      "ok": true
+    },
+    {
+      "name": "net.connect with an options object without a usable host form (array) is blocked",
+      "ok": true
+    },
+    {
+      "name": "tls.connect to an external host is blocked",
+      "ok": true
+    },
+    {
+      "name": "http.get to an external host is blocked",
+      "ok": true
+    },
+    {
+      "name": "fetch of an external https URL is blocked",
+      "ok": true
+    },
+    {
+      "name": "fetch of a non-http scheme is blocked",
+      "ok": true
+    },
+    {
+      "name": "dns.lookup of an external name is blocked",
+      "ok": true
+    },
+    {
+      "name": "dns.promises.lookup of an external name is blocked",
+      "ok": true
+    },
+    {
+      "name": "dns.resolve4 is blocked",
+      "ok": true
+    },
+    {
+      "name": "dns.promises.resolve4 is blocked",
+      "ok": true
+    },
+    {
+      "name": "dns.reverse is blocked",
+      "ok": true
+    },
+    {
+      "name": "dgram send to an external address is blocked",
+      "ok": true
+    },
+    {
+      "name": "dns.lookup of an IP literal (the wildcard bind address) is allowed (listen() needs it)",
+      "ok": true
+    },
+    {
+      "name": "dns.lookup of an external IP literal is allowed (no resolver) while connect() to it is blocked",
+      "ok": true
+    },
+    {
+      "name": "dns.lookup of an external NAME is still blocked",
+      "ok": true
+    },
+    {
+      "name": "net.connect to loopback 127.0.0.1 is allowed",
+      "ok": true
+    },
+    {
+      "name": "net.connect to loopback localhost is allowed",
+      "ok": true
+    },
+    {
+      "name": "net.connect to loopback ::1 is allowed",
+      "ok": true
+    },
+    {
+      "name": "net.connect to loopback [::1] is allowed",
+      "ok": true
+    },
+    {
+      "name": "net.connect to loopback 127.1.2.3 is allowed",
+      "ok": true
+    },
+    {
+      "name": "net.connect to loopback ::ffff:127.0.0.1 is allowed",
+      "ok": true
+    },
+    {
+      "name": "fetch to localhost is allowed",
+      "ok": true
+    },
+    {
+      "name": "dns.lookup of localhost is allowed",
+      "ok": true
+    },
+    {
+      "name": "loopback attempts reached the recorder",
+      "ok": true
+    },
+    {
+      "name": "no external destination reached the underlying network layer",
+      "ok": true
+    },
+    {
+      "name": "a Node child process inherits the fence through NODE_OPTIONS",
+      "ok": true
+    },
+    {
+      "name": "a child without the fence log variable fails to start (fail closed)",
+      "ok": true
+    },
+    {
+      "name": "blocked attempts are logged with the destination host and without URL path or query",
+      "ok": true
+    }
+  ]
+}

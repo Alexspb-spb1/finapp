@@ -4,6 +4,34 @@
 READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT). Блок полностью локальный. **Live Firebase/VDS/provider-вызовов, staging replay, cleanup/export, production, deploy и merge не было.** Пакет — **PREPARED_NOT_AUTHORIZED**:
 не допуск на запуск и не STAGE_PASS. Выбор S1b — выбор локальной архитектуры пакета. CI на точном финальном HEAD указан в сообщении передачи и комментарии Draft PR (правка отчёта меняла бы HEAD).
 
+## Corrections V1 (TASK02 REVIEW V1 = CHANGES_REQUIRED, CR1–CR2)
+Первоначальный отчёт ниже (утренняя передача, HEAD `a4071da8fee42825a1239b2af6d99d9987daef02`) сохранён как есть; числа и хэши в нём относятся к **прежнему** кандидату `m1-s1b-staging` (code sums `700ba158…`), который заменён и не должен использоваться.
+Исправления — в той же ветке и Draft PR #36, новый immutable-кандидат **`D:\projects\finapp\.runtime\m1-s1b-staging-v2`** (code sums `3ad94b6ba32d4a3905b898263c543ea211c29666e5e7ab8bd2d844324dd63b81`, 53 файла, 52 в sums; создан генератором один раз, не запускался). Прежний кандидат проверен: байты не менялись.
+Live Firebase/VDS/provider/inventory/reconciliation, staging replay, cleanup/export, production, deploy и merge не выполнялись.
+
+**CR1 — inventory/provider reads после неизвестного или небезопасного STOP cleanup/verify-clean.** Причина: после cleanup код выхода, кроме 0 и 3, и любой ненулевой verify-clean запускали `inventory` без чтения MODE_STOP своего вызова (cleanup exit 4 = «любая ошибка после начала удалений», в т.ч. неизвестный сетевой исход; exit 2 — credentials/budget/integrity/unexpected).
+- Теперь **каждый** ненулевой cleanup/verify-clean классифицируется по **своему** MODE_STOP: берутся только события журнала, добавленные после baseline перед вызовом, ровно один MODE_START и один MODE_STOP режима, код выхода журнала равен коду процесса. Отсутствующий, устаревший, повреждённый, неоднозначный журнал или несовпадение кода → `verified:false`.
+- Известных классов два: **проверенный отказ gates** (exit 3, `cleanup-refused`, без удалений) → STOP `CLEANUP_REFUSED`; **проверенный остаток** (assertion `verify-clean.documents-absent` / `auth-absent`, удаления завершены) → **один** read-only `inventory` (класс `cleanupExactLookup`, уже требуемый для cleanup), затем STOP `CLEANUP_REMAINDER_VERIFIED` / `VERIFY_CLEAN_REMAINDER`.
+- Всё остальное (неизвестный сетевой исход, credentials, budget, integrity, unexpected, guard, любой иной assertion, недоверенный журнал) → `CLEANUP_UNSAFE_STOP` / `VERIFY_CLEAN_UNSAFE_STOP`, `manualClassificationRequired`; **никаких** inventory, verify-clean, чтений провайдера, retry и replay. Runbook §3 и §7 обновлены.
+- Небезопасный прежний контроль («partial (4) / stopped (2) → inventory») заменён; добавлены end-to-end тесты: неизвестная мутация cleanup, credentials/budget/integrity/unexpected/guard/manifest (exit 2 и 4), неизвестный исход verify-clean, пропавший/устаревший/повреждённый/двусмысленный журнал и baseline, несовпадение кода выхода, проверенный отказ и проверенный остаток, source-contract «каждый вызов inventory за `verifiedRemainder`».
+- Реальные инструменты на своих эмуляторах: сценарий `cleanup-unknown-real` (неизвестный исход Auth delete после удаления документов, cleanup exit 4) → SAFE_STOP шага 5, последний вызов `cleanup`, `inventory`/`verify-clean`/финальные чтения не запускались, 3 синтетических аккаунта остались для ручного решения.
+
+**CR2 — атомарный one-use claim evidence namespace.** Причина: проверка существования и `mkdirSync(evDir, {recursive:true})` были разделены; конкурент между ними оставлял namespace «своим», а flow дописывал в его journal и перезаписывал state.
+- Теперь родитель создаётся отдельно, а сам каталог занимается **non-recursive exclusive** `mkdir` (EEXIST → `INIT_REFUSED`, 0 инструментов, существующие evidence не тронуты) и эксклюзивным (`wx`) marker `s1b-claim.json` — до первой записи journal/state и до любого tool/credential/provider вызова. Частично занятый namespace считается consumed (не удаляется, не освобождается).
+- Тесты (без sleep, без провайдеров): конкурент ровно в точке claim (побайтная сохранность его journal/state, 0 вызовов); claim — mkdir без `recursive`; существующий пустой/частичный каталог consumed; отказ claim по иной причине и по занятому marker; **два реальных процесса** гонятся за одним namespace — ровно один PASS и один INIT_REFUSED, каждый инструмент выполнен один раз.
+
+**Проверки Corrections V1** (только изменённые пути; неизменённые матрицы 72/21/22/8 не дублировались как доказательство):
+
+| Проверка | Результат |
+|---|---|
+| `s1b-negative-controls.mjs` (кандидат v2, копия `m1-s1b-verify3`) | PASS 85/85 |
+| `s1b-mutation-checks.mjs` | PASS detected 29/29 (+8 мутантов CR1/CR2: возврат к inventory по коду выхода, неверифицированный остаток/отказ, нет baseline, нет привязки кода выхода, recursive claim, перезапись marker) |
+| Replay `counterexamples.mjs` аудитора на исправленном source (injected executor, 0 tool-процессов, 0 сети) | cleanup-unknown-partial, cleanup-credential-before-delete, verify-clean-unknown: нет inventory, последний вызов `cleanup`/`verify-clean`; namespace-race: `INIT_REFUSED`, 0 вызовов, прежний journal сохранён — `rehearsal-results-corrections-v1/auditor-counterexamples-replay.json` |
+| Rehearsal на своих Auth/Firestore/Functions эмуляторах (fence + изоляция) | REHEARSAL_PASS: 7/7 сценариев (+`cleanup-unknown-real`), suites 27/13/20 PASS; fence 9315 событий, 6 заблокировано (Firebase CLI), разрешённых внешних 0; JVM 0 внешних TCP |
+| генератор, `make-s1b-diff.sh`, `git diff --check 8dd6e86..HEAD`, fence-тесты 22, tooling-тесты, предыдущий кандидат | `rehearsal-results-corrections-v1/checks.txt` (все exit 0) |
+
+Ограничения Corrections V1: поведение против live staging по-прежнему не проверялось; ветка проверенного remainder подтверждена только фейковым исполнителем (реальный remainder на эмуляторе не воспроизводился); остальные ограничения (JVM/Chromium вне fence, заглушки live-инструментов, неустановленная первопричина сетевого сбоя) — как ниже.
+
 ## Branch / commit
 - worktree: `D:/projects/finapp/m1-staging-r3-smoke-prep-02`; ветка `remediation/M1-STAGING-R3-SMOKE-PREP-02-s1b`
 - base (exact принятый HEAD PR #35, PASS_LOCAL_BLOCK): `8dd6e86038a1aec435d64d9afb2e2448c4711c04`; Draft PR #35 / PR #28 (`714d0f91c60a582ee87dc7da82d6249b3106329f`, OPEN) / `main` (`6d713fe77164b5d7f096a85509d73b43bd9dad13`) не менялись

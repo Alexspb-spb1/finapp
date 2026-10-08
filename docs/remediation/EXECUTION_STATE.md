@@ -583,3 +583,6 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   JVM только наблюдался, Chromium вне fence, live-инструменты в rehearsal — заглушки. Первопричина прошлого сетевого сбоя не устранена.
 - Отчёт: `docs/remediation/reports/M1-STAGING-R3-SMOKE-PREP-02.md`; runbook и блок решения владельца: `docs/remediation/runbooks/M1-S1B-STAGING-SMOKE-PREPARED.md`.
   Любые live-шаги — только после независимого PASS, новой разрешённой сверки состояния и отдельного допуска владельца на эти байты.
+- TASK02 REVIEW V1 = CHANGES_REQUIRED -> Corrections V1 (CR1, CR2) в той же ветке и Draft PR #36: новый immutable-кандидат `m1-s1b-staging-v2` (прежний `m1-s1b-staging` заменён);
+  каждый ненулевой cleanup/verify-clean классифицируется по своему MODE_STOP (inventory только после проверенного остатка), атомарный exclusive claim evidence namespace до любых tools.
+  Новых live-действий не было; PASS даёт только аудитор.

@@ -56,10 +56,13 @@ t('no .env, key, token, credential or fixture file is part of the package source
   return bad.length === 0 ? true : bad.join(',')
 })
 t('the committed sanitized rehearsal evidence has no secret-pattern hit and no operating-system user name', () => {
-  const dir = path.join(EV, 'rehearsal-results')
-  if (!fs.existsSync(dir)) return 'rehearsal-results missing'
-  const s = scanSecrets(dir), u = scanUserNames(dir, currentUserNames())
-  return s.length === 0 && u.length === 0 ? true : `secret=${s.length} user=${u.length}`
+  for (const name of ['rehearsal-results', 'rehearsal-results-corrections-v1']) {
+    const dir = path.join(EV, name)
+    if (!fs.existsSync(dir)) return `${name} missing`
+    const s = scanSecrets(dir), u = scanUserNames(dir, currentUserNames())
+    if (s.length || u.length) return `${name}: secret=${s.length} user=${u.length}`
+  }
+  return true
 })
 t('the permit template and the runbook exist and the runbook carries the owner decision block and the PREPARED_NOT_AUTHORIZED status', () => {
   const rb = path.resolve(EV, '..', '..', 'runbooks', 'M1-S1B-STAGING-SMOKE-PREPARED.md')
