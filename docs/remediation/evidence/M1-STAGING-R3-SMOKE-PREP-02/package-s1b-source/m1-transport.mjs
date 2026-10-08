@@ -151,8 +151,8 @@ export async function makeTransport(target, { counters, webConfig, requestTimeou
     docName: p => `projects/${target.project}/databases/(default)/documents/${p}`,
 
     async createAuthUser(u) {
-      if (budget && (counters.authCreateAttempts ?? 0) >= budget.maxAuthCreates) stop('auth-create', 'operation budget exceeded', 'budget')
-      counters.authCreateAttempts = (counters.authCreateAttempts ?? 0) + 1
+      if (budget && (counters.authCreateIntents ?? 0) >= budget.maxAuthCreates) stop('auth-create', 'operation budget exceeded', 'budget')
+      counters.authCreateIntents = (counters.authCreateIntents ?? 0) + 1
       const r = await http('POST', `${authProject}/accounts`, { operator: true, body: { email: u.email, password: u.password, displayName: u.name, emailVerified: true } })
       if (r.status !== 200 || typeof r.json?.localId !== 'string') stop('auth-create', `status ${r.status}`)
       counters.authCreates++
@@ -167,8 +167,8 @@ export async function makeTransport(target, { counters, webConfig, requestTimeou
       return (r.json?.users ?? []).map(x => ({ uid: x.localId, email: x.email, emailVerified: x.emailVerified === true, disabled: x.disabled === true }))
     },
     async deleteAuthUser(uid) {
-      if (budget && (counters.authDeleteAttempts ?? 0) >= budget.maxAuthDeletes) stop('auth-delete', 'operation budget exceeded', 'budget')
-      counters.authDeleteAttempts = (counters.authDeleteAttempts ?? 0) + 1
+      if (budget && (counters.authDeleteIntents ?? 0) >= budget.maxAuthDeletes) stop('auth-delete', 'operation budget exceeded', 'budget')
+      counters.authDeleteIntents = (counters.authDeleteIntents ?? 0) + 1
       const r = await http('POST', `${authProject}/accounts:delete`, { operator: true, body: { localId: uid } })
       if (r.status !== 200) stop('auth-delete', `status ${r.status}`)
       counters.authDeletes++
@@ -217,8 +217,8 @@ export async function makeTransport(target, { counters, webConfig, requestTimeou
       return (r.json ?? []).filter(x => x.document).map(x => x.document.name)
     },
     async commit(writes) {
-      if (budget && (counters.commitAttempts ?? 0) >= budget.maxOperatorCommits) stop('commit', 'operation budget exceeded', 'budget')
-      counters.commitAttempts = (counters.commitAttempts ?? 0) + 1
+      if (budget && (counters.commitIntents ?? 0) >= budget.maxOperatorCommits) stop('commit', 'operation budget exceeded', 'budget')
+      counters.commitIntents = (counters.commitIntents ?? 0) + 1
       const r = await http('POST', `${docsRoot}:commit`, { operator: true, body: { writes } })
       if (r.status !== 200) stop('commit', `status ${r.status}`)
       counters.operatorCommits++

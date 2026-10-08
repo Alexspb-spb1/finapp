@@ -31,7 +31,7 @@ const MUTANTS = [
   ['credential bootstrap failure leaks the error text as the reason code', 'm1-transport.mjs', "return credentialStop('provider-error')", 'return credentialStop(String(error && error.message))'],
   ['credential bootstrap failure is retried silently into a request', 'm1-transport.mjs', "if (!ok) credentialStop('cli-auth-failed')", "if (!ok) return async () => ({})"],
   ['request budget off by one', 'm1-transport.mjs', 'counters.requests >= budget.maxRequests', 'counters.requests > budget.maxRequests'],
-  ['Auth create budget ignored', 'm1-transport.mjs', "if (budget && (counters.authCreateAttempts ?? 0) >= budget.maxAuthCreates) stop('auth-create', 'operation budget exceeded', 'budget')", ''],
+  ['Auth create budget ignored', 'm1-transport.mjs', "if (budget && (counters.authCreateIntents ?? 0) >= budget.maxAuthCreates) stop('auth-create', 'operation budget exceeded', 'budget')", ''],
   ['staging transport without a budget accepted', 'm1-transport.mjs', "if (target.name === 'staging' && budget === null) stop('transport', 'operation budget required for staging', 'integrity')", '']
 ]
 
