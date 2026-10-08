@@ -619,6 +619,82 @@ await t('namespace gate itself: every consumed / reserved evidence name is refus
   return gate.length === 0 && viaRun.every(Boolean) && !RECON.consumedNames.includes(RECON.evidenceName) ? true : `gate=${gate} viaRun=${viaRun}`
 })
 
+// ── the deadline BETWEEN actions and at COMPLETION (corrections V2, CR3 follow-up) ───────────────────────────────────────────────────────
+// The injected clock is advanced from INSIDE the real ledger / checkpoint writes (fs.writeSync / fs.writeFileSync are wrapped for the duration of one reading), so that the budget runs out
+// exactly in the transition between two actions. Reads of the cached login and of the consumed journal are counted by a wrapper of fs.readFileSync. No sleep, no socket.
+async function observed({ onWrite = () => {}, readMatch = () => false }, fn) {
+  const w = fs.writeSync, wf = fs.writeFileSync, rf = fs.readFileSync
+  const reads = []
+  fs.writeSync = function (fd, data, ...a) { const r = w.call(this, fd, data, ...a); onWrite({ kind: 'ledger', text: String(data) }); return r }
+  fs.writeFileSync = function (file, data, ...a) { const r = wf.call(this, file, data, ...a); onWrite({ kind: 'file', file: String(file), text: String(data) }); return r }
+  fs.readFileSync = function (p, ...a) { if (readMatch(String(p))) reads.push(String(p)); return rf.call(this, p, ...a) }
+  try { return { value: await fn(), reads } } finally { fs.writeSync = w; fs.writeFileSync = wf; fs.readFileSync = rf }
+}
+const isLedger = phase => e => e.kind === 'ledger' && new RegExp(`"phase":"${phase}"`).test(e.text)
+const isCheckpoint = re => e => e.kind === 'file' && /recon-state\.json\.tmp$/.test(e.file) && re.test(e.text)
+const AFTER_FRONTEND = [['the BRANCH_DONE ledger write of the frontend', e => isLedger('BRANCH_DONE')(e) && /"frontend"/.test(e.text)], ['the checkpoint write after the frontend', isCheckpoint(/"frontend"/)]]
+const evEvents = cfg => ledgerOf(path.join(cfg.evDir, 'recon-ledger.jsonl'))
+await t('deadline (between actions): the budget runs out DURING the ledger / checkpoint write after the frontend - exhausted by 1 ms or exactly 0 left: the cached-login read does not start (0 bootstrap), no further request, STOP credential/deadline', async () => {
+  const bad = []
+  for (const [where, trigger] of AFTER_FRONTEND) for (const lead of [DL + 1, DL]) {
+    const st = { clock: T0 }; let fired = false
+    const { cfg, calls, bootstrapCalls } = rehearsalCfg(makeWorld(), { extra: { now: () => st.clock } })
+    const { value: r } = await observed({ onWrite: e => { if (!fired && trigger(e)) { fired = true; st.clock = T0 + lead } } }, () => runRecon(cfg))
+    const ev = evEvents(cfg)
+    if (!(fired && r.exitCode === 2 && r.stop?.branch === 'credential' && r.stop.code === 'deadline' && calls.length === 17 && bootstrapCalls.length === 0 && !ev.some(e => e.phase === 'CREDENTIAL_CONFIG_READ') && ev.some(e => e.phase === 'STOP' && e.branch === 'credential'))) bad.push(`${where}/${lead - DL}: ${r.status} ${JSON.stringify(r.stop)} calls=${calls.length} boot=${bootstrapCalls.length}`)
+  }
+  return bad.length === 0 ? true : bad.join(' | ')
+})
+await t('deadline (between actions, positive): with 1 ms of budget left after the same write the reading continues and completes (bootstrap once, all 22 requests, exit 0)', async () => {
+  const st = { clock: T0 }; let fired = false
+  const { cfg, calls, bootstrapCalls } = rehearsalCfg(makeWorld(), { extra: { now: () => st.clock } })
+  const { value: r } = await observed({ onWrite: e => { if (!fired && AFTER_FRONTEND[1][1](e)) { fired = true; st.clock = T0 + DL - 1 } } }, () => runRecon(cfg))
+  return fired && r.exitCode === 0 && calls.length === 22 && bootstrapCalls.length === 1 ? true : `${r.status} ${JSON.stringify(r.stop)} calls=${calls.length}`
+})
+await t('deadline (between actions): the budget runs out DURING the write after the cached-login read - the consumed journal is NOT read, no Auth request, STOP auth/deadline (and 1 ms of budget left reads it once)', async () => {
+  const ops = { credentialConfigRead: true, functionsMetadataRead: false, rulesReleaseRead: false, frontendPublicRead: false, authExactLookup: true }
+  const triggers = [['the CREDENTIAL_CONFIG_READ ledger write', isLedger('CREDENTIAL_CONFIG_READ')], ['the checkpoint write after the cached-login read', isCheckpoint(/"configReads": 1/)]]
+  const bad = []
+  for (const [where, trigger] of triggers) for (const [lead, expectRead] of [[DL + 1, false], [DL, false], [DL - 1, true]]) {
+    const st = { clock: T0 }; let fired = false
+    const { cfg, calls, journalPath } = rehearsalCfg(makeWorld(), { ops, extra: { now: () => st.clock } })
+    const { value: r, reads } = await observed({ onWrite: e => { if (!fired && trigger(e)) { fired = true; st.clock = T0 + lead } }, readMatch: p => p === journalPath }, () => runRecon(cfg))
+    const okRun = expectRead ? r.exitCode === 0 && calls.length === 1 : r.exitCode === 2 && r.stop?.branch === 'auth' && r.stop.code === 'deadline' && calls.length === 0
+    if (!(fired && okRun && reads.length === (expectRead ? 1 : 0))) bad.push(`${where}/${lead - DL}: ${r.status} ${JSON.stringify(r.stop)} calls=${calls.length} journalReads=${reads.length}`)
+  }
+  return bad.length === 0 ? true : bad.join(' | ')
+})
+await t('deadline (between actions, staging profile): the auditor counterexample - the checkpoint after the frontend moves the clock to DL+1 - the cached login file is read 0 times (1 time with budget left), only the 17 frontend requests were sent', async () => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'recon-login-')); fixtures.push(profile)
+  fs.mkdirSync(path.join(profile, 'configstore'), { recursive: true })
+  fs.writeFileSync(path.join(profile, 'configstore', 'firebase-tools.json'), JSON.stringify({ tokens: { access_token: SYNTH_TOKEN, refresh_token: '1//SYNTHETIC-NOT-A-SECRET-0123456789', expires_at: NOW + 3600000 } }))
+  const ops = { credentialConfigRead: true, functionsMetadataRead: true, rulesReleaseRead: false, frontendPublicRead: true, authExactLookup: false }
+  const outcome = async lead => {
+    const fx = await stagingFixture({ ops }); const st = { clock: NOW }; let fired = false
+    const { value: r, reads } = await observed({ onWrite: e => { if (!fired && isCheckpoint(/"frontend"/)(e)) { fired = true; st.clock = NOW + lead } }, readMatch: p => p.endsWith('firebase-tools.json') },
+      () => fx.core2.runRecon(fx.cfg({ env: { XDG_CONFIG_HOME: profile }, now: () => st.clock })))
+    return { r, reads: reads.length, calls: fx.rec.calls.length, fired }
+  }
+  const late = await outcome(DL + 1), ok = await outcome(DL - 1)
+  return late.fired && late.r.exitCode === 2 && late.r.stop?.branch === 'credential' && late.r.stop.code === 'deadline' && late.reads === 0 && late.calls === 17 && ok.reads === 1 && ok.calls > 17 && ok.r.exitCode !== 3 ? true :
+    `late: ${late.r.status} ${JSON.stringify(late.r.stop)} reads=${late.reads} calls=${late.calls}; ok: reads=${ok.reads} calls=${ok.calls}`
+})
+await t('deadline (completion instant): verdict, finishedAtUtc, the final ledger events and the exit code come from ONE instant - for completion at DL-2 ... DL+2 (a clock that keeps ticking after the last checkpoint): <= DL is a success, > DL is STOP deadline, never a late finishedAt with exit 0', async () => {
+  const bad = []
+  for (const off of [-2, -1, 0, 1, 2]) {
+    let boundary = false, ticks = 0; const frontendOnly = { credentialConfigRead: false, functionsMetadataRead: false, rulesReleaseRead: false, frontendPublicRead: true, authExactLookup: false }
+    const now = () => (boundary ? T0 + DL + off + ticks++ : T0)
+    const { cfg } = rehearsalCfg(makeWorld(), { ops: frontendOnly, extra: { now } })
+    const { value: r } = await observed({ onWrite: e => { if (!boundary && isCheckpoint(/"frontend"/)(e)) boundary = true } }, () => runRecon(cfg))
+    const res = JSON.parse(fs.readFileSync(path.join(cfg.evDir, 'recon-result.json'), 'utf8')), ev = evEvents(cfg)
+    const elapsed = Date.parse(res.finishedAtUtc) - T0, late = off > 0
+    const finalEvents = ev.filter(e => (e.phase === 'RESULT' && typeof e.status === 'string') || (e.phase === 'STOP' && e.branch === 'run'))
+    const consistent = late ? r.exitCode === 2 && res.status === 'STOP' && res.stop?.branch === 'run' && res.stop.code === 'deadline' && elapsed === DL + off && finalEvents.some(e => e.phase === 'STOP') : r.exitCode === 0 && res.status === 'READ_COMPLETE_ALL_MATCH_PINS' && elapsed === DL + off
+    if (!(consistent && r.status === res.status && finalEvents.every(e => e.at === res.finishedAtUtc))) bad.push(`off=${off}: exit=${r.exitCode} status=${res.status} elapsed=${elapsed} events=${finalEvents.map(e => `${e.phase}@${Date.parse(e.at) - T0}`)}`)
+  }
+  return bad.length === 0 ? true : bad.join(' | ')
+})
+
 // ── one-use claim ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 await t('claim: a competitor taking the namespace between the check and the claim wins - the loser runs nothing (0 fetch, 0 bootstrap) and the competitor evidence is preserved byte for byte', async () => {
   let opts = 'unset'

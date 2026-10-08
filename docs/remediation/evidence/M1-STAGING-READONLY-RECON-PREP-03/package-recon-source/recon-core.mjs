@@ -87,7 +87,7 @@ export function createLedger(file, now = () => Date.now()) {
   const fd = fs.openSync(file, 'ax') // exclusive: one ledger per namespace
   let seq = 0
   return {
-    event(obj) { const line = `${JSON.stringify({ seq: ++seq, at: new Date(now()).toISOString(), ...obj })}\n`; fs.writeSync(fd, line); fs.fsyncSync(fd); return seq },
+    event(obj, atMs) { const line = `${JSON.stringify({ seq: ++seq, at: new Date(atMs ?? now()).toISOString(), ...obj })}\n`; fs.writeSync(fd, line); fs.fsyncSync(fd); return seq },
     close() { try { fs.closeSync(fd) } catch { /* closed */ } }
   }
 }
@@ -310,18 +310,24 @@ export async function runRecon(cfg) {
 
   const state = { task: RECON.taskId, profile, startedAtUtc: new Date(now()).toISOString(), branches: {}, stop: null, credential: { configReads: 0, configWrites: 0, tokenEndpointCalls: 0, remainingMinutesAtStart: null } }
   const save = () => { const tmp = path.join(evDir, 'recon-state.json.tmp'); fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`); fs.renameSync(tmp, path.join(evDir, 'recon-state.json')) }
-  let ledger, client, token = null
+  let ledger, client, token = null, completedAt = null
   try {
     ledger = createLedger(path.join(evDir, 'recon-ledger.jsonl'), now)
     ledger.event({ phase: 'START', task: RECON.taskId, profile, operations: ops, allowlistSha256: pins.hashes.requestAllowlistSha256 })
     save()
     const runStart = now()
     client = createClient({ fetchImpl: cfg.fetchImpl, entries, ledger, token: null, now, startedAt: runStart, signalFor: cfg.signalFor })
-    const stage = async (name, fn) => { try { state.branches[name] = await fn(); } catch (e) { state.stop = { branch: name, code: e instanceof Blocked ? e.code : 'unexpected' }; ledger.event({ phase: 'STOP', branch: name, code: state.stop.code }); save(); throw e } ledger.event({ phase: 'BRANCH_DONE', branch: name }); save() }
+    // DEADLINE GATE: evaluated immediately BEFORE every next permitted action (each branch, the cached-login read, the consumed-journal read), i.e. after the ledger / checkpoint writes that
+    // preceded it. With no budget left (now >= start + deadline) no new read, file access or request begins; only the local recording of the STOP follows.
+    const gate = () => { if (now() - runStart >= RECON.limits.globalDeadlineMs) throw new Blocked('deadline') }
+    const stage = async (name, fn) => { try { gate(); state.branches[name] = await fn(); } catch (e) { state.stop = { branch: name, code: e instanceof Blocked ? e.code : 'unexpected' }; ledger.event({ phase: 'STOP', branch: name, code: state.stop.code }); save(); throw e } ledger.event({ phase: 'BRANCH_DONE', branch: name }); save() }
     // ONE client for the whole run, so that every budget is global; the token is attached only after the (permitted) bootstrap
     if (ops.frontendPublicRead) await stage('frontend', () => runFrontend(client, entries, pins.frontend))
     if (ops.credentialConfigRead) {
-      const boot = profile === 'staging' ? readCachedLogin({ env, now }) : (cfg.bootstrap ?? readCachedLogin)({ env, now })
+      let boot
+      try { gate(); boot = profile === 'staging' ? readCachedLogin({ env, now }) : (cfg.bootstrap ?? readCachedLogin)({ env, now }) } catch (e) {
+        state.stop = { branch: 'credential', code: e instanceof Blocked ? e.code : 'unexpected' }; ledger.event({ phase: 'STOP', branch: 'credential', code: state.stop.code }); save(); throw e
+      }
       token = boot.accessToken
       state.credential = { configReads: boot.reads ?? 1, configWrites: 0, tokenEndpointCalls: 0, remainingMinutesAtStart: Math.floor((boot.remainingMs ?? 0) / 60000) }
       ledger.event({ phase: 'CREDENTIAL_CONFIG_READ', configWrites: 0, tokenEndpointCalls: 0, remainingMinutes: state.credential.remainingMinutesAtStart })
@@ -334,21 +340,24 @@ export async function runRecon(cfg) {
       const journalPath = profile === 'staging' ? RECON.consumedJournal : (cfg.consumedJournalPath ?? RECON.consumedJournal)
       await stage('auth', async () => { let bytes; try { bytes = fs.readFileSync(journalPath) } catch { throw new Blocked('subject-source-mismatch') } return runAuthLookup(client, entries, pins.subject, bytes) })
     }
-    // a run that ends after its global deadline is never a success, whatever the last request did (the requests themselves are bounded inside the client)
-    if (now() - runStart > RECON.limits.globalDeadlineMs) { state.stop = { branch: 'run', code: 'deadline' }; ledger.event({ phase: 'STOP', branch: 'run', code: 'deadline' }); save() }
+    // COMPLETION INSTANT: sampled ONCE, after the last action and its checkpoint. It decides success / STOP (finishing exactly at the deadline is allowed, one millisecond later is a STOP),
+    // and the very same instant is recorded as finishedAtUtc in the result and as the time of the final ledger event; the exit code follows from that verdict. Nothing later can change it.
+    completedAt = now()
+    if (!state.stop && completedAt - runStart > RECON.limits.globalDeadlineMs) { state.stop = { branch: 'run', code: 'deadline' }; ledger.event({ phase: 'STOP', branch: 'run', code: 'deadline' }, completedAt); save() }
   } catch (e) {
     if (!state.stop) { state.stop = { branch: 'init', code: e instanceof Blocked ? e.code : 'unexpected' }; try { ledger?.event({ phase: 'STOP', branch: 'init', code: state.stop.code }); save() } catch { /* nothing more can be recorded */ } }
   }
+  completedAt ??= now() // a run that ended by a STOP before the completion step completes at the instant of that STOP being finalized
   const differences = Object.entries(state.branches).filter(([name, b]) => name !== 'auth' && b.matchesPin === false).map(([name]) => name)
   const status = state.stop ? 'STOP' : differences.length ? 'READ_COMPLETE_DIFFERENCES_OBSERVED' : 'READ_COMPLETE_ALL_MATCH_PINS'
   const result = {
-    format: 'finapp-m1-recon-result-v1', task: RECON.taskId, profile, status, startedAtUtc: state.startedAtUtc, finishedAtUtc: new Date(now()).toISOString(), stop: state.stop,
+    format: 'finapp-m1-recon-result-v1', task: RECON.taskId, profile, status, startedAtUtc: state.startedAtUtc, finishedAtUtc: new Date(completedAt).toISOString(), stop: state.stop,
     branches: state.branches, differences, credential: state.credential, requests: client ? client.stats() : null,
     notes: ['observations of the moment of reading only; nothing here declares a state accepted, compatible or absent in advance', 'ABSENT_NOW / PRESENT_NOW of the Auth lookup is not proof that the old create was or was not processed']
   }
   try {
     fs.writeFileSync(path.join(evDir, 'recon-result.json'), `${JSON.stringify(result, null, 2)}\n`, { flag: 'wx' })
-    ledger?.event({ phase: 'RESULT', status })
+    ledger?.event({ phase: 'RESULT', status }, completedAt)
     ledger?.close()
     const hits = scanEvidence(evDir, [token])
     if (hits.length) { fs.writeFileSync(path.join(evDir, 'recon-scan-hit.json'), `${JSON.stringify({ files: hits })}\n`); return { status: 'STOP', exitCode: EXIT.STOP, stop: { branch: 'scan', code: 'unexpected' }, result } }

@@ -1,4 +1,4 @@
-// Writes corrections-v1/recon-files-v2.txt (recon-files.txt is the v1 table and is kept untouched): one line per file of package-recon-source - REUSED (byte-identical to the same path in the accepted S1b candidate source) or NEW - with its SHA-256.
+// Writes corrections-v2/recon-files-v3.txt (recon-files.txt is the v1 table and corrections-v1/recon-files-v2.txt the v2 table; both are kept untouched): one line per file of package-recon-source - REUSED (byte-identical to the same path in the accepted S1b candidate source) or NEW - with its SHA-256.
 // The new package is NOT a fork of S1b: its modules are new; only the state library, the pinned expected state, the build manifest and the fence are reused unchanged.
 //   node make-file-table.mjs
 import fs from 'node:fs'
@@ -17,6 +17,6 @@ const lines = walk(SRC).filter(f => f !== 'CODE-SHA256SUMS.txt').sort().map(f =>
   const other = path.join(S1B, ...f.split('/'))
   return `${fs.existsSync(other) && sha(other) === mine ? 'REUSED' : 'NEW   '} ${mine}  ${f}`
 })
-fs.mkdirSync(path.join(EV, 'corrections-v1'), { recursive: true })
-fs.writeFileSync(path.join(EV, 'corrections-v1', 'recon-files-v2.txt'), `${lines.join('\n')}\n`)
+fs.mkdirSync(path.join(EV, 'corrections-v2'), { recursive: true })
+fs.writeFileSync(path.join(EV, 'corrections-v2', 'recon-files-v3.txt'), `${lines.join('\n')}\n`)
 console.log(`RECON_FILE_TABLE reused=${lines.filter(l => l.startsWith('REUSED')).length} new=${lines.filter(l => l.startsWith('NEW')).length}`)
