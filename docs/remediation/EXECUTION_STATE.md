@@ -586,3 +586,12 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
 - TASK02 REVIEW V1 = CHANGES_REQUIRED -> Corrections V1 (CR1, CR2) в той же ветке и Draft PR #36: новый immutable-кандидат `m1-s1b-staging-v2` (прежний `m1-s1b-staging` заменён);
   каждый ненулевой cleanup/verify-clean классифицируется по своему MODE_STOP (inventory только после проверенного остатка), атомарный exclusive claim evidence namespace до любых tools.
   Новых live-действий не было; PASS даёт только аудитор.
+
+## M1-STAGING-READONLY-RECON-PREP-03 (2026-10-08) — ограниченный read-only пакет сверки finapp-staging
+
+- Статус: READY_FOR_REVIEW (RESULT: READY_FOR_AUDIT), только локальная работа. Ветка `remediation/M1-STAGING-READONLY-RECON-PREP-03` от принятого HEAD PR #36
+  `629c8318676b3879205ad2b1906cd9beff6d5f68`; PR #36/#35/#28, main, S1b v1/v2, consumed run и evidence не менялись.
+- Новый самостоятельный пакет `m1-recon-readonly-staging` (immutable, PREPARED_NOT_AUTHORIZED, не запускался): 22 запроса (Functions metadata, Rules release+ruleset, 17 публичных GET frontend,
+  один exact synthetic-subject Auth lookup), allowlist до отправки, бюджеты, durable ledger, one-use permit с атомарным claim; bootstrap только читает кэшированный вход CLI (без refresh и записи).
+- Проверено локально: 99 негативных контролей, 33 мутации, repo-tooling 8, офлайн-режимы под изоляцией и fence (0 сетевых событий). Живое поведение не проверялось; S1b в решение не входит.
+- Отчёт: `docs/remediation/reports/M1-STAGING-READONLY-RECON-PREP-03.md`; runbook и решение владельца: `docs/remediation/runbooks/M1-STAGING-READONLY-RECON-PREPARED.md`.

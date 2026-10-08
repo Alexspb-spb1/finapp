@@ -1,0 +1,34 @@
+DETECTED allowlist ignores the HTTP method
+DETECTED allowlist ignores the host
+DETECTED allowlist ignores the path
+DETECTED allowlist ignores extra / missing query parameters
+DETECTED allowlist accepts a non-synthetic Auth subject
+DETECTED allowlist accepts plain http / userinfo / ports
+DETECTED no per-entry request budget
+DETECTED no global request budget
+DETECTED no global deadline
+DETECTED redirects are followed
+DETECTED non-200 answers are accepted below 500
+DETECTED no response size cap
+DETECTED one retry after a transport failure
+DETECTED no durable INTENT before dispatch
+DETECTED the bearer token is attached to every host (including the public frontend)
+DETECTED functions pagination accepted
+DETECTED Rules comparison always matches
+DETECTED frontend comparison always matches
+DETECTED the subject journal hash is not checked
+DETECTED the subject hash is not checked (any derived address is looked up)
+DETECTED the evidence scan is skipped
+DETECTED the namespace claim is a recursive mkdir
+DETECTED the claim marker may overwrite
+DETECTED forbidden environment accepted
+DETECTED consumed / reserved namespaces accepted
+DETECTED production markers ignored
+DETECTED permit not bound to the package bytes
+DETECTED permit acknowledgements not required
+DETECTED permit validity longer than 2 h accepted
+DETECTED permit validity window ignored
+DETECTED credential read decoupled from the Google branches
+DETECTED a nearly expired cached token is accepted
+DETECTED a token of any shape is accepted
+RECON_MUTATION_CHECKS PASS detected=33/33

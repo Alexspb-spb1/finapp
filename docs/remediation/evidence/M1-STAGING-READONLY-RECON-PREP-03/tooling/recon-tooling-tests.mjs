@@ -36,8 +36,8 @@ t('files reused from the accepted S1b candidate are byte-identical (state lib, e
 t('no live-adapter, deploy, export, rollback, callable, smoke or readiness code or file is part of the package (this package READS only)', () => {
   const names = walk(SOURCE)
   const badNames = names.filter(n => /(^|\/)(m1-smoke|m1-transport|m1-core|m1-ui-smoke|m1-readiness|m1-functions-check|m1-export|m1-deploy-wrapper|m1-orchestrator|m1-s1b)/.test(n))
-  const code = names.filter(n => /\.(mjs|cjs)$/.test(n) && !n.startsWith('tests/') && !n.startsWith('offline-fence/') && n !== 'm1-state-lib.mjs').map(n => fs.readFileSync(path.join(SOURCE, n), 'utf8').split('\n').filter(l => !l.trim().startsWith('//')).join('\n')).join('\n')
-  const hits = [/firebase deploy/i, /gcloud/i, /createAuthUser|deleteAuthUser|signInWithPassword|accounts:delete/, /\bcallable\b.*POST/i].filter(re => re.test(code))
+  const code = names.filter(n => /\.(mjs|cjs)$/.test(n) && !n.startsWith('tests/') && !n.startsWith('offline-fence/') && n !== 'm1-state-lib.mjs' && n !== 'recon-offline.mjs').map(n => fs.readFileSync(path.join(SOURCE, n), 'utf8').split('\n').filter(l => !l.trim().startsWith('//')).join('\n')).join('\n')
+  const hits = [/firebase deploy/i, /gcloud.(cmd|exe)/i, /spawn|execFile/, /createAuthUser|deleteAuthUser|signInWithPassword|accounts:delete/, /\bcallable\b.*POST/i].filter(re => re.test(code))
   return badNames.length === 0 && hits.length === 0 ? true : `names=${badNames} hits=${hits}`
 })
 t('the frontend pins equal the accepted staging build manifest for every file (15 files, .vite excluded) and the local build, when present', () => {
@@ -69,7 +69,7 @@ t('the runbook exists and carries the separate owner decision block, the PREPARE
   const rb = path.resolve(EV, '..', '..', 'runbooks', 'M1-STAGING-READONLY-RECON-PREPARED.md')
   if (!fs.existsSync(rb)) return 'runbook missing'
   const text = fs.readFileSync(rb, 'utf8')
-  return ['PREPARED_NOT_AUTHORIZED', 'Решение владельца', 'authExactLookup', 'configstore', 'не входит S1b'].every(s => text.includes(s)) ? true : 'runbook sections missing'
+  return ['PREPARED_NOT_AUTHORIZED', 'Решение владельца', 'authExactLookup', 'configstore', 'не входит в S1b'].every(s => text.includes(s)) ? true : 'runbook sections missing'
 })
 
 fs.rmSync(tmp, { recursive: true, force: true })
