@@ -1,0 +1,154 @@
+PASS allowlist data: 5 Google entries + 17 frontend entries == the request budget; GET only except the one exact lookup POST; no token endpoint; bearer only for googleapis hosts
+PASS frontend pins equal the accepted staging build manifest; the package selftest passes (sums, pins, fence pins)
+PASS stop codes are a closed set and Blocked normalizes anything else to "unexpected"
+PASS allowlist: the accepted requests match their entries
+PASS allowlist: wrong methods (PUT/PATCH/DELETE/POST on GET entries, GET on the lookup) are denied
+PASS allowlist: foreign, production and look-alike hosts are denied (and the token endpoint too)
+PASS allowlist: paths, query sets, scheme, credentials in the URL, port and fragment must match exactly
+PASS allowlist: archive download, code export, IAM, Rules create/release, Firestore export/documents, Auth list/search/signUp/batchGet, callables are all denied
+PASS allowlist: the Auth lookup body must be exactly {"email":[<one synthetic subject>]} - owner / real addresses, lists, other keys and non-JSON are denied
+PASS client: the INTENT is durable in the ledger BEFORE the request is dispatched (checked from inside the fetch), the RESULT follows
+PASS client: a denied request is ledgered as DENIED and nothing is dispatched; the ledger is exclusive (a second ledger on the same file is refused)
+PASS client: budgets - one request per entry, a global cap, nothing is dispatched past them
+PASS client: no retry - every failure ends the request once (401/403/404/429/500/418, network, timeout, redirect)
+PASS client: redirect=error and a per-request timeout signal are always passed; a response body larger than the entry cap is cancelled (oversize); malformed JSON is a STOP
+PASS client: the deadline stops everything before the next request
+PASS deadline (start): a request may START only while budget is left - DL-1 ms starts, exactly DL and DL+1 are denied before any dispatch
+PASS deadline (signal): the request signal is the SMALLER of the per-request timeout and the budget left (10000 ms at the start, 500 ms with 500 ms left, 10000 ms with 20 s left)
+PASS deadline (headers): the auditor counterexample - started 119500 ms, answered 128500 ms (9 s, inside the 10 s request timeout) - is a STOP deadline, not a success; the body is cancelled and no later request is dispatched
+PASS deadline (headers boundary): an answer exactly AT the deadline is accepted, one millisecond after it is a STOP
+PASS deadline (status): an error status or a redirect that ARRIVES after the deadline is a STOP deadline (never http-5xx / redirect decided after the budget), and the body is cancelled
+PASS deadline (body): a streamed body that crosses the deadline between chunks is cancelled and ends in a STOP deadline (no success, no later request)
+PASS deadline (last read): the FINAL read that reports the end of the body after the deadline is a STOP deadline, not the success of the last request
+PASS deadline (body boundary): a body that ends exactly AT the deadline is a success
+PASS deadline (abort): an abort while the budget bounds the request is `deadline`, an abort of the full per-request timeout stays `timeout` - for the headers and for the body
+PASS deadline (intent): when the budget runs out while the INTENT is being written, the request is NOT dispatched (INTENT then RESULT deadline)
+PASS deadline (real signal on a loopback server): headers that never arrive and a body that stalls halfway both end as STOP deadline when the budget is small, long before the 10 s request timeout
+PASS client: the bearer token goes ONLY to the googleapis entries, together with the quota project; the stage host never sees an Authorization header
+PASS client: a bearer entry without a token is denied (no unauthenticated Google call, nothing dispatched)
+PASS success: every comparison equals its pin -> READ_COMPLETE_ALL_MATCH_PINS (exit 0); exactly 22 requests, one POST, fixed order, ledger INTENT/RESULT pairs, zero token-endpoint calls
+PASS success: the Auth lookup is ONE POST whose body is exactly the derived synthetic subject; no uid / e-mail / token / body ever lands in the evidence (scan clean)
+PASS success: the Rules text and any response body are never stored (only hashes, sizes and names)
+PASS auth PRESENT_NOW is reported as an observation only (no uid), and is not a pin difference
+PASS permit operations are independent: functions only / frontend only / no Auth POST when authExactLookup is off
+PASS deadline (run): the LAST frontend request that completes after the global deadline ends the reading as STOP deadline (exit 2, no success, no result for that request)
+PASS deadline (run): non-request work that crosses the deadline (the cached-login read) is not a success either - STOP deadline at the end of the run; the same crossing before further requests stops them undispatched
+PASS deadline (run): a reading that finishes exactly at its deadline is still complete (no STOP)
+PASS difference: wrong Rules (round-2 text live) -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: Rules with different bytes but the same size -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: Rules still the pre-release ruleset name -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: a changed revision -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: changed caps -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: a different runtime -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: a changed source fingerprint -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: a missing function -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: an extra function -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: an unexpected 1st-gen function -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: a frontend file with other bytes of the same size -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: a stale root index -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS difference: the Firebase marker names production -> DIFFERENCES_OBSERVED (exit 4), nothing declared accepted
+PASS stop: Functions v2 answers 401 -> STOP http-401 (exit 2), no retry, nothing further is requested
+PASS stop: Functions v1 answers 403 -> STOP http-403 (exit 2), no retry, nothing further is requested
+PASS stop: the Rules release answers 429 -> STOP http-429 (exit 2), no retry, nothing further is requested
+PASS stop: a frontend file answers 404 -> STOP http-404 (exit 2), no retry, nothing further is requested
+PASS stop: a transport failure of unknown outcome (Auth lookup) -> STOP network-unknown (exit 2), no retry, nothing further is requested
+PASS stop: a timeout on the Rules ruleset -> STOP timeout (exit 2), no retry, nothing further is requested
+PASS stop: an oversize Functions answer -> STOP oversize (exit 2), no retry, nothing further is requested
+PASS stop: malformed JSON from the Rules release -> STOP malformed-json (exit 2), no retry, nothing further is requested
+PASS stop: a non-object JSON answer -> STOP malformed-json (exit 2), no retry, nothing further is requested
+PASS stop: a next page of Functions (pagination is not allowed) -> STOP unexpected-shape (exit 2), no retry, nothing further is requested
+PASS stop: unreachable locations in the Functions list -> STOP unexpected-shape (exit 2), no retry, nothing further is requested
+PASS stop: a function with a malformed name -> STOP unexpected-shape (exit 2), no retry, nothing further is requested
+PASS stop: a release for another project / a ruleset id with a slash -> STOP unexpected-shape (exit 2), no retry, nothing further is requested
+PASS stop: a ruleset with two files -> STOP unexpected-shape (exit 2), no retry, nothing further is requested
+PASS stop: a lookup answer with two accounts -> STOP unexpected-shape (exit 2), no retry, nothing further is requested
+PASS stop: a lookup answer about another account -> STOP unexpected-shape (exit 2), no retry, nothing further is requested
+PASS stop: a redirect on a frontend file -> STOP redirect (exit 2), no retry, nothing further is requested
+PASS stop: a STOP keeps the branches finished before it in the state and the result (checkpoint), and the result says STOP
+PASS subject: the journal bytes changed (input hash differs from the pin) -> STOP subject-source-mismatch before any Auth request
+PASS subject: the journal is missing -> STOP subject-source-mismatch before any Auth request
+PASS subject: the pinned subject hash is another subject (an owner address instead of the synthetic one) -> STOP subject-source-mismatch before any Auth request
+PASS subject: a journal with two creates or another run id is rejected by deriveSubject
+PASS subject: the real pin file is consistent (format, run id of the consumed run, hashes) and names no address
+PASS bootstrap: reads access token + expiry only, in memory, with zero writes and zero token-endpoint calls; the refresh token is never returned
+PASS bootstrap: missing / unreadable / no token / too old / wrong types end in closed codes without any path or content
+PASS bootstrap: the config path follows XDG_CONFIG_HOME (the isolated profile) and a real temp file is read without being modified
+PASS bootstrap failure inside a reading: STOP before any Google request, frontend result kept, the token path is never reached, nothing about the owner profile in the evidence
+PASS bootstrap sources: the module can only READ (no write/rename/unlink/copy/mkdir/exec) and imports no firebase-tools / googleapis / child_process
+PASS INIT: no permit -> refused, no fetch, no claim
+PASS INIT: a permit template (not a permit) is refused
+PASS INIT: a permit bound to other bytes (codeSums) is refused
+PASS INIT: a permit bound to other bytes (requestAllowlist) is refused
+PASS INIT: a permit bound to other bytes (frontendAllowlist) is refused
+PASS INIT: a permit bound to other bytes (consumedSubjectPin) is refused
+PASS INIT: a permit bound to other bytes (expectedState) is refused
+PASS INIT: a permit bound to other bytes (distManifest) is refused
+PASS permit validity matrix: wrong project / host / head / namespace / Rules pin / task, bad operations, missing acknowledgements, time window, >2 h, placeholder reference
+PASS INIT: forbidden environment (NODE_OPTIONS / FIREBASE_TOKEN / GOOGLE_APPLICATION_CREDENTIALS / proxy / emulator / stub)
+PASS INIT: forbidden environment variable FIREBASE_TOKEN
+PASS INIT: forbidden environment variable GOOGLE_APPLICATION_CREDENTIALS
+PASS INIT: forbidden environment variable HTTPS_PROXY
+PASS INIT: forbidden environment variable FIRESTORE_EMULATOR_HOST
+PASS INIT: forbidden environment variable M1_STUB_SCENARIO
+PASS INIT: forbidden environment variable GOOGLE_OAUTH_ACCESS_TOKEN
+PASS INIT: a production marker in an environment value
+PASS INIT: a production host marker in an environment value
+PASS INIT: a wrong evidence namespace name
+PASS INIT: a consumed namespace (an S1b one)
+PASS INIT: a namespace outside the runtime root
+PASS INIT: tampered pins (allowlist POST on a GET entry / more than one lookup / non-google host / wrong limits) are refused by pinProblems
+PASS INIT: tampered frontend / subject / expected pins are refused
+PASS INIT: rehearsal reading outside the rehearsal base / unknown profile / no fetch implementation are refused
+PASS integrity (positive control): an unchanged self-consistent copy passes integrity and the permit, claims its namespace and completes a staging-profile frontend reading (17 injected requests, exit 0)
+PASS integrity (positive control): the package under test itself has no integrity problem and its selftest passes
+PASS integrity: recon-bootstrap.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: recon-core.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: recon.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: recon-permit.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: recon-pins.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: recon-integrity.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: m1-state-lib.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: recon-offline.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: offline-fence/loopback-only.cjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: offline-fence/isolated-env.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: offline-fence/FENCE-PINS.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: request-allowlist.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: frontend-allowlist.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: consumed-subject-pin.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: expected-state-r3.json changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: dist-staging-manifest.txt changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: tests/synthetic.mjs changed after the permit was bound (manifest and permit unchanged) -> INIT_REFUSED, 0 requests, nothing claimed, no credential read
+PASS integrity: a listed helper is missing -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: an unlisted extra helper is added to the package -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: an unlisted file is added inside the fence directory -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: a results directory with a file is added -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: the manifest is emptied -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: the manifest is malformed -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: the manifest is missing -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: the manifest lacks a required helper -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: the manifest lists a file twice -> INIT_REFUSED, 0 requests, nothing claimed
+PASS integrity: an OLD permit is invalid for changed code - refreshing the manifest after a change is refused by the permit binding (codeSums), still before any request or claim
+PASS integrity: the structural pin checks stay independent of the manifest - tampered pin DATA with a refreshed manifest and a matching permit is still refused by the pins (not by integrity)
+PASS integrity: the selftest runs the same check - a changed helper makes SELFTEST fail with its path, an unchanged copy passes
+PASS integrity (unit): relative imports must be listed, only node: builtins may be imported, comments and method calls such as Buffer.from('x') are not imports, a required file may not be absent from both disk and manifest
+PASS integrity (CLI path, fenced): `recon.mjs execute` with a valid permit refuses a changed helper with exit 3 and reason integrity - the fence sees 0 events, nothing is claimed; the unchanged copy passes integrity and permit and its first request is stopped by the fence
+PASS integrity (offline launcher): plan / permit-draft / selftest of a package with a changed helper are refused (exit 3 / selftest fail) with 0 network events - the printed bindings are only meaningful for unchanged bytes
+PASS namespace gate itself: every consumed / reserved evidence name is refused in EVERY profile (the rehearsal profile reaches the gate without the pinned-name check in front of it), and the pinned name is not among them
+PASS deadline (between actions): the budget runs out DURING the ledger / checkpoint write after the frontend - exhausted by 1 ms or exactly 0 left: the cached-login read does not start (0 bootstrap), no further request, STOP credential/deadline
+PASS deadline (between actions, positive): with 1 ms of budget left after the same write the reading continues and completes (bootstrap once, all 22 requests, exit 0)
+PASS deadline (between actions): the budget runs out DURING the write after the cached-login read - the consumed journal is NOT read, no Auth request, STOP auth/deadline (and 1 ms of budget left reads it once)
+PASS deadline (between actions, staging profile): the auditor counterexample - the checkpoint after the frontend moves the clock to DL+1 - the cached login file is read 0 times (1 time with budget left), only the 17 frontend requests were sent
+PASS deadline (completion instant): verdict, finishedAtUtc, the final ledger events and the exit code come from ONE instant - for completion at DL-2 ... DL+2 (a clock that keeps ticking after the last checkpoint): <= DL is a success, > DL is STOP deadline, never a late finishedAt with exit 0
+PASS claim: a competitor taking the namespace between the check and the claim wins - the loser runs nothing (0 fetch, 0 bootstrap) and the competitor evidence is preserved byte for byte
+PASS claim: a non-recursive mkdir of the namespace itself, then an exclusive marker before the first ledger event; an existing / partial namespace is consumed and kept
+PASS claim: another claim error or an already present marker leaves the namespace consumed and runs nothing
+PASS claim: two real processes race for one namespace - exactly one reading, the loser fetches nothing and never reads the credential config
+PASS scanner: a token-looking value that reaches the evidence ends the reading with exit 2 and a scan-hit marker (file names only); the clean case has none
+PASS scanner patterns: tokens, refresh tokens, bearer, API keys, fixture passwords, subject e-mails and an exact known token are all detected
+PASS offline guard: refuses without the fence / the fence log / with credential-like variables; accepts a clean fenced environment
+PASS CLI: plan / selftest / permit-draft refuse without the fence; execute without a permit refuses (exit 3) and creates nothing
+PASS offline launcher: plan / selftest / permit-draft run in an isolated environment even if the parent holds credential variables, with NO network event; the plan lists exactly the allowlist
+PASS hygiene: no write-capable provider call, no firebase-tools / googleapis / child_process / browser / SDK import in the engine; the only POST is the exact lookup
+PASS real fetch semantics the engine relies on: redirect=error rejects (-> network-unknown), AbortSignal.timeout gives TimeoutError (-> timeout), and a streamed body can be cancelled at a cap
+PASS the real staging namespace was never created by these tests, and no owner credential file was involved
+RECON_NEGATIVE_CONTROLS PASS 153/153
