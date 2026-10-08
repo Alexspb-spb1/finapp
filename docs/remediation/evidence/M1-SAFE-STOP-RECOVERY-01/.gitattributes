@@ -1,0 +1,6 @@
+# the runner sources are committed byte-exact: their SHA-256 (CODE-SHA256SUMS.txt, r3-to-r4.patch hashes) must survive checkout on any platform
+* -text
+
+# r3-to-r4.patch is an applyable unified diff: whitespace-only context lines of the patched sources (a single leading space marks a context line)
+# look like trailing whitespace to `git diff --check`. Only this one file is exempt; every other file in the range (and CI) stays checked.
+r3-to-r4.patch -whitespace

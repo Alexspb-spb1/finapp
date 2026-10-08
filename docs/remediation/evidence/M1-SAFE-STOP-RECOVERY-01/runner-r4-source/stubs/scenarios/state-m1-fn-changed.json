@@ -1,0 +1,17 @@
+{
+  "gh": {
+    "kind": "success"
+  },
+  "firebase": {
+    "deploy": "success",
+    "rollback": "success"
+  },
+  "export": "success",
+  "stagingTools": {
+    "statePre": "drift-m1"
+  },
+  "smoke": {},
+  "readiness": {
+    "kind": "ready"
+  }
+}

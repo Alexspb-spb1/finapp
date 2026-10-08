@@ -1,0 +1,9 @@
+target exit=0
+collect exit=0 collected cases=113 files=2727 sanitizedFiles=1 droppedCredentialKeys=password:3 withheldUnparseableLines=0
+redact-user-names exit=0 files=0
+scan exit=0 secretPatternHits=0 userNameHits=0
+results-sums exit=0 files=2754 sumsSha256=d4d882da93b0927c8936a0c16425a4128e5e7c18104b8fa23796b2b2239ce6f3
+results-sums-verify exit=0 problems=0
+code-sums exit=0 CODE-SHA256SUMS.txt files=149
+code-sums-verify exit=0 M1_SUMS_VERIFIED files=149
+RESULTS_FINALIZED

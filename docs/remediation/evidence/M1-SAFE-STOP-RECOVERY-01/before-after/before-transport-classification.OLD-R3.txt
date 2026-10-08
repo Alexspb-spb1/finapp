@@ -1,0 +1,49 @@
+FAIL classification: connect timeout (undici, the 10 s connect timer) -> connect-timeout, dispatch not-dispatched
+     detail: {"kind":"transport","took":1}
+FAIL classification: connection refused -> connection-refused, dispatch not-dispatched
+     detail: {"kind":"transport","took":0}
+FAIL classification: DNS name not found -> dns, dispatch not-dispatched
+     detail: {"kind":"transport","took":0}
+FAIL classification: DNS temporary failure -> dns, dispatch not-dispatched
+     detail: {"kind":"transport","took":0}
+FAIL classification: network unreachable -> network-unreachable, dispatch not-dispatched
+     detail: {"kind":"transport","took":0}
+FAIL classification: host unreachable -> network-unreachable, dispatch not-dispatched
+     detail: {"kind":"transport","took":0}
+FAIL classification: TLS certificate verification failed -> tls-verify, dispatch not-dispatched
+     detail: {"kind":"transport","took":0}
+FAIL classification: dual-stack AggregateError, every attempt failed in connect() -> connect-timeout, dispatch not-dispatched
+     detail: {"kind":"transport","took":0}
+FAIL classification: connection reset while reading the answer -> connection-reset, dispatch unknown
+     detail: {"kind":"transport","took":0}
+FAIL classification: socket closed by the peer (undici) -> socket-closed, dispatch unknown
+     detail: {"kind":"transport","took":0}
+FAIL classification: response headers timeout (undici) -> response-timeout, dispatch unknown
+     detail: {"kind":"transport","took":0}
+FAIL classification: response body timeout (undici) -> response-timeout, dispatch unknown
+     detail: {"kind":"transport","took":0}
+FAIL classification: the runner own 30 s abort (TimeoutError) -> abort-timeout, dispatch unknown
+     detail: {"kind":"transport","took":1}
+FAIL classification: ETIMEDOUT outside connect() (a read) -> other, dispatch unknown
+     detail: {"kind":"transport","took":0}
+FAIL classification: ECONNREFUSED without syscall (cannot prove connect phase) -> other, dispatch unknown
+     detail: {"kind":"transport","took":0}
+FAIL classification: AggregateError where ONE attempt failed after connect -> other, dispatch unknown
+     detail: {"kind":"transport","took":0}
+FAIL classification: plain fetch failed without a cause -> other, dispatch unknown
+     detail: {"kind":"transport","took":0}
+FAIL classification: an unknown non-Error value -> other, dispatch unknown
+     detail: {"kind":"transport","took":0}
+PASS sanitizer: the STOP reason keeps the fixed text `network failure POST accounts` (old evidence and the orchestrator patterns stay valid)
+PASS sanitizer: no URL, host, e-mail, token or raw error text from the underlying error reaches the STOP (only fixed codes)
+FAIL sanitizer: reasonCode and dispatch come from closed sets
+PASS no retry: a pre-dispatch failure is reported once - the fetch was called exactly once and requests=1, authCreates=0
+FAIL real fetch: a closed loopback port (real ECONNREFUSED) is a proven pre-dispatch failure and nothing reached any server
+     detail: {"kind":"transport"}
+FAIL real fetch: a server that received the request and then reset the connection is NOT pre-dispatch (the request was delivered) -> kind transport, dispatch unknown
+     detail: {"seen":1,"kind":"transport"}
+FAIL real fetch: an answer that never comes ends at the request timeout (TimeoutError) -> dispatch unknown, elapsed recorded, one request seen by the server
+     detail: {"hang":1}
+FAIL contract: the classifier is exported as a pure function and refuses to promote an unknown error to pre-dispatch
+PASS contract: the transport still has no retry loop and no second fetch call (code only, comments ignored)
+TRANSPORT_CLASSIFICATION_TESTS FAIL 4/27 (package under test: D:\projects\finapp\.runtime\m1-r3-staging)

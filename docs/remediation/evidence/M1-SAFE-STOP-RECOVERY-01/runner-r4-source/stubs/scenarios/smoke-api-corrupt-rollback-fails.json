@@ -1,0 +1,17 @@
+{
+  "gh": {
+    "kind": "success"
+  },
+  "firebase": {
+    "deploy": "success",
+    "rollback": "fail"
+  },
+  "export": "success",
+  "stagingTools": {},
+  "smoke": {
+    "api": "CORRUPT"
+  },
+  "readiness": {
+    "kind": "ready"
+  }
+}

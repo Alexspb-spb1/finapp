@@ -1,0 +1,28 @@
+PASS classification: connect timeout (undici, the 10 s connect timer) -> connect-timeout, dispatch not-dispatched
+PASS classification: connection refused -> connection-refused, dispatch not-dispatched
+PASS classification: DNS name not found -> dns, dispatch not-dispatched
+PASS classification: DNS temporary failure -> dns, dispatch not-dispatched
+PASS classification: network unreachable -> network-unreachable, dispatch not-dispatched
+PASS classification: host unreachable -> network-unreachable, dispatch not-dispatched
+PASS classification: TLS certificate verification failed -> tls-verify, dispatch not-dispatched
+PASS classification: dual-stack AggregateError, every attempt failed in connect() -> connect-timeout, dispatch not-dispatched
+PASS classification: connection reset while reading the answer -> connection-reset, dispatch unknown
+PASS classification: socket closed by the peer (undici) -> socket-closed, dispatch unknown
+PASS classification: response headers timeout (undici) -> response-timeout, dispatch unknown
+PASS classification: response body timeout (undici) -> response-timeout, dispatch unknown
+PASS classification: the runner own 30 s abort (TimeoutError) -> abort-timeout, dispatch unknown
+PASS classification: ETIMEDOUT outside connect() (a read) -> other, dispatch unknown
+PASS classification: ECONNREFUSED without syscall (cannot prove connect phase) -> other, dispatch unknown
+PASS classification: AggregateError where ONE attempt failed after connect -> other, dispatch unknown
+PASS classification: plain fetch failed without a cause -> other, dispatch unknown
+PASS classification: an unknown non-Error value -> other, dispatch unknown
+PASS sanitizer: the STOP reason keeps the fixed text `network failure POST accounts` (old evidence and the orchestrator patterns stay valid)
+PASS sanitizer: no URL, host, e-mail, token or raw error text from the underlying error reaches the STOP (only fixed codes)
+PASS sanitizer: reasonCode and dispatch come from closed sets
+PASS no retry: a pre-dispatch failure is reported once - the fetch was called exactly once and requests=1, authCreates=0
+PASS real fetch: a closed loopback port (real ECONNREFUSED) is a proven pre-dispatch failure and nothing reached any server
+PASS real fetch: a server that received the request and then reset the connection is NOT pre-dispatch (the request was delivered) -> kind transport, dispatch unknown
+PASS real fetch: an answer that never comes ends at the request timeout (TimeoutError) -> dispatch unknown, elapsed recorded, one request seen by the server
+PASS contract: the classifier is exported as a pure function and refuses to promote an unknown error to pre-dispatch
+PASS contract: the transport still has no retry loop and no second fetch call (code only, comments ignored)
+TRANSPORT_CLASSIFICATION_TESTS PASS 27/27
