@@ -1,0 +1,42 @@
+{
+  "format": "finapp-m1-recon-permit-v1",
+  "taskId": "M1-STAGING-READONLY-RECON-PREP-03",
+  "status": "TEMPLATE_NOT_A_PERMIT",
+  "target": {
+    "project": "finapp-staging",
+    "stageHost": "stage.aktivmetr.ru",
+    "head": "714d0f91c60a582ee87dc7da82d6249b3106329f"
+  },
+  "namespace": {
+    "evidenceName": "m1-stg-readonly-recon-03"
+  },
+  "bytes": {
+    "codeSums": "05eaa3e644924322cf4cddc40bc870a7fdebe3d1c184bd013d0f4c1d9a47038b",
+    "requestAllowlist": "e6db7fd42d3593ee4d4a59ceb369b5cbc41f2da9e4b8e9284c46455811244d10",
+    "frontendAllowlist": "18eb80c1ac441ae6e1d27afc84e18b788a9e333b91754162d8f4dcbd843e6a43",
+    "consumedSubjectPin": "3c513f36a1062934f08ad87abd7d64d014ff458131f0c16cca6064ca26f931fa",
+    "expectedState": "83f259870bfc121bf6dbff6f56eb5f1a54dce93e0b3839c01f1987870a561de7",
+    "distManifest": "a24e3706004ad3214d6c7e7dfdc58f9240d468f7bd093749ae71398579911410"
+  },
+  "rules": {
+    "canonicalSha256": "c4fe4c097c333f71d971691a2c3be24d15434220bd5f9574fb761494874719fd"
+  },
+  "operations": {
+    "credentialConfigRead": false,
+    "functionsMetadataRead": false,
+    "rulesReleaseRead": false,
+    "frontendPublicRead": false,
+    "authExactLookup": false
+  },
+  "acknowledgements": {
+    "noTokenRefreshAndNoConfigWrite": false,
+    "noRetryAndStopOnUnknown": false,
+    "absentNowIsNotProofOfNonDispatch": false,
+    "resultsAreObservationsNotAcceptance": false
+  },
+  "owner": {
+    "approvalRef": "<reference to the owner decision>",
+    "approvedAtUtc": "<ISO>",
+    "expiresAtUtc": "<ISO, at most 2 h after approval>"
+  }
+}
