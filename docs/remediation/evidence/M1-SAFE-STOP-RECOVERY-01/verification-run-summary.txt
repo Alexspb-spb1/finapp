@@ -1,3 +1,8 @@
+# HISTORIC - superseded by Corrections V1 (CR1). Unmodified output of the first verification run, produced by the bash driver tooling/run-all-r4.legacy.sh.
+# It is self-contradictory: the line "results files=... secretPatternHits=1" (the scan exited 2) is followed by RUN_ALL_R4_DONE, because that driver neither
+# tracked step exit codes nor used pipefail. The hit was the key "password" with the placeholder value "<omitted>" inside the recovery-manifest fixtureSnapshot
+# of one rehearsal case (no secret value). The collector now drops credential keys structurally; the package-level verdict of THIS run is NOT PASS.
+# The individual step PASS lines are not retracted. Current evidence: corrections-v1/ and tooling/verify-driver.mjs.
 CODE-SHA256SUMS.txt files=149
 parse exit=0 :: PS51_PARSE_CHECK psVersion=5.1.19041.6456 files=4 failed=0
 node-helper exit=0 :: NODE_HELPER_TESTS PASS 202/202
