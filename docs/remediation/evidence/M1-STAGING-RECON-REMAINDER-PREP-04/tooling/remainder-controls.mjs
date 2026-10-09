@@ -1,0 +1,26 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const pkg = process.argv[2];
+const imp = f => import(pathToFileURL(path.join(pkg, f)));
+const { RECON, Blocked, namespaceProblems } = await imp('recon-pins.mjs');
+const { runRecon, loadPins } = await imp('recon-core.mjs');
+const { permitTemplate, permitProblems } = await imp('recon-permit.mjs');
+const { makeWorld, rehearsalCfg } = await imp('tests/synthetic.mjs');
+const ops = { credentialConfigRead: true, functionsMetadataRead: true, rulesReleaseRead: true, frontendPublicRead: false, authExactLookup: false };
+let pass = 0, fail = 0;
+async function test(name, fn) { try { const ok = await fn(); if (ok !== true) throw new Error('assertion'); pass++; console.log(`PASS ${name}`); } catch (e) { fail++; console.log(`FAIL ${name}: ${e.code ?? e.message}`); } }
+const NOW = Date.parse('2026-11-01T12:00:00Z');
+const facts = { ...loadPins(pkg).hashes, evidenceName: RECON.evidenceName };
+const good = () => { const p = permitTemplate(); p.status = 'APPROVED'; p.operations = { ...ops }; for (const k of Object.keys(p.acknowledgements)) p.acknowledgements[k] = true; p.bytes = { codeSums: facts.codeSumsSha256, requestAllowlist: facts.requestAllowlistSha256, frontendAllowlist: facts.frontendAllowlistSha256, consumedSubjectPin: facts.consumedSubjectPinSha256, expectedState: facts.expectedStateSha256, distManifest: facts.distManifestSha256 }; p.owner = { approvalRef: 'SYNTHETIC LOCAL CONTROL', approvedAtUtc: new Date(NOW - 1000).toISOString(), expiresAtUtc: new Date(NOW + 60000).toISOString() }; return p; };
+await test('remainder: exactly four GET, no frontend/Auth, one cached bootstrap', async () => { const x = rehearsalCfg(makeWorld(), { ops }); const r = await runRecon(x.cfg); return r.exitCode === 0 && x.calls.length === 4 && x.calls.every(c => c.method === 'GET' && ['cloudfunctions.googleapis.com','firebaserules.googleapis.com'].includes(c.host)) && x.bootstrapCalls.length === 1 && Object.keys(r.result.branches).sort().join(',') === 'functions,rules'; });
+await test('remainder: old v3 byte binding cannot authorize v4', () => { const p = good(); p.bytes.codeSums = 'e460a9b3cc022e531144fd8097ed88e98972342844444950961218623edc92c6'; return permitProblems(p, facts, NOW).some(s => s.includes('codeSums')); });
+await test('remainder: consumed03 refused even in an isolated rehearsal namespace', () => namespaceProblems({ profile: 'rehearsal', evidenceDir: RECON.rehearsalBase + 'm1-stg-readonly-recon-03', exists: () => false }).some(p => p.includes('consumed or reserved')));
+await test('remainder: old staging namespace refused without probing credentials/network', () => namespaceProblems({ profile: 'staging', evidenceDir: path.join(RECON.runtimeRoot, 'm1-stg-readonly-recon-03'), exists: () => true }).length > 0);
+await test('remainder: expired bootstrap STOP sends zero HTTP requests', async () => { const x = rehearsalCfg(makeWorld(), { ops, bootstrap: () => { throw new Blocked('credential-too-old'); } }); const r = await runRecon(x.cfg); return r.exitCode === 2 && r.stop.branch === 'credential' && r.stop.code === 'credential-too-old' && x.calls.length === 0 && x.bootstrapCalls.length === 1; });
+await test('remainder: 403 stops after first request, no refresh/retry', async () => { const x = rehearsalCfg(makeWorld(), { ops, override: () => new Response('{}', { status: 403 }) }); const r = await runRecon(x.cfg); return r.exitCode === 2 && r.stop.code === 'http-403' && x.calls.length === 1 && r.result.credential.tokenEndpointCalls === 0; });
+await test('remainder: credential read must be explicitly permitted for Google metadata', () => { const p = good(); p.operations.credentialConfigRead = false; return permitProblems(p, facts, NOW).some(s => s.includes('credentialConfigRead')); });
+await test('remainder: valid bounded minimal permit passes, every template operation remains off', () => permitProblems(good(), facts, NOW).length === 0 && Object.values(permitTemplate().operations).every(v => v === false));
+console.log(`REMAINDER_CONTROLS pass=${pass} fail=${fail}`);
+process.exit(fail ? 1 : 0);

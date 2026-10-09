@@ -1,0 +1,6 @@
+{
+  "loopback-only.cjs": "89f1d66c6115f9cfe5b51698092ced881b7214181786a5bb594b86129cf41596",
+  "recorder-stub.cjs": "ea8dfcf76f955a4976e1ce1f858c07f9a61940e2ba48a2918fbe5a75a5c497e8",
+  "fence-selftest.cjs": "860e271254dd6e0b77d767f5536a316f3a74790d8bbd0fe9a55ec27246e99d5f",
+  "isolated-env.mjs": "db6e2fd910ae3b9a3615345ed58195f78e56a4d9fb7ed7331bbb4421f618da26"
+}
