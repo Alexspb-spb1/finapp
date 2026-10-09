@@ -616,3 +616,17 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
   в `.runtime/AUDIT_CONTROL_20261007.md`, без изменения проверенного HEAD.
   Повтор старого запуска, автоматический refresh и любое S1b/production
   действие не разрешены этим блоком.
+
+## M1-STAGING-RECON-REMAINDER-PREP-05 (2026-10-09) — v5 после consumed04
+
+- Локальная подготовка после одноразового v4 STOP credential-too-old
+  2026-10-09T18:30:06Z,0HTTP/0Google. Consumed03/04 и их аудиты сохранены.
+- Новый immutable v5,manifest a2d87a381386fa7906f32504c5df336a6865b22461895298ce7edc07a3923ebf;
+  taskId/evidenceName/consumed04 pin+manifest отличаются от принятого v4;
+  движок/bootstrap/allowlists/permit/deadline/tests неизменны.
+- PREPARED_NOT_AUTHORIZED. Namespace05 не создан. Proposed scope —
+  cached login+4Functions/RulesGET;frontend/Auth false. Отдельный owner permit.
+- Сначала local audit/CI,затем owner CLI reauth близко к dispatch; permit
+  timestamps сериализовать Node canonical ISO-Z с проверкой исходных epoch.
+- Итоговые review/results/exact-head CI в .runtime без изменения HEAD.
+  Никаких новых live/credential/production/merge действий этой подготовкой.
