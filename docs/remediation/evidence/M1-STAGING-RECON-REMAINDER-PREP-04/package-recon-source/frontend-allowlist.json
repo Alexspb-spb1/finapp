@@ -1,0 +1,94 @@
+{
+  "format": "finapp-m1-recon-frontend-allowlist-v1",
+  "host": "stage.aktivmetr.ru",
+  "base": "/finapp/",
+  "note": "Fixed artifact paths of the accepted staging build (public HTTPS GET, no credentials, no browser, no SDK). Responses must match bytes and sha256 exactly; .vite/manifest.json is not served and is not requested.",
+  "marker": {
+    "chunkPrefix": "assets/firebase-",
+    "projectId": "finapp-staging",
+    "forbidden": [
+      "finapp-prod-10a83"
+    ]
+  },
+  "index": {
+    "sha256": "f4cfe4bfbb4569f8917b4624039d2c584ccf24c9ae41840abdc86014f06998f9",
+    "bytes": 396
+  },
+  "files": [
+    {
+      "path": "404.html",
+      "sha256": "f4cfe4bfbb4569f8917b4624039d2c584ccf24c9ae41840abdc86014f06998f9",
+      "bytes": 396
+    },
+    {
+      "path": "assets/AcceptInvite-Bd2496Cs.js",
+      "sha256": "2f8e3010b8fe9e0da2125af15d0866e6d62680b630ca6b775b140b435d3e81a9",
+      "bytes": 8535
+    },
+    {
+      "path": "assets/LegacyApp-C7aYC29o.js",
+      "sha256": "65801f4a00a0217e609b27ce3f263f57c39b1f0368659eff03e9d0e850c1a54a",
+      "bytes": 1349482
+    },
+    {
+      "path": "assets/authStore-B7J0HkF9.js",
+      "sha256": "8964dcad90eb1b703c3e88a2a8598542a945aed39e772554e2c6ad516021ba45",
+      "bytes": 18125
+    },
+    {
+      "path": "assets/firebase-ImtkxytP.js",
+      "sha256": "1c8952ba44b1007cc87579aafeef10992a4d0271a0121dfa613d518489a6da8d",
+      "bytes": 357123
+    },
+    {
+      "path": "assets/index-Dc4O5f6e.js",
+      "sha256": "3fff862f141d6a0dcf23f93ad2a29f671bad4fa1a5b79d16ec6f1168ae37d8f6",
+      "bytes": 2284
+    },
+    {
+      "path": "assets/invitationEntry-B2l6qOul.js",
+      "sha256": "6c094f8991e8e47f494cbfa168334d147d85d74fc238d310cfff9fa8838a168d",
+      "bytes": 102
+    },
+    {
+      "path": "assets/inviteAcceptanceApi-BNtYpOCg.js",
+      "sha256": "b852751df85384fa37dad56ba880b32756c913d2e2c197da7bd053e1039c502a",
+      "bytes": 67440
+    },
+    {
+      "path": "assets/jsx-runtime-B6doAwFl.js",
+      "sha256": "95a73361ee1226ce8a71e3628db69a7b367a10c43f322925ad4449e8ad9c0449",
+      "bytes": 8535
+    },
+    {
+      "path": "assets/react-dom-D9izJeWH.js",
+      "sha256": "a13c11c23354c6a326466fd09ba331a2f1e094851a48358d6cc1fecf2246e508",
+      "bytes": 3546
+    },
+    {
+      "path": "assets/renderApp-BuGvFRWQ.js",
+      "sha256": "89450ede4f3329b73d4cc9c0837cb35e7f5b4d247a4f4b95fcee3f9e42dd7768",
+      "bytes": 179342
+    },
+    {
+      "path": "assets/renderApp-CRnMx4Ps.css",
+      "sha256": "c35a156190d3c7a308d9fdd65faf2e3bfbce6f0b1f90fa1b4686f29dd06d174b",
+      "bytes": 62866
+    },
+    {
+      "path": "favicon.svg",
+      "sha256": "61bc9a161de58248288e6905425d7180f0624c2865007b97d763fdac12043a66",
+      "bytes": 9522
+    },
+    {
+      "path": "icons.svg",
+      "sha256": "b45fa506195cfcdef406ba9f0c77b36ddc1a7c224040926ec70abc2fdea7b93a",
+      "bytes": 5031
+    },
+    {
+      "path": "index.html",
+      "sha256": "f4cfe4bfbb4569f8917b4624039d2c584ccf24c9ae41840abdc86014f06998f9",
+      "bytes": 396
+    }
+  ]
+}

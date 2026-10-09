@@ -602,3 +602,17 @@ temporary; verify processes/ports before reuse. Do not replay external actions.
 - TASK03 REVIEW V2 = CHANGES_REQUIRED (HEAD 6c2ebc9abdf5e406fd94a9161b2db234375c9b77; CR1 и CR2 закрыты аудитором, остаётся CR3) -> Corrections V2 в той же ветке и Draft PR #37: новый immutable-кандидат
   `m1-recon-readonly-staging-v3` (`CODE-SHA256SUMS.txt` e460a9b3…92c6; v1 и v2 SUPERSEDED и не менялись). CR3: общий deadline-guard перед каждым следующим разрешённым действием (ветки, чтение кэшированного входа,
   чтение consumed journal) после записей ledger/checkpoint; единый момент завершения для вердикта, finishedAt, итоговых событий ledger и кода выхода. 153 контроля, 60 мутантов. Новых live-действий не было; PASS даёт только аудитор.
+
+## M1-STAGING-RECON-REMAINDER-PREP-04 (2026-10-09) — новый одноразовый namespace для остатка сверки
+
+- Локальная подготовка после consumed Task03/v3 STOP `credential-too-old`.
+  Frontend 17 GET совпали с pins; Google metadata ещё не читались.
+- Новый immutable candidate v4, manifest `af4aef5c35cb58a2b03f074d39e34a2a10d34afcbc8e7d9abfaf51d8510e67b6`.
+  Только taskId/evidenceName/consumed03 pin и manifest отличаются от v3;
+  движок и helpers сохранены. Состояние PREPARED_NOT_AUTHORIZED.
+- Новый namespace `m1-stg-readonly-recon-04` не создан. Предлагаются только
+  cached login read + 4 Functions/Rules GET. Frontend/Auth не выбраны.
+- Итоговый audit/локальные проверки/exact-head CI фиксируются отдельно
+  в `.runtime/AUDIT_CONTROL_20261007.md`, без изменения проверенного HEAD.
+  Повтор старого запуска, автоматический refresh и любое S1b/production
+  действие не разрешены этим блоком.
